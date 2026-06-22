@@ -1,7 +1,8 @@
-# Local TTS Server — Design
+# hosaka — Local TTS Server — Design
 
 **Date:** 2026-06-22
 **Status:** Approved design, pre-implementation
+**Project:** `hosaka` — new standalone git repo at `~/src/hosaka`
 **Author:** wai + Claude
 
 ## Goal
@@ -29,7 +30,8 @@ Four voice-control modes, all wanted:
 | Present | `ffplay`. **Missing:** `pacat`/`paplay` (need `pulseaudio-utils`) |
 
 Standalone tool: runs when gpt-oss (the LLM, ~15 GB) is **not** loaded, so the
-full 16 GB is free. Not designed to co-reside with the LLM.
+full 16 GB is free. On server start, hosaka frees VRAM by stopping the LLM
+(`ollama stop gpt-oss:20b`, best-effort).
 
 ## Core architectural decision: bake-once voice designer
 
@@ -52,7 +54,7 @@ seed audio WAV  ──► saved as a named "voice"
 This unifies all four controls onto a fast live path:
 
 - **Presets** = Kokoro's native voices (a dedicated fast engine).
-- **Cloning** = Chatterbox clones any reference clip (recorded, curated, or baked).
+- **Cloning** = Chatterbox clones any reference clip (recorded, curated, baked).
 - **Param tuning** = Chatterbox `exaggeration`/`cfg_weight`/`temperature`, Kokoro `speed`.
 - **Style-prompt** = Parler bakes a seed clip offline → it becomes a clone-able voice.
 
@@ -66,9 +68,9 @@ the two load-bearing claims per engine (real <1s latency, real sm_120 support).
 
 | Role | Engine | Notes |
 |------|--------|-------|
-| Presets + fast path | **Kokoro-82M** (hexgrad) | ~28 English voices (20 US + 8 GB), RTF ~0.04–0.06, ~150–400 ms first chunk. Apache-2.0. ~2–3 GB VRAM. |
-| Cloning + tuning | **Chatterbox** original model, via `davidbrowne17/chatterbox-streaming` fork | best open zero-shot clone from 5–10 s clip; keeps `exaggeration`/`cfg_weight`/`temperature`. MIT. ~2–3 GB VRAM. sm_120 confirmed on the exact RTX 5070 Ti (GitHub resemble-ai/chatterbox#344). |
-| Style-prompt (offline bake) | **Parler-TTS Mini v1.1** | text-described voice → 44.1 kHz seed WAV. Apache-2.0. **Isolated venv, offline CLI only.** |
+| Presets + fast path | **Kokoro-82M** (hexgrad) | ~28 English voices (20 US + 8 GB), RTF ~0.04–0.06, ~150–400 ms first chunk. Apache-2.0. ~2–3 GB VRAM. **Default voice: `af_heart`.** |
+| Cloning + tuning | **Chatterbox** original model, via `davidbrowne17/chatterbox-streaming` fork | best open zero-shot clone from 5–10 s clip; keeps `exaggeration`/`cfg_weight`/`temperature`. MIT. ~2–3 GB VRAM. sm_120 confirmed on the exact RTX 5070 Ti (resemble-ai/chatterbox#344). |
+| Style-prompt (offline bake) | **Parler-TTS Mini v1.1** | text-described voice → 44.1 kHz seed WAV (resampled to 24 kHz on save). Apache-2.0. **Isolated venv, offline CLI only.** |
 
 Both Kokoro and Chatterbox stay pinned in VRAM simultaneously (~5–6 GB of 16).
 
@@ -84,28 +86,73 @@ Both Kokoro and Chatterbox stay pinned in VRAM simultaneously (~5–6 GB of 16).
 `cfg_weight` — killing two of the four required controls. Turbo is reserved as a
 speed escape hatch only (see Risk 1).
 
+## Project layout
+
+```
+~/src/hosaka/
+  hosaka/
+    server/          # FastAPI app: model loading, streaming, endpoints
+      app.py
+      engines/
+        kokoro_engine.py
+        chatterbox_engine.py
+      chunking.py    # sentence-fragment splitter (the <1s lever)
+      library.py     # voice-library manifest read/write
+    cli/
+      repl.py        # persistent REPL client + colon-commands
+      bake.py        # offline Parler bake CLI (runs in venv-bake)
+    audio.py         # pacat player wrapper
+  docs/
+    API.md           # HTTP API reference for a future frontend
+  tests/
+  .venv-server/      # gitignored — Kokoro + Chatterbox
+  .venv-bake/        # gitignored — Parler (isolated)
+  README.md
+  pyproject.toml
+  .gitignore
+```
+
+User voice data lives **outside the repo** (privacy — personal recordings never
+hit git):
+
+```
+~/.local/share/hosaka/voices/
+  manifest.json      # voice-id → {path, source, params, created}
+  <id>.wav           # 24 kHz mono seed clips
+```
+
+Repo ships only a couple sample seeds under `hosaka/sample_voices/` for
+out-of-box cloning; the server copies them into the user dir on first run.
+
 ## Components
 
-Three deployable units, clear boundaries:
+Three deployable units, clear boundaries.
 
-### 1. TTS server (`venv-server`: Kokoro + Chatterbox)
+### 1. TTS server (`.venv-server`: Kokoro + Chatterbox)
 
 FastAPI + Uvicorn, single resident process.
 
-- **Startup (`lifespan`):** load both models into VRAM, run a tiny warmup synth
-  on each to dodge cold-start. Never unload on idle — pinned for the session.
-- **Endpoint:** `POST /v1/audio/speech` (OpenAI-shaped):
-  ```json
-  {
-    "input": "text to speak",
-    "backend": "kokoro" | "chatterbox",
-    "voice": "af_heart" | "<reference-clip-id>",
-    "params": { "exaggeration": 0.5, "cfg_weight": 0.4,
-                "temperature": 0.8, "speed": 1.0 },
-    "response_format": "pcm",
-    "stream": true
-  }
-  ```
+- **Startup (`lifespan`):**
+  1. Best-effort `ollama stop gpt-oss:20b` to free VRAM.
+  2. Load both models into VRAM, run a tiny warmup synth on each (dodge
+     cold-start). Pinned for the session, never unloaded on idle.
+- **Endpoints (OpenAI-shaped where possible; full reference in `docs/API.md`):**
+  - `POST /v1/audio/speech` — synthesize + stream. Body:
+    ```json
+    {
+      "input": "text to speak",
+      "backend": "kokoro" | "chatterbox",
+      "voice": "af_heart" | "<reference-clip-id>",
+      "params": { "exaggeration": 0.5, "cfg_weight": 0.4,
+                  "temperature": 0.8, "speed": 1.0 },
+      "response_format": "pcm",
+      "stream": true
+    }
+    ```
+  - `GET /v1/voices` — list available presets + library clips (for REPL
+    `:voices` and a future frontend).
+  - `GET /health` — readiness (models loaded + warmed). The CLI polls this
+    after auto-spawning the server.
 - **The real <1s lever:** server splits `input` into sentence fragments and
   force-emits fragment 1 immediately. This matters more than any model's
   internal "streaming" flag (Chatterbox streaming is chunk-level → no first-byte
@@ -117,29 +164,42 @@ FastAPI + Uvicorn, single resident process.
 - **~20 ms crossfade** between Chatterbox chunks to hide boundary clicks.
 - Anti-buffering headers (`X-Accel-Buffering: no`, `Cache-Control: no-cache`).
 
-### 2. CLI client (thin)
+### 2. CLI client — persistent REPL (`.venv-server`)
 
-- Reads a line (the "press enter" UX), POSTs with `stream=True`.
-- Spawns `pacat --raw` **once per session**, pipes streamed PCM straight into it.
+- Launch once: checks `/health`; if the server is down, **auto-spawns it**
+  (subprocess), waits until healthy, then connects.
+- Spawns `pacat --raw` **once per session**, pipes streamed PCM straight in:
   ```
   pacat --raw --rate=24000 --channels=1 \
         --format=float32le --latency-msec=50
   ```
-- Flags for `--backend`, `--voice`, `--exaggeration`, etc.
+- Read loop: a line **not** starting with `:` is spoken. Lines starting with `:`
+  are control commands:
 
-### 3. Bake CLI (`venv-bake`: Parler, isolated)
+  | Command | Effect |
+  |---------|--------|
+  | `:voice <name>` | switch to a Kokoro preset (e.g. `af_bella`) |
+  | `:clone <id\|path>` | switch to a library clip, or add+use an arbitrary WAV |
+  | `:exag <f>` `:cfg <f>` `:temp <f>` `:speed <f>` | set Chatterbox/Kokoro params |
+  | `:voices` | list presets + library clips |
+  | `:backend <kokoro\|chatterbox>` | force backend (auto-inferred from voice otherwise) |
+  | `:help` | show command list |
+  | `:quit` | exit (server keeps running, or `:quit --stop` to also stop it) |
 
-- `bake "<style prompt>" --out seeds/<name>.wav` → runs Parler offline → writes
-  a reference clip the server's Chatterbox backend can later clone.
+  Default on launch: `backend=kokoro`, `voice=af_heart`.
+
+### 3. Bake CLI (`.venv-bake`: Parler, isolated)
+
+- `hosaka-bake "<style prompt>" --out <name>` → runs Parler offline → writes a
+  24 kHz mono seed WAV to `~/.local/share/hosaka/voices/<id>.wav` and registers
+  it in `manifest.json`.
 - **Lives in a separate venv.** The live server never imports Parler.
-- Output WAV is registered into the voice library (a directory of seed clips +
-  a small JSON manifest mapping voice-id → clip path).
 
 ## Data flow
 
 ```
 preset name  ─► server(Kokoro)     ─► PCM ─┐
-clip/voice-id─► server(Chatterbox) ─► PCM ─┴► HTTP chunked ─► CLI ─► pacat ─► out
+clip/voice-id─► server(Chatterbox) ─► PCM ─┴► HTTP chunked ─► REPL ─► pacat ─► out
 text desc    ─► bake CLI(Parler)   ─► seed.wav ─► voice library ─► (clone-able)
 ```
 
@@ -155,28 +215,30 @@ silently installs CPU/old-CUDA torch → "no kernel image" → silent CPU fallba
 
 **Server venv:**
 ```
-python3.12 -m venv ~/tts/venv-server
-~/tts/venv-server/bin/pip install \
+cd ~/src/hosaka
+python3.12 -m venv .venv-server
+.venv-server/bin/pip install \
   torch==2.9.1+cu128 torchaudio==2.9.1+cu128 \
   --index-url https://download.pytorch.org/whl/cu128
-~/tts/venv-server/bin/pip install torchcodec
-~/tts/venv-server/bin/pip install \
+.venv-server/bin/pip install torchcodec
+.venv-server/bin/pip install \
   git+https://github.com/davidbrowne17/chatterbox-streaming.git --no-deps
-~/tts/venv-server/bin/pip install \
+.venv-server/bin/pip install \
   transformers accelerate scipy numpy peft soundfile
-~/tts/venv-server/bin/pip install kokoro --no-deps
-~/tts/venv-server/bin/pip install soundfile numpy
+.venv-server/bin/pip install kokoro --no-deps
+.venv-server/bin/pip install soundfile numpy fastapi uvicorn httpx
 sudo apt install -y espeak-ng        # Kokoro G2P
 ```
 
 **Bake venv (isolated):**
 ```
-python3.12 -m venv ~/tts/venv-bake
-~/tts/venv-bake/bin/pip install \
+cd ~/src/hosaka
+python3.12 -m venv .venv-bake
+.venv-bake/bin/pip install \
   torch==2.9.1+cu128 torchaudio==2.9.1+cu128 \
   --index-url https://download.pytorch.org/whl/cu128
-~/tts/venv-bake/bin/pip install parler-tts --no-deps
-~/tts/venv-bake/bin/pip install \
+.venv-bake/bin/pip install parler-tts --no-deps
+.venv-bake/bin/pip install \
   transformers==4.46.1 descript-audio-codec soundfile
 ```
 
@@ -226,30 +288,48 @@ PY
 | 6 | Both models pinned to 16 GB. | Low | ~5–6 GB total; `Semaphore(1)`. Non-issue at current scale. |
 | 7 | torchaudio 2.9 moved `load`/`save` to torchcodec. | Low | `torchcodec` installed; engines mostly use `soundfile`. |
 | 8 | Mandatory Perth watermark on Chatterbox output. | Low (constraint) | Inherent; accepted for local use. |
+| 9 | Auto `ollama stop` kills an in-use LLM. | Low | Best-effort + logged; single-user box, TTS use implies LLM not active. |
 
 ## Testing strategy
 
-- **Unit:** sentence-fragment splitter; voice-library manifest read/write;
-  param validation/clamping; request schema parsing.
-- **Integration (require GPU):** server startup loads both models + warmup
-  succeeds; `/v1/audio/speech` returns valid PCM for each backend; bake CLI
-  produces a clone-able WAV; clone of a baked seed runs through Chatterbox.
+- **Unit:** sentence-fragment splitter; voice-library manifest read/write; param
+  validation/clamping; request schema parsing; REPL command parser.
+- **Integration (require GPU):** server startup stops LLM + loads both models +
+  warmup; `/v1/audio/speech` returns valid PCM for each backend; `/v1/voices`
+  lists correctly; bake CLI produces a clone-able WAV; clone of a baked seed runs
+  through Chatterbox; CLI auto-spawn + `/health` poll works.
 - **Latency benchmark (the gate):** measure to-first-audio-chunk per backend,
   warm, short first sentence, on the actual box. This decides Risk 1.
-- **Smoke:** end-to-end CLI → audible speech through `pacat`.
+- **Smoke:** end-to-end REPL line → audible speech through `pacat`.
+
+## Deliverables
+
+- `hosaka` REPL client, `hosaka-server`, `hosaka-bake` CLIs.
+- `docs/API.md` — HTTP API reference (endpoints, request/response schemas,
+  streaming format) so a future frontend can consume the server.
+- `README.md` — install recipe + usage.
 
 ## Out of scope (v1)
 
 - Multilingual (English only).
 - Concurrent/multi-user streams (`Semaphore(1)`, single user).
-- Browser/MP3 output (raw PCM to local CLI only; add encode later if needed).
-- True pitch shifting (constraint 2; revisit with a post-process stage if ever
-  needed).
+- A built frontend — but the HTTP API is documented in `docs/API.md` for one
+  later. Browser consumption will additionally need CORS + a `wav`/`mp3`
+  `response_format`; deferred until the frontend exists.
+- True pitch shifting (constraint 2; revisit with a post-process stage if needed).
 - Co-residence with the LLM in VRAM.
 
-## Open items resolved
+## Open items — resolved
 
+- Project: **new standalone repo `~/src/hosaka`.**
+- CLI: **persistent REPL with inline colon-commands.** Default `kokoro`/`af_heart`.
+- Server lifecycle: **CLI auto-spawns the server**, polls `/health`.
+- LLM VRAM: **auto `ollama stop gpt-oss:20b` on server start** (best-effort).
+- Voice data: **`~/.local/share/hosaka/voices/`, untracked**; repo ships a couple
+  sample seeds only.
+- Seed library sourced from: **own recordings + Parler-baked + curated Kokoro clips.**
 - Parler: **build in v1** (isolated venv).
-- Chatterbox latency fallback: **build original-model path; decide fallback
-  after benchmarking on the box.**
-- Tuning levers: **exaggeration + cfg_weight + speed are sufficient; no pitch.**
+- Chatterbox latency fallback: **build original-model path; decide fallback after
+  benchmarking on the box.**
+- Tuning levers: **exaggeration + cfg_weight + speed sufficient; no pitch.**
+- API: **documented in `docs/API.md` for a future frontend.**
