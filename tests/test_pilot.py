@@ -102,3 +102,18 @@ def test_authorship_flag_forces_diff_read_and_redacts(env, monkeypatch):
     assert "authorship:src/calc.py" in rec["flags"] and rec["full_diff_read"] is True
     diff = (tmp / "state/results/t1.v1.diff").read_text()
     assert "Qwen" not in diff
+
+def test_solo_logs_arm_solo(env):
+    task, cfg, tmp = env
+    rec = pilot.run_solo(task, claude_cmd=[str(STUBS / "solo_stub.py")], sandbox=cfg["sandbox"],
+                         tasks_root=cfg["tasks_root"], state_root=cfg["state_root"])
+    assert rec["arm"] == "solo" and rec["route"] == "claude-subagent" and rec["outcome"] == "accepted"
+    assert rec["lead_tokens"] == 4000 and rec["lead_cache_read"] == 9000
+    assert last_log(tmp)["arm"] == "solo"
+
+def test_solo_failed_check_not_accepted(env, monkeypatch):
+    task, cfg, tmp = env
+    monkeypatch.setenv("STUB_SOLO", "nochange")
+    rec = pilot.run_solo(task, claude_cmd=[str(STUBS / "solo_stub.py")], sandbox=cfg["sandbox"],
+                         tasks_root=cfg["tasks_root"], state_root=cfg["state_root"])
+    assert rec["outcome"] == "failed"

@@ -271,13 +271,69 @@ def run_one(task: dict, *, claude_bin=CLAUDE_BIN, lead_cmd=LEAD_CMD, sandbox=str
 
 
 def _finish(c: Ctx, rec: dict) -> dict:
-    rec.setdefault("answered_by", answered_by(c.fwd_log))
-    if c.fwd_log.exists():
+    if rec.get("arm") != "solo":
+        rec.setdefault("answered_by", answered_by(c.fwd_log))
+    rec = {k: v for k, v in rec.items() if v is not None}
+    if rec.get("arm") != "solo" and c.fwd_log.exists():
         rec["worker_tokens"] = sum(json.loads(l).get("input_tokens", 0) + json.loads(l).get("output_tokens", 0)
                                    for l in c.fwd_log.read_text().splitlines() if l.strip())
     log = {k: v for k, v in rec.items() if k in logrec.FIELDS or k in logrec.PILOT_FIELDS}
     logrec.append(c.state / "log.jsonl", log)
     return rec
+
+
+SOLO_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json",
+            "--permission-mode", "acceptEdits", "--allowedTools", "Bash(bash .mates/check.sh)"]
+
+
+def run_solo(task: dict, *, claude_cmd=SOLO_CMD, sandbox=str(HERE / "sandbox.sh"), tasks_root=TASKS_ROOT,
+             state_root=STATE_ROOT, runtime=None, timeout=2700) -> dict:
+    """Baseline arm: a fresh Claude session does the task from the same brief, as wai, unsandboxed
+    (normal Claude use on Wai's own repo). The pass that counts is the same sandboxed rerun as the mates arm."""
+    os.umask(0o002)
+    c = Ctx(task, claude_cmd[0], [], sandbox, tasks_root, state_root, None, 0, timeout, runtime)
+    check_text = "#!/usr/bin/env bash\n" + task["check"] + "\n"
+    c.orig_check.parent.mkdir(parents=True, exist_ok=True)
+    c.orig_check.write_text(check_text)
+    c.orig_check.chmod(0o600)
+    brief = task["brief"]
+    rec = {"repo": pathlib.Path(c.repo).name, "task_id": c.id, "summary": brief["goal"][:200],
+           "route": "claude-subagent", "reason": "pilot solo baseline", "check": task["check"],
+           "check_sha": hashlib.sha256(check_text.encode()).hexdigest(), "attempts": 1, "arm": "solo"}
+    env = dict(os.environ)
+    if runtime:
+        import runtime as rtmod
+        env.update(dict(l.split("=", 1) for l in rtmod.runtime_env(runtime)))
+    try:
+        td = make_task_dir(c, f"{c.id}-solo", task["base"], check_text)
+        shutil.copy(td / "ctl" / "check.sh", td / "wt" / ".mates" / "check.sh")
+        t0 = time.time()
+        r = subprocess.run([*claude_cmd, brief_text(brief, [])], capture_output=True, text=True,
+                           timeout=timeout, cwd=str(td / "wt"), env=env)
+        rec["worker_wall_s"] = round(time.time() - t0, 1)
+        try:
+            u = json.loads(r.stdout).get("usage") or {}
+        except ValueError:
+            u = {}
+        rec["lead_tokens"] = int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0)) + \
+            int(u.get("cache_creation_input_tokens", 0))
+        rec["lead_cache_read"] = int(u.get("cache_read_input_tokens", 0))
+        (td / "wt" / ".mates" / "report.md").write_text("solo\n")
+        commit, diff, flags, why = collect(td, task["base"], brief, c.id)
+        rec["flags"] = flags
+        if why:
+            rec.update(outcome="failed", detail=why)
+            return _finish(c, rec)
+        rec["commit"] = commit
+        (c.state / "results").mkdir(parents=True, exist_ok=True)
+        (c.state / "results" / f"{c.id}.solo.diff").write_text(diff)
+        ok, tree, tail = rerun(c, 1, commit)
+        rec.update(outcome="accepted" if ok else "failed", tree=tree, detail=None if ok else tail[-300:])
+        return _finish(c, rec)
+    finally:
+        for d in reversed(c.dirs):
+            _git(c.repo, "worktree", "remove", "--force", str(d / "wt"), check=False)
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def score(records: list[dict], fidelity: dict[str, bool], escape_ok: bool, outbound: int) -> dict:
