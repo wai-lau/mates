@@ -18,7 +18,7 @@ import time
 import urllib.request
 
 TARGET, FLOOR = 65536, 32768
-CTXS, PARALLELS = (32768, 65536, 131072), (1, 2)
+CTXS, PARALLELS = (32768, 65536), (1, 2)  # 128K dropped: the pick caps at 64K, and at ~160 prompt tok/s it costs ~25 min
 PORT = 11435
 STATE = pathlib.Path.home() / ".claude" / "mates"
 
