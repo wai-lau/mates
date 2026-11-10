@@ -280,6 +280,19 @@ def _finish(c: Ctx, rec: dict) -> dict:
     return rec
 
 
+def score(records: list[dict], fidelity: dict[str, bool], escape_ok: bool, outbound: int) -> dict:
+    """The pilot's three bars. fidelity maps "<arm>:<task_id>" -> correct? for accepted changes."""
+    def per_accept(arm):
+        rs = [r for r in records if r.get("arm") == arm]
+        acc = sum(1 for r in rs if r["outcome"] == "accepted")
+        tot = sum(r.get("lead_tokens", 0) for r in rs)
+        return tot / acc if acc else float("inf")
+    m, s = per_accept("mates"), per_accept("solo")
+    ratio = m / s if s not in (0, float("inf")) else float("inf")
+    return {"pii": bool(escape_ok and outbound == 0), "fidelity": all(fidelity.values()),
+            "cost": ratio <= 0.5, "mates_tokens_per_accept": m, "solo_tokens_per_accept": s, "ratio": ratio}
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
