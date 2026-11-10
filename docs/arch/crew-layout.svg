@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="230" viewBox="0 0 760 230" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="13">
+  <rect width="760" height="230" fill="#1e1e1e"/>
+  <!-- 1 worker -->
+  <text x="20" y="22" fill="#ddd">1 worker (240x60 window)</text>
+  <rect x="20" y="32" width="160" height="80" fill="#2d4a7a" stroke="#888"/>
+  <text x="100" y="77" fill="#fff" text-anchor="middle">Claude lead 50%</text>
+  <rect x="180" y="32" width="160" height="80" fill="#3d6b3d" stroke="#888"/>
+  <text x="260" y="70" fill="#fff" text-anchor="middle">Qwen 1</text>
+  <text x="260" y="88" fill="#ccc" text-anchor="middle">120x60, ratio 2.0</text>
+  <!-- 2 workers -->
+  <text x="400" y="22" fill="#ddd">2 workers: side by side wins</text>
+  <rect x="400" y="32" width="160" height="80" fill="#2d4a7a" stroke="#888"/>
+  <text x="480" y="77" fill="#fff" text-anchor="middle">Claude lead 50%</text>
+  <rect x="560" y="32" width="80" height="80" fill="#3d6b3d" stroke="#888"/>
+  <rect x="640" y="32" width="80" height="80" fill="#3d6b3d" stroke="#888"/>
+  <text x="600" y="70" fill="#fff" text-anchor="middle">Qwen 1</text>
+  <text x="680" y="70" fill="#fff" text-anchor="middle">Qwen 2</text>
+  <text x="640" y="128" fill="#ccc" text-anchor="middle">60x60 each, ratio 1.0</text>
+  <!-- rejected stacked -->
+  <text x="400" y="152" fill="#ddd">rejected: stacked</text>
+  <rect x="400" y="162" width="80" height="40" fill="#2d4a7a" stroke="#888"/>
+  <rect x="480" y="162" width="80" height="20" fill="#6b3d3d" stroke="#888"/>
+  <rect x="480" y="182" width="80" height="20" fill="#6b3d3d" stroke="#888"/>
+  <text x="580" y="186" fill="#ccc">120x30 each, ratio 4.0</text>
+  <text x="20" y="160" fill="#ccc">Target: cols/rows = 0.92</text>
+  <text x="20" y="180" fill="#ccc">(9:19.5 phone; a cell is ~2x taller than wide)</text>
+  <text x="20" y="200" fill="#ccc">Grid c x r chosen closest to target in log space</text>
+</svg>
