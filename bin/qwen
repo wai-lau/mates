@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# qwen: chat-to-code with local Qwen through aider, always inside a bubblewrap sandbox.
+# qwen: chat-to-code with local Qwen through OpenCode, always inside a bubblewrap sandbox.
 #
-#   qwen [aider args...]   start (or reuse) the Qwen server, then run aider sandboxed in this repo
+#   qwen [opencode args...] start (or reuse) the Qwen server, then run OpenCode sandboxed in this repo
+#   qwen aider [args...]   the same, with aider instead (the old default)
 #   qwen server            start (or reuse) the server and print its address
 #   qwen stop              stop the server and give the GPU back to hosaka TTS
 #   qwen sandbox-test      print what the sandbox can and cannot reach (no aider)
@@ -10,13 +11,17 @@
 #   - sees the current git repo read-write (plus its git dir if that lives
 #     elsewhere, e.g. a submodule or worktree), with .git/hooks and .git/config
 #     read-only so nothing written there can run later outside the sandbox;
-#   - sees /usr and the aider venv read-only; your home folder is NOT there;
+#   - sees /usr, the OpenCode binary and the aider venv read-only; your home folder is NOT there;
 #   - has no network: the only way out is a unix socket to the Ollama server;
 #   - starts from an empty environment (no tokens);
 #   - gets copies of the files listed in ~/.config/qwen/copy-in (one per line,
 #     `<path>` or `<path>:<path in sandbox home>`). Add lines there when aider
 #     needs another file. Secrets (~/.ssh, ~/.gnupg, ~/.secrets, ~/.claude,
-#     ~/.config/gh, .env*, *.pem, *.key, .credentials*) are refused.
+#     ~/.config/gh, .env*, *.pem, *.key, .credentials*) are refused, except
+#     ~/.claude/CLAUDE.md, which is loaded as standing instructions together
+#     with the repo's own CLAUDE.md (Wai: "load both");
+#   - OpenCode runs with every tool allowed (no approval prompts): the sandbox
+#     is what bounds it.
 #
 # The server's port is never fixed: a running private Ollama is found from its
 # own environment (OLLAMA_HOST in /proc/<pid>/environ); a new one gets a free
@@ -30,8 +35,9 @@ CTX=${QWEN_CTX:-65536}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
 AIDER_VENV=$HOME/aider-venv
+OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)}
 HERE=$(dirname "$(readlink -f "$0")")
-mkdir -p "$STATE/aider" "$CONF"
+mkdir -p "$STATE/aider" "$STATE/opencode" "$CONF"
 
 die() { echo "qwen: $*" >&2; exit 1; }
 
@@ -75,6 +81,7 @@ stop_server() {
 
 refuse_secret() { # path -> status 0 if it must not go in
   local p; p=$(readlink -f "$1" 2>/dev/null || echo "$1")
+  [ "$p" = "$(readlink -f "$HOME/.claude/CLAUDE.md")" ] && return 1  # standing instructions, not a secret
   case $p in "$HOME"/.ssh*|"$HOME"/.gnupg*|"$HOME"/.secrets*|"$HOME"/.claude*|"$HOME"/.config/gh*) return 0 ;; esac
   case ${p##*/} in .env|.env.*|*.pem|*.key|.credentials*) return 0 ;; esac
   return 1
@@ -86,7 +93,9 @@ refuse_secret() { # path -> status 0 if it must not go in
 # Secrets are refused (see `qwen --help`). Add a line when aider needs a file.
 ~/.gitconfig
 ~/.config/git/ignore:.config/git/ignore
+~/.claude/CLAUDE.md:.claude/CLAUDE.md
 EOF
+grep -q '^~/.claude/CLAUDE.md' "$CONF/copy-in" || echo '~/.claude/CLAUDE.md:.claude/CLAUDE.md' >> "$CONF/copy-in"
 
 # A fresh sandbox home with the copy-in files; aider's own state persists in $STATE/aider.
 make_home() {
@@ -118,15 +127,18 @@ run_sandboxed() {
     --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home
     --bind "$run/home" /home/qwen --bind "$STATE/aider" /home/qwen/.aider
+    --bind "$STATE/opencode" /home/qwen/.local/share/opencode
     --ro-bind "$AIDER_VENV" "$AIDER_VENV" --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
     --bind "$run" /run/qwen --bind "$top" "$top")
   case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
   [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
   [ -f "$gitdir/config" ] && A+=(--ro-bind "$gitdir/config" "$gitdir/config")
+  [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] && A+=(--ro-bind "$OPENCODE" /opt/opencode/opencode)
   local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
   done
-  A+=(--setenv HOME /home/qwen --setenv PATH "$AIDER_VENV/bin:/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
+  local e; for e in "${SANDBOX_ENV[@]}"; do A+=(--setenv "${e%%=*}" "${e#*=}"); done
+  A+=(--setenv HOME /home/qwen --setenv PATH "/opt/opencode:$AIDER_VENV/bin:/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
       --setenv LANG C.UTF-8 --setenv OLLAMA_API_BASE http://127.0.0.1:11434 --setenv LITELLM_LOCAL_MODEL_COST_MAP True
       --chdir "$PWD")
   bwrap "${A[@]}" -- /bin/bash -c '
@@ -135,6 +147,7 @@ run_sandboxed() {
     "$@"' bash "$@"
 }
 
+SANDBOX_ENV=()
 case "${1:-}" in
   server) start_server; exit ;;
   stop) stop_server; exit ;;
@@ -159,11 +172,13 @@ print("env:", sorted(os.environ))'
     exit ;;
 esac
 
-[ -x "$AIDER_VENV/bin/aider" ] || die "aider not found at $AIDER_VENV"
-host=$(start_server)
-# aider would otherwise pick its own small num_ctx, and ~/.aider.conf.yml's weak model
-# would load a second model onto the GPUs.
-cat > "$STATE/aider/qwen-model-settings.yml" <<EOF
+if [ "${1:-}" = aider ]; then
+  shift
+  [ -x "$AIDER_VENV/bin/aider" ] || die "aider not found at $AIDER_VENV"
+  host=$(start_server)
+  # aider would otherwise pick its own small num_ctx, and ~/.aider.conf.yml's weak model
+  # would load a second model onto the GPUs.
+  cat > "$STATE/aider/qwen-model-settings.yml" <<EOF
 - name: ollama_chat/$MODEL
   edit_format: diff
   use_repo_map: true
@@ -174,6 +189,36 @@ cat > "$STATE/aider/qwen-model-settings.yml" <<EOF
   extra_params:
     num_ctx: $CTX
 EOF
-echo "qwen: $MODEL on http://$host, sandboxed (first reply is slow while the model loads)" >&2
-run_sandboxed "$host" aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
-  --model-settings-file /home/qwen/.aider/qwen-model-settings.yml --no-check-update --analytics-disable "$@"
+  echo "qwen: $MODEL on http://$host, sandboxed (first reply is slow while the model loads)" >&2
+  run_sandboxed "$host" aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
+    --model-settings-file /home/qwen/.aider/qwen-model-settings.yml --no-check-update --analytics-disable "$@"
+  exit
+fi
+
+[ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] || die "OpenCode not found (expected ~/.local/opt/opencode-<version>/opencode, or set QWEN_OPENCODE)"
+host=$(start_server)
+# Offline OpenCode: no update check, no model-catalog fetch (it ships a bundled copy), no plugin or
+# LSP downloads, no Claude Code auto-discovery (the two CLAUDE.md files are listed explicitly).
+cfg='{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "model": "ollama/MODEL_",
+  "small_model": "ollama/MODEL_",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local, sandboxed)",
+      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
+      "models": { "MODEL_": { "name": "MODEL_", "tool_call": true, "reasoning": true,
+                              "limit": { "context": CTX_, "output": 16384 } } }
+    }
+  },
+  "instructions": ["/home/qwen/.claude/CLAUDE.md", "CLAUDE.md"],
+  "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
+}'
+cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}
+SANDBOX_ENV=(OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1
+  OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 "OPENCODE_CONFIG_CONTENT=$cfg")
+echo "qwen: OpenCode on $MODEL at http://$host, sandboxed (first reply is slow while the model loads)" >&2
+run_sandboxed "$host" opencode "$@"
