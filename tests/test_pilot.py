@@ -133,3 +133,14 @@ def test_task_dirs_group_writable(env):
     td = pilot.make_task_dir(c, "perm", task["base"], "true\n")
     assert all((td / d).stat().st_mode & 0o020 for d in ("sock", "state"))
     pilot._cleanup(c)
+
+def test_rmtree_handles_readonly_dirs(tmp_path):
+    d = tmp_path / "td" / "state" / "deep"; d.mkdir(parents=True); (d / "f").write_text("x")
+    d.chmod(0o500); (tmp_path / "td" / "state").chmod(0o500)
+    pilot._rmtree(tmp_path / "td")
+    assert not (tmp_path / "td").exists()
+
+def test_cleanup_keeps_worker_transcripts(env):
+    task, cfg, tmp = env
+    pilot.run_one(task, **cfg)
+    assert (tmp / "state" / "transcripts" / "t1").is_dir()

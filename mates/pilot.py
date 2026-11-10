@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import time
 
+import fsutil
 import guard
 import logrec
 
@@ -79,7 +80,7 @@ def make_task_dir(c: Ctx, name: str, commit: str, check_text: str, extra: dict |
     td = c.tasks_root / name
     if td.exists():
         _git(c.repo, "worktree", "remove", "--force", str(td / "wt"), check=False)
-        shutil.rmtree(td, ignore_errors=True)
+        fsutil.rmtree(td)
     for d in ("ctl", "state", "sock"):
         (td / d).mkdir(parents=True)
     for d in ("state", "sock"):  # the worker (user claude, same group) writes here
@@ -275,12 +276,20 @@ def _cleanup(c: Ctx):
     """Keep each sandbox's in-namespace socket samples, then drop the worktrees."""
     (c.state / "net").mkdir(parents=True, exist_ok=True)
     for td in reversed(c.dirs):
+        fsutil.open_up(td)
         nl = td / "sock" / "net.log"
         if nl.exists():
             with open(c.state / "net" / f"{c.id}.log", "a") as f:
                 f.write(nl.read_text())
+        keep = c.state / "transcripts" / c.id / td.name  # worker's Claude Code state: local audit only
+        if (td / "state").is_dir() and not keep.exists():
+            shutil.copytree(td / "state", keep, symlinks=True, ignore_dangling_symlinks=True)
         _git(c.repo, "worktree", "remove", "--force", str(td / "wt"), check=False)
-        shutil.rmtree(td, ignore_errors=True)
+        fsutil.rmtree(td)
+
+
+def _rmtree(path):
+    fsutil.rmtree(path)
 
 
 def _finish(c: Ctx, rec: dict) -> dict:

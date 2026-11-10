@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 
+import fsutil
 import runtime
 
 SRC = re.compile(r"\.(py|js|mjs|ts)$")
@@ -84,7 +85,7 @@ def check_for(test_files: list[str]) -> str:
 def _run_check(repo, commit, check, sandbox, td, rt):
     if td.exists():
         _git(repo, "worktree", "remove", "--force", str(td / "wt"), check=False)
-        shutil.rmtree(td, ignore_errors=True)
+        fsutil.rmtree(td)
     for d in ("ctl", "state", "sock"):
         (td / d).mkdir(parents=True)
     for d in ("state", "sock"):
@@ -101,7 +102,7 @@ def _run_check(repo, commit, check, sandbox, td, rt):
         return 124, "timeout"
     finally:
         _git(repo, "worktree", "remove", "--force", str(td / "wt"), check=False)
-        shutil.rmtree(td, ignore_errors=True)
+        fsutil.rmtree(td)
 
 
 def make_base(repo, cand: dict, scratch: pathlib.Path) -> str:
@@ -109,7 +110,7 @@ def make_base(repo, cand: dict, scratch: pathlib.Path) -> str:
     wt = pathlib.Path(scratch) / f"mkbase-{pathlib.Path(repo).name}-{cand['commit'][:10]}"
     if wt.exists():
         _git(repo, "worktree", "remove", "--force", str(wt), check=False)
-        shutil.rmtree(wt, ignore_errors=True)
+        fsutil.rmtree(wt)
     _git(repo, "worktree", "prune")
     _git(repo, "worktree", "add", "-q", "--detach", str(wt), cand["parent"])
     try:
