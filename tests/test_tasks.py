@@ -67,3 +67,16 @@ def test_write_brief_uses_test_diff_not_source(repo, tmp_path):
     assert b == {"goal": "make add sum", "files": ["src/calc.py"], "constraints": "none"}
     p = seen.read_text()
     assert "== 2" in p and "a + b" not in p
+
+def test_make_base_survives_stale_scratch(repo, tmp_path):
+    c = tasks.candidates(repo, since="10 years ago")[0]
+    stale = tmp_path / "t" / f"mkbase-{repo.name}-{c['commit'][:10]}"
+    stale.mkdir(parents=True); (stale / "junk").write_text("x")
+    base = tasks.make_base(repo, c, tmp_path / "t")
+    assert "== 2" in git(repo, "show", f"{base}:tests/test_calc.py")
+
+def test_build_drops_candidate_on_error(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, "validate", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    lines = []
+    kept = tasks.build([str(repo)], tmp_path / "out", want=1, sandbox="x", tasks_root=tmp_path / "t", log=lines.append)
+    assert kept == [] and any("error: boom" in l for l in lines)

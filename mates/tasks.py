@@ -104,9 +104,11 @@ def _run_check(repo, commit, check, sandbox, td, rt):
 
 def make_base(repo, cand: dict, scratch: pathlib.Path) -> str:
     """The task's starting point: the parent's source with the target commit's tests."""
-    wt = scratch / "mkbase"
+    wt = pathlib.Path(scratch) / f"mkbase-{pathlib.Path(repo).name}-{cand['commit'][:10]}"
     if wt.exists():
         _git(repo, "worktree", "remove", "--force", str(wt), check=False)
+        shutil.rmtree(wt, ignore_errors=True)
+    _git(repo, "worktree", "prune")
     _git(repo, "worktree", "add", "-q", "--detach", str(wt), cand["parent"])
     try:
         _git(wt, "checkout", cand["commit"], "--", *cand["test_files"])
@@ -177,13 +179,19 @@ def build(repos: list[str], out_dir: pathlib.Path, *, want=20, per_repo=10, sand
             cand = cs.pop()
             script = runtime_script_for(r)
             check = check_for(cand["test_files"])
-            ok, why, base = validate(r, cand, check, sandbox=sandbox, tasks_root=tasks_root, script=script)
-            log(f"{pathlib.Path(r).name} {cand['commit'][:10]} {'KEEP' if ok else 'drop'}: {why}")
-            if not ok:
+            name = f"{pathlib.Path(r).name} {cand['commit'][:10]}"
+            try:
+                ok, why, base = validate(r, cand, check, sandbox=sandbox, tasks_root=tasks_root, script=script)
+                log(f"{name} {'KEEP' if ok else 'drop'}: {why}")
+                if not ok:
+                    continue
+                brief = write_brief(r, cand)
+            except Exception as e:  # one bad candidate must not end the build
+                log(f"{name} drop: error: {e}")
                 continue
             tid = f"{pathlib.Path(r).name}-{cand['commit'][:10]}"
             task = {"id": tid, "repo": str(r), "base": base, "target": cand["commit"], "check": check,
-                    "runtime_script": script, "brief": write_brief(r, cand), "msg": cand["msg"]}
+                    "runtime_script": script, "brief": brief, "msg": cand["msg"]}
             (out_dir / f"{tid}.json").write_text(_json.dumps(task, indent=1))
             kept.append(task)
             counts[r] += 1
@@ -198,5 +206,5 @@ if __name__ == "__main__":
     a = ap.parse_args()
     here = pathlib.Path(__file__).resolve().parent
     kept = build(a.repos, pathlib.Path.home() / ".claude/mates/pilot/tasks", want=a.want,
-                 sandbox=str(here / "sandbox.sh"), tasks_root="/srv/mates/tasks")
+                 sandbox=str(here / "sandbox.sh"), tasks_root="/srv/mates/tasks", log=lambda m: print(m, flush=True))
     print(f"kept {len(kept)}")

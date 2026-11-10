@@ -77,11 +77,11 @@ def _one(model, ctx):
             "tok_s": r.get("eval_count", 0) / max(r.get("eval_duration", 1) / 1e9, 1e-9)}
 
 
-def measure(model: str) -> list[dict]:
+def measure(model: str, parallels=PARALLELS) -> list[dict]:
     subprocess.run(["ollama", "stop", "gpt-oss:20b"], capture_output=True)
     STATE.mkdir(parents=True, exist_ok=True)
     rows = []
-    for parallel in PARALLELS:
+    for parallel in parallels:
         with open(STATE / f"ctx-serve-p{parallel}.log", "w") as log:
             srv = _serve(parallel, log)
             try:
@@ -114,8 +114,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["measure"])
     ap.add_argument("--model", default="qwen3.8:27b")
+    ap.add_argument("--parallels", default="1,2")
     a = ap.parse_args()
-    rows = measure(a.model)
+    rows = measure(a.model, tuple(int(x) for x in a.parallels.split(",")))
     (STATE / "ctx-rows.json").write_text(json.dumps(rows, indent=1))
     choice = {**pick_ctx(rows), "model": a.model}
     (STATE / "ctx.json").write_text(json.dumps(choice, indent=1))
