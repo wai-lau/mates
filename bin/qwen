@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
-# qwen: chat-to-code with local Qwen through aider, on a private Ollama server.
+# qwen: chat-to-code with local Qwen through aider, always inside a bubblewrap sandbox.
 #
-#   qwen [aider args...]   start (or reuse) the Qwen server, then run aider on it
-#   qwen server            start (or reuse) the server and print its URL
+#   qwen [aider args...]   start (or reuse) the Qwen server, then run aider sandboxed in this repo
+#   qwen server            start (or reuse) the server and print its address
 #   qwen stop              stop the server and give the GPU back to hosaka TTS
+#   qwen sandbox-test      print what the sandbox can and cannot reach (no aider)
 #
-# The server's port is never fixed: an already-running private Ollama is found
-# from its own environment (/proc/<pid>/environ, OLLAMA_HOST), and a new one is
-# started on a free port picked at launch. Qwen needs both GPUs, so starting it
-# stops hosaka TTS (Wai: "Qwen wins vs TTS").
+# The sandbox (Wai: "always run the qwen in a bwrap whatever the setup"):
+#   - sees the current git repo read-write (plus its git dir if that lives
+#     elsewhere, e.g. a submodule or worktree), with .git/hooks and .git/config
+#     read-only so nothing written there can run later outside the sandbox;
+#   - sees /usr and the aider venv read-only; your home folder is NOT there;
+#   - has no network: the only way out is a unix socket to the Ollama server;
+#   - starts from an empty environment (no tokens);
+#   - gets copies of the files listed in ~/.config/qwen/copy-in (one per line,
+#     `<path>` or `<path>:<path in sandbox home>`). Add lines there when aider
+#     needs another file. Secrets (~/.ssh, ~/.gnupg, ~/.secrets, ~/.claude,
+#     ~/.config/gh, .env*, *.pem, *.key, .credentials*) are refused.
+#
+# The server's port is never fixed: a running private Ollama is found from its
+# own environment (OLLAMA_HOST in /proc/<pid>/environ); a new one gets a free
+# port. Qwen needs both GPUs, so starting it stops hosaka TTS ("Qwen wins vs TTS").
 #
 # env: QWEN_MODEL (default qwen3.8-27b-turbo-heretic:mtp-iq4xs), QWEN_CTX (default 65536)
 set -euo pipefail
@@ -16,11 +28,13 @@ set -euo pipefail
 MODEL=${QWEN_MODEL:-qwen3.8-27b-turbo-heretic:mtp-iq4xs}
 CTX=${QWEN_CTX:-65536}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
-mkdir -p "$STATE"
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
+AIDER_VENV=$HOME/aider-venv
+HERE=$(dirname "$(readlink -f "$0")")
+mkdir -p "$STATE/aider" "$CONF"
 
 die() { echo "qwen: $*" >&2; exit 1; }
 
-# A private `ollama serve` of ours: OLLAMA_HOST set and not the system default port.
 find_server() {
   local pid host
   for pid in $(pgrep -u "$(id -u)" -x ollama 2>/dev/null); do
@@ -59,24 +73,103 @@ stop_server() {
   systemctl --user start hosaka-server 2>/dev/null && echo "qwen: hosaka TTS back up" || true
 }
 
+refuse_secret() { # path -> status 0 if it must not go in
+  local p; p=$(readlink -f "$1" 2>/dev/null || echo "$1")
+  case $p in "$HOME"/.ssh*|"$HOME"/.gnupg*|"$HOME"/.secrets*|"$HOME"/.claude*|"$HOME"/.config/gh*) return 0 ;; esac
+  case ${p##*/} in .env|.env.*|*.pem|*.key|.credentials*) return 0 ;; esac
+  return 1
+}
+
+[ -f "$CONF/copy-in" ] || cat > "$CONF/copy-in" <<'EOF'
+# Files copied into the qwen sandbox's home at every launch.
+# One per line: <path>  or  <path>:<path relative to the sandbox home>
+# Secrets are refused (see `qwen --help`). Add a line when aider needs a file.
+~/.gitconfig
+~/.config/git/ignore:.config/git/ignore
+EOF
+
+# A fresh sandbox home with the copy-in files; aider's own state persists in $STATE/aider.
+make_home() {
+  local home=$1 line src dest
+  mkdir -p "$home"
+  while IFS= read -r line; do
+    line=${line%%#*}; line=${line//[[:space:]]/}; [ -n "$line" ] || continue
+    src=${line%%:*}; dest=${line#*:}; [ "$dest" = "$line" ] && dest=${src#\~/}
+    src=${src/#\~/$HOME}; dest=${dest#/}
+    [ -e "$src" ] || { echo "qwen: copy-in skipped (missing): $src" >&2; continue; }
+    refuse_secret "$src" && { echo "qwen: copy-in REFUSED (secret): $src" >&2; continue; }
+    mkdir -p "$home/$(dirname "$dest")"; cp -rL "$src" "$home/$dest"
+  done < "$CONF/copy-in"
+}
+
+# run_sandboxed <server host:port> <cmd...>: the only way anything Qwen-facing runs.
+run_sandboxed() {
+  local host=$1; shift
+  command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
+  local top gitdir run
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || die "run qwen inside a git repo (the sandbox only sees that repo)"
+  gitdir=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir)
+  run=$(mktemp -d "$STATE/run.XXXXXX")
+  make_home "$run/home"
+  python3 "$HERE/qwen-relay" out --sock "$run/ollama.sock" --to "$host" & local relay=$!
+  trap "kill $relay 2>/dev/null; rm -rf '$run'" EXIT
+  for _ in $(seq 50); do [ -S "$run/ollama.sock" ] && break; sleep 0.1; done
+  local A=(--unshare-all --die-with-parent --new-session --clearenv
+    --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64
+    --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home
+    --bind "$run/home" /home/qwen --bind "$STATE/aider" /home/qwen/.aider
+    --ro-bind "$AIDER_VENV" "$AIDER_VENV" --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
+    --bind "$run" /run/qwen --bind "$top" "$top")
+  case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
+  [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
+  [ -f "$gitdir/config" ] && A+=(--ro-bind "$gitdir/config" "$gitdir/config")
+  local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do
+    [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
+  done
+  A+=(--setenv HOME /home/qwen --setenv PATH "$AIDER_VENV/bin:/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
+      --setenv LANG C.UTF-8 --setenv OLLAMA_API_BASE http://127.0.0.1:11434 --setenv LITELLM_LOCAL_MODEL_COST_MAP True
+      --chdir "$PWD")
+  bwrap "${A[@]}" -- /bin/bash -c '
+    python3 /opt/qwen-relay in --sock /run/qwen/ollama.sock --listen 127.0.0.1:11434 2>/dev/null &
+    for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && break; sleep 0.1; done
+    "$@"' bash "$@"
+}
+
 case "${1:-}" in
   server) start_server; exit ;;
   stop) stop_server; exit ;;
-  -h|--help) sed -n '2,15p' "$0"; exit ;;
+  -h|--help) sed -n '2,25p' "$0"; exit ;;
+  sandbox-test)
+    host=$(start_server)
+    run_sandboxed "$host" python3 -c '
+import os, socket, urllib.request
+def t(name, f):
+    try: f(); print(f"{name}: REACHABLE")
+    except Exception as e: print(f"{name}: blocked ({type(e).__name__})")
+t("your home (~/.ssh)", lambda: os.listdir("/home/wai/.ssh"))
+t("claude login", lambda: open("/home/wai/.claude/.credentials.json").read(1))
+t("internet 1.1.1.1:443", lambda: socket.create_connection(("1.1.1.1", 443), 3))
+t("ollama via relay", lambda: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=5).read())
+t("repo write", lambda: (open(".qwen-sandbox-probe", "w").write("x"), os.remove(".qwen-sandbox-probe")))
+gd = os.popen("git rev-parse --path-format=absolute --git-common-dir").read().strip()
+t("git hooks write", lambda: open(os.path.join(gd, "hooks", "qwen-probe"), "w"))
+t("git config write", lambda: open(os.path.join(gd, "config"), "a"))
+print("home sees:", sorted(os.listdir(os.environ["HOME"])))
+print("env:", sorted(os.environ))'
+    exit ;;
 esac
 
-command -v aider >/dev/null || die "aider not found"
+[ -x "$AIDER_VENV/bin/aider" ] || die "aider not found at $AIDER_VENV"
 host=$(start_server)
-# aider would otherwise pick its own (small) num_ctx and use ~/.aider.conf.yml's weak model,
-# which would load a second model into the GPUs.
-settings=$STATE/aider-model-settings.yml
-cat > "$settings" <<EOF
+# aider would otherwise pick its own small num_ctx, and ~/.aider.conf.yml's weak model
+# would load a second model onto the GPUs.
+cat > "$STATE/aider/qwen-model-settings.yml" <<EOF
 - name: ollama_chat/$MODEL
   edit_format: diff
   use_repo_map: true
   extra_params:
     num_ctx: $CTX
 EOF
-echo "qwen: $MODEL on http://$host (first reply is slow while the model loads)" >&2
-OLLAMA_API_BASE=http://$host exec aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
-  --model-settings-file "$settings" "$@"
+echo "qwen: $MODEL on http://$host, sandboxed (first reply is slow while the model loads)" >&2
+run_sandboxed "$host" aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
+  --model-settings-file /home/qwen/.aider/qwen-model-settings.yml --no-check-update --analytics-disable "$@"
