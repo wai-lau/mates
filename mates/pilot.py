@@ -302,7 +302,11 @@ def main():
     if a.cmd == "run-one":
         task = json.loads(pathlib.Path(a.task).read_text())
         ctx = json.loads((STATE_ROOT / "ctx.json").read_text())
-        print(json.dumps(run_one(task, num_ctx=ctx["num_ctx"]), indent=1))
+        rt = None
+        if task.get("runtime_script"):
+            import runtime
+            rt = runtime.ensure_runtime(task["repo"], task["base"], script=task["runtime_script"].encode())
+        print(json.dumps(run_one(task, num_ctx=ctx["num_ctx"], runtime=rt), indent=1))
 
 
 if __name__ == "__main__":

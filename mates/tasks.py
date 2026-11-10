@@ -126,3 +126,63 @@ def validate(repo, cand: dict, check: str, *, sandbox, tasks_root, script: str |
     if rc != 0:
         return False, "red on target: " + (out.strip().splitlines() or [""])[-1][:200], None
     return True, "ok", base
+
+
+BRIEF_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", ""]
+
+
+def write_brief(repo, cand: dict, cmd=BRIEF_CMD, prompts=pathlib.Path(__file__).parent / "prompts") -> dict:
+    test_diff = _git(repo, "diff", f"{cand['parent']}..{cand['commit']}", "--", *cand["test_files"])[:20000]
+    prompt = ((prompts / "brief-writer.md").read_text() + f"\n\nCommit message: {cand['msg']}\n"
+              f"Source files: {', '.join(cand['src_files'])}\n\nTest diff:\n{test_diff}\n")
+    r = subprocess.run([*cmd, prompt], capture_output=True, text=True, timeout=300, cwd="/tmp")
+    import json as _json
+    text = str(_json.loads(r.stdout).get("result", "")).strip()
+    text = text[text.find("{"): text.rfind("}") + 1]
+    b = _json.loads(text)
+    b["files"] = cand["src_files"]
+    return b
+
+
+def build(repos: list[str], out_dir: pathlib.Path, *, want=20, per_repo=10, sandbox, tasks_root, seed=20261110,
+          log=print) -> list[dict]:
+    import json as _json
+    import random
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pool = []
+    for r in repos:
+        cs = candidates(r)
+        random.Random(seed).shuffle(cs)
+        pool.append((r, cs))
+    kept, counts = [], {r: 0 for r in repos}
+    while len(kept) < want and any(cs for _, cs in pool):
+        for r, cs in pool:
+            if len(kept) >= want or not cs or counts[r] >= per_repo:
+                cs.clear() if counts[r] >= per_repo else None
+                continue
+            cand = cs.pop()
+            script = runtime_script_for(r)
+            check = check_for(cand["test_files"])
+            ok, why, base = validate(r, cand, check, sandbox=sandbox, tasks_root=tasks_root, script=script)
+            log(f"{pathlib.Path(r).name} {cand['commit'][:10]} {'KEEP' if ok else 'drop'}: {why}")
+            if not ok:
+                continue
+            tid = f"{pathlib.Path(r).name}-{cand['commit'][:10]}"
+            task = {"id": tid, "repo": str(r), "base": base, "target": cand["commit"], "check": check,
+                    "runtime_script": script, "brief": write_brief(r, cand), "msg": cand["msg"]}
+            (out_dir / f"{tid}.json").write_text(_json.dumps(task, indent=1))
+            kept.append(task)
+            counts[r] += 1
+    return kept
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("repos", nargs="+")
+    ap.add_argument("--want", type=int, default=20)
+    a = ap.parse_args()
+    here = pathlib.Path(__file__).resolve().parent
+    kept = build(a.repos, pathlib.Path.home() / ".claude/mates/pilot/tasks", want=a.want,
+                 sandbox=str(here / "sandbox.sh"), tasks_root="/srv/mates/tasks")
+    print(f"kept {len(kept)}")

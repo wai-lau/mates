@@ -49,3 +49,15 @@ def test_task_valid_requires_red_base_green_target(repo, tmp_path):
     assert "a - b" in git(repo, "show", f"{base}:src/calc.py") and "== 2" in git(repo, "show", f"{base}:tests/test_calc.py")
     ok, why, _ = tasks.validate(repo, c, "true", **kw)
     assert not ok and "green on base" in why
+
+def test_write_brief_uses_test_diff_not_source(repo, tmp_path):
+    c = tasks.candidates(repo, since="10 years ago")[0]
+    seen = tmp_path / "prompt.txt"
+    stub = tmp_path / "brief_stub.sh"
+    stub.write_text(f'#!/usr/bin/env bash\nprintf "%s" "${{@: -1}}" > {seen}\n'
+                    'echo \'{"result": "{\\"goal\\": \\"make add sum\\", \\"files\\": [\\"x\\"], \\"constraints\\": \\"none\\"}"}\'\n')
+    stub.chmod(0o755)
+    b = tasks.write_brief(repo, c, cmd=[str(stub)])
+    assert b == {"goal": "make add sum", "files": ["src/calc.py"], "constraints": "none"}
+    p = seen.read_text()
+    assert "== 2" in p and "a + b" not in p
