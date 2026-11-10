@@ -20,3 +20,5 @@ DISABLE_AUTOUPDATER=1
 # models. Name found in the 2.1.322 binary: "To enforce it, set
 # CLAUDE_CODE_AUTO_COMPACT_WINDOW=<tokens>". Verified by Task 4 Step 4.
 CLAUDE_CODE_AUTO_COMPACT_WINDOW=@NUM_CTX@
+# The window itself, for a model name Claude Code does not know (it assumes 200K otherwise).
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=@NUM_CTX@

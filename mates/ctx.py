@@ -18,24 +18,24 @@ import time
 import urllib.request
 
 TARGET, FLOOR = 65536, 32768
-CTXS, PARALLELS = (32768, 65536), (1, 2)  # 128K dropped: the pick caps at 64K, and at ~160 prompt tok/s it costs ~25 min
+CTXS, PARALLELS = (32768, 65536, 131072), (1, 2)
 PORT = 11435
 STATE = pathlib.Path.home() / ".claude" / "mates"
 
 
 def pick_ctx(rows: list[dict]) -> dict:
-    """Largest GPU-only context at one worker, capped at the 64K target.
-
-    Two workers only if both slots get >= 64K with nothing on CPU. Under the
-    32K floor: no context, use the fallback quant.
+    """Largest GPU-only context at one worker, no cap (Ollama: agents need >= 64K, and "use the maximum
+    context length for a model, and avoid offloading the model to CPU"). 32K-64K is usable but flagged.
+    Two workers only if both slots get >= 64K with nothing on CPU. Under 32K: fallback quant.
     """
     gpu_only = [r for r in rows if r["cpu_layers"] == 0]
     one = [r["ctx"] for r in gpu_only if r["parallel"] == 1 and r["ctx"] >= FLOOR]
     if not one:
-        return {"num_ctx": None, "parallel": 1, "fallback_quant": True}
-    num_ctx = min(max(one), TARGET)
+        return {"num_ctx": None, "parallel": 1, "fallback_quant": True, "below_agent_floor": True}
+    num_ctx = max(one)
     two = any(r["parallel"] == 2 and r["ctx"] >= TARGET for r in gpu_only)
-    return {"num_ctx": num_ctx, "parallel": 2 if two else 1, "fallback_quant": False}
+    return {"num_ctx": num_ctx, "parallel": 2 if two else 1, "fallback_quant": False,
+            "below_agent_floor": num_ctx < TARGET}
 
 
 def _api(path, body=None, timeout=1800):
@@ -47,7 +47,7 @@ def _api(path, body=None, timeout=1800):
 
 
 def _serve(parallel: int, log):
-    env = {**os.environ, "OLLAMA_HOST": f"127.0.0.1:{PORT}", "OLLAMA_MODELS": "/usr/share/ollama/.ollama/models",
+    env = {"OLLAMA_KV_CACHE_TYPE": "q8_0", "OLLAMA_SCHED_SPREAD": "1", **os.environ, "OLLAMA_HOST": f"127.0.0.1:{PORT}", "OLLAMA_MODELS": "/usr/share/ollama/.ollama/models",
            "OLLAMA_NOPRUNE": "1", "OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KEEP_ALIVE": "10m",
            "OLLAMA_NUM_PARALLEL": str(parallel), "OLLAMA_MAX_LOADED_MODELS": "1"}
     p = subprocess.Popen(["ollama", "serve"], env=env, stdout=log, stderr=subprocess.STDOUT)
