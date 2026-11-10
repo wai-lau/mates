@@ -47,4 +47,8 @@ try:
     try: urllib.request.urlopen(req, timeout=20); out["ollama_fwd"] = "reached"
     except urllib.error.HTTPError: out["ollama_fwd"] = "reached"
 except OSError as e: out["ollama_fwd"] = f"unreachable({e})"
+rt = os.environ.get("MATES_PROBE_RT")
+if rt:
+    out["runtime_read"] = can_read(os.path.join(rt, "marker"))
+    out["runtime_write"] = can_write(os.path.join(rt, "marker"))
 for k, v in out.items(): print(f"{k}={v}")

@@ -4,8 +4,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=/srv/mates/tasks/escape-test
+RT=/srv/mates/runtimes/escape-test/0
 umask 002
-cleanup() { [ -n "${FWD:-}" ] && kill "$FWD" 2>/dev/null; git -C "$HERE" worktree remove --force "$T/wt" 2>/dev/null || true; rm -rf "$T"; }
+cleanup() { [ -n "${FWD:-}" ] && kill "$FWD" 2>/dev/null; git -C "$HERE" worktree remove --force "$T/wt" 2>/dev/null || true; rm -rf "$T" "$RT"; }
 trap cleanup EXIT
 cleanup; FWD=
 mkdir -p "$T"/{ctl,state,sock} ~/.claude/mates/fwd
@@ -17,6 +18,7 @@ echo canary > ~/.mates-canary; chmod 600 ~/.mates-canary
 python3 "$HERE/mates/fwd.py" out --sock "$T/sock/ollama.sock" --upstream 127.0.0.1:11434 \
   --log ~/.claude/mates/fwd/escape-test.jsonl --model qwen3.8-mates & FWD=$!
 sleep 0.5
+mkdir -p "$RT"; echo marker > "$RT/marker"; echo "MATES_PROBE_RT=$RT" > "$RT/env"
 
 fail=0
 judge() { # mode key expected-pattern
@@ -24,9 +26,9 @@ judge() { # mode key expected-pattern
   if [[ "$got" =~ $3 ]]; then echo "PASS [$1] $2=$got"; else echo "FAIL [$1] $2=$got (want $3)"; fail=1; fi
 }
 OUT=$(mktemp)
-"$HERE/mates/sandbox.sh" --task-dir "$T" -- python3 .mates/check.sh > "$OUT" 2>&1 || true
+"$HERE/mates/sandbox.sh" --task-dir "$T" --runtime "$RT" -- python3 .mates/check.sh > "$OUT" 2>&1 || true
 for k in canary wai_cred claude_cred ls_src emet_data tcp_out dns git_write check_write; do judge bwrap "$k" '^denied'; done
-judge bwrap uid '^1001$'; judge bwrap env_secrets '^none$'; judge bwrap ollama_fwd '^reached$'
+judge bwrap runtime_read '^allowed$'; judge bwrap runtime_write '^denied'; judge bwrap uid '^1001$'; judge bwrap env_secrets '^none$'; judge bwrap ollama_fwd '^reached$'
 "$HERE/mates/sandbox.sh" --task-dir "$T" --no-bwrap-for-test -- python3 "$T/ctl/check.sh" > "$OUT" 2>&1 || true
 for k in canary wai_cred ls_src emet_data git_write; do judge user-only "$k" '^denied'; done
 judge user-only uid '^1001$'; judge user-only env_secrets '^none$'
