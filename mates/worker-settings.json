@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": ["Read", "Edit", "Write", "Glob", "Grep", "Bash(bash .mates/check.sh)"],
+    "deny": ["WebFetch", "WebSearch", "Bash(git push:*)", "Bash(curl:*)", "Bash(wget:*)",
+             "Edit(.mates/check.sh)", "Write(.mates/check.sh)"]
+  },
+  "hooks": {},
+  "enableAllProjectMcpServers": false
+}
