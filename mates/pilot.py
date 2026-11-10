@@ -27,6 +27,9 @@ PROMPTS = HERE / "prompts"
 MODEL = "qwen3.8-mates"
 TASKS_ROOT = pathlib.Path("/srv/mates/tasks")
 STATE_ROOT = pathlib.Path.home() / ".claude" / "mates"
+# Claude calls (lead review, fidelity) run from here: outside /home/wai, so no CLAUDE.md is discovered
+# from parent dirs (~/CLAUDE.md, ~/.claude/CLAUDE.md cost ~7.6K tokens per call, measured).
+NEUTRAL_CWD = pathlib.Path("/srv/mates/neutral")
 CLAUDE_BIN = "/srv/mates/bin/claude-2.1.322"
 # The lead review is one turn of a session that already exists, so the pilot runs it with a minimal
 # system prompt (the review instructions) and no tools/MCP: what is counted is the review's own cost.
@@ -172,7 +175,8 @@ def rerun(c: Ctx, attempt: int, commit: str) -> tuple[bool, str, str]:
 
 def _lead_call(c: Ctx, prompt: str):
     import claudejson
-    r = subprocess.run(c.lead_cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=str(c.state))
+    NEUTRAL_CWD.mkdir(exist_ok=True)
+    r = subprocess.run(c.lead_cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=str(NEUTRAL_CWD))
     d = claudejson.parse(r.stdout)
     return d["result"], d["tokens"], d["cache_read"]
 
@@ -457,7 +461,8 @@ def fidelity(cmd=FIDELITY_CMD) -> dict:
         acc = _git(t["repo"], "diff", f"{t['base']}..{r['commit']}")
         prompt = (f"Brief: {json.dumps(t['brief'])}\n\nReference change:\n{ref[:40000]}\n\n"
                   f"Accepted change:\n{acc[:40000]}\n")
-        res = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=str(PILOT))
+        NEUTRAL_CWD.mkdir(exist_ok=True)
+        res = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=str(NEUTRAL_CWD))
         ans = claudejson.parse(res.stdout)["result"]
         out[f"{r['arm']}:{r['task_id']}"] = ans.startswith("CORRECT")
         print(r["arm"], r["task_id"], ans[:200], flush=True)
