@@ -220,7 +220,8 @@ flowchart TD
 
 ### Isolation and safety
 
-- Worktrees live in a mates directory per repo, on a branch `mates/<task-id>`.
+- Worktrees are on a branch `mates/<task-id>` and live in a shared mates
+  directory outside `/home/wai` (see Threat model and sandbox for why).
   Workers start in their worktree.
 - Workers run with no Anthropic credentials: the login file is not visible
   inside the sandbox, `ANTHROPIC_API_KEY` is unset,
@@ -251,13 +252,40 @@ What must stay on the machine and out of a worker's reach:
 | Other repos | everything under `~/src` except the task's worktree |
 | The lead's history | `~/.claude` transcripts and memory |
 
-Every worker, every verifier, and every run of the check (the lead's rerun
-included) runs inside a sandbox with these properties. `bwrap` is the
-expected tool; the builder may pick another that gives the same guarantees.
+Wai's call, after the review: "move the qwens into a sandbox under the
+unfortunately named claude user". So there are two kernel layers. Every
+worker, every verifier, and every run of the check (the lead's rerun
+included) runs **as the Unix user `claude`**, and inside a sandbox on top of
+that. If either layer has a hole, the other still holds.
 
+Measured 2026-11-10 for this: `claude` is uid 1001, in group `emetcode`,
+and not in group `wai`. `/home/wai` is mode 750, so `claude` cannot enter it
+at all. `wai` may run any command as `claude` without a password
+(`sudo -u claude`). `bwrap` is not installed and `wai` has no root sudo for
+installing it; `unshare` is present.
+
+- **Unix user.** `mates` (running as `wai`) starts each worker with
+  `sudo -u claude`. File permissions alone then keep it out of everything
+  under `/home/wai`: secrets, the login file, the lead's history, every
+  repo, and emet `data/`. Consequences the builder must handle:
+  - Worktrees cannot sit under the repo. They go in a shared directory both
+    users can reach, set up so `claude` writes and `wai` reads and writes
+    (shared group, setgid, umask 002). The builder picks the path.
+  - The worker config and the check script are copied into that directory
+    by `mates`, owned by `wai` and not writable by `claude`. The worker
+    cannot change them even with no sandbox at all.
+  - The worktree's git metadata stays under `/home/wai`, so the worker has
+    no git. `mates` does every git step as `wai`.
+  - The pane runs the `sudo -u claude` command inside Wai's tmux, so Wai can
+    still type into it.
+- **Sandbox tool.** `bwrap` if Wai installs it (one `apt install` as root),
+  otherwise `unshare` with user, mount, and network namespaces. The builder
+  may pick another tool that gives the same guarantees below. The user
+  switch does not replace it: `claude` has its own home, which may hold the
+  login used by the walled emet sessions, and it has the network.
 - **Filesystem.** The worktree is the only writable path. System directories
-  and the worker config are read-only. The rest of the home directory is not
-  mounted at all. The repo's `.git` is not writable, so a worker cannot plant
+  and the worker config are read-only. No home directory is mounted, neither
+  `/home/wai` nor `/home/claude`; the sandbox gets an empty one. The repo's `.git` is not writable, so a worker cannot plant
   a hook or change config that would later run outside the sandbox; `mates`
   commits from outside.
 - **Network.** Its own network namespace. The one reachable endpoint is the
@@ -280,10 +308,12 @@ verdict calls for it, which is the same code it would have written itself.
 It does not read the worker's transcript.
 
 **emet.** The kernel wall there stops the restricted `claude` user. The lead
-runs as `wai`, who owns `data/`, so the wall does not cover a mates worker.
-The sandbox does: `data/` is not in the worktree and nothing else of the
-checkout is mounted. The worker config also carries emet's deny rules as a
-second layer, since a separate config directory would otherwise drop them.
+runs as `wai`, who owns `data/`, so a worker running as `wai` would walk
+straight past it. Running workers as `claude` puts them behind the same wall
+as the walled emet sessions, and the sandbox adds a second barrier: `data/`
+is not in the worktree and nothing else of the checkout is mounted. The
+worker config also carries emet's deny rules as a third layer, since a
+separate config directory would otherwise drop them.
 
 ## Audit log
 
@@ -394,7 +424,9 @@ to phone-shaped as possible. Qwen wins over TTS for the GPU. Claude decides
 the context and compaction settings, with slower good work preferred over
 parallel bad work. Daily retrospectives. Qwen's own tests and reviews are
 verified by a separate Qwen instance, never the one that wrote the change,
-and the verifier is not told the change came from Qwen.
+and the verifier is not told the change came from Qwen. Goals in order:
+PII security, then output fidelity, then cost-saving. Qwen workers run in a
+sandbox as the `claude` Unix user.
 
 ## Claude's calls (Wai can overturn)
 
@@ -414,9 +446,10 @@ and the verifier is not told the change came from Qwen.
   commands with pipes and `&&` are fine. The worker's allowlist gets the
   single rule `bash .mates/check.sh`. The worker must not be able to change
   what a pass means, so:
-  - **The script is out of the worker's reach.** `mates` stores it in
-    `~/.claude/mates/running/<task-id>/check.sh` and mounts it read-only at
-    `.mates/check.sh`. Its hash goes in the log.
+  - **The script is out of the worker's reach.** `mates` keeps the original
+    in `~/.claude/mates/running/<task-id>/check.sh`, which the worker's user
+    cannot read or write, and gives the worker a copy it cannot write,
+    mounted read-only at `.mates/check.sh`. Its hash goes in the log.
   - **It must fail first.** `mates spawn` runs the check on the untouched
     base and refuses to spawn if it passes, because a check that already
     passes proves nothing about the change. A task whose check is green on
@@ -483,10 +516,10 @@ and the verifier is not told the change came from Qwen.
   `~/bin/mates`. That follows the dotfiles rule: project tooling lives in its
   own repo and is symlinked in, the way `voice` points at hosaka. No change
   to `~/.claude/CLAUDE.md`, so plain `claude` stays as it is.
-- **emet.** No exclusion, and no reliance on the kernel wall: the lead runs as
-  `wai`, whom the wall does not stop. The sandbox keeps `data/` out of
-  reach (see Threat model and sandbox). An earlier draft of this spec said
-  the wall covered workers; that was wrong.
+- **emet.** No exclusion. Workers run as the `claude` user, which the kernel
+  wall stops, inside a sandbox that does not mount `data/` (see Threat model
+  and sandbox). An earlier draft said the wall covered workers while they
+  ran as `wai`; that was wrong, and it is why the user switch was added.
 
 ## Builder decides
 
@@ -505,12 +538,16 @@ and the verifier is not told the change came from Qwen.
 3. Run one headless Claude Code task against it (a real edit plus a test run)
    in a scratch repo. Confirm the tool calls work and how many tokens Claude
    Code's own prompt takes.
-4. **Sandbox test.** From inside the sandbox, a script tries each of these,
-   and every one must fail: read a canary file in the home directory, read
-   the Claude login file, list another repo, read emet `data/`, connect to
-   an outside host, resolve a hostname, write to the repo's `.git`, change
-   `.mates/check.sh`. It also prints the environment, which must hold no
-   token.
+4. **Sandbox test, run twice.** A script tries each of these, and every one
+   must fail: read a canary file in `/home/wai`, read the Claude login file
+   of either user, list another repo, read emet `data/`, connect to an
+   outside host, resolve a hostname, write to the repo's `.git`, change
+   `.mates/check.sh`. It also prints the user, which must be `claude`, and
+   the environment, which must hold no token. The first run is as `claude`
+   inside the sandbox. The second is as `claude` with the sandbox off, to
+   show what the user switch holds on its own; there the file and git
+   checks must still fail, and the network and `/home/claude` checks are
+   expected to succeed, which is the part only the sandbox covers.
 5. **Pilot: 20 real tasks.** Taken from this machine's git history, each with
    a check that fails before the change and passes after, run in shuffled
    order with a bare script (sandbox, worktree, worker, verifier, log; no
