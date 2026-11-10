@@ -120,7 +120,7 @@ def main():
     (STATE / "ctx-rows.json").write_text(json.dumps(rows, indent=1))
     choice = {**pick_ctx(rows), "model": a.model}
     (STATE / "ctx.json").write_text(json.dumps(choice, indent=1))
-    print("ctx | workers | on CPU | VRAM MiB (5070Ti, 1660) | gen tok/s | prompt tok/s")
+    print("ctx | workers | on CPU bytes | VRAM MiB (nvidia-smi order: 1660, 5070Ti) | gen tok/s | prompt tok/s")
     for r in rows:
         print(f"{r['ctx']:>6} | {r['parallel']} | {r.get('cpu_bytes', '?')} | {r['vram_mib']} | "
               f"{r['tok_s']} | {r.get('prompt_tok_s', '-')}")
