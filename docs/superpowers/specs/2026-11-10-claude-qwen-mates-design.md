@@ -261,8 +261,9 @@ that. If either layer has a hole, the other still holds.
 Measured 2026-11-10 for this: `claude` is uid 1001, in group `emetcode`,
 and not in group `wai`. `/home/wai` is mode 750, so `claude` cannot enter it
 at all. `wai` may run any command as `claude` without a password
-(`sudo -u claude`). `bwrap` is not installed and `wai` has no root sudo for
-installing it; `unshare` is present.
+(`sudo -u claude`). `bwrap` 0.9.0 is installed (Wai, 2026-11-10), and a
+sandbox with an empty `/home` and only a loopback interface starts under
+both `wai` and `claude`.
 
 - **Unix user.** `mates` (running as `wai`) starts each worker with
   `sudo -u claude`. File permissions alone then keep it out of everything
@@ -278,10 +279,11 @@ installing it; `unshare` is present.
     no git. `mates` does every git step as `wai`.
   - The pane runs the `sudo -u claude` command inside Wai's tmux, so Wai can
     still type into it.
-- **Sandbox tool.** `bwrap` if Wai installs it (one `apt install` as root),
-  otherwise `unshare` with user, mount, and network namespaces. The builder
-  may pick another tool that gives the same guarantees below. The user
-  switch does not replace it: `claude` has its own home, which may hold the
+- **Sandbox tool.** `bwrap`, and nothing else. It starts from an empty view
+  and shows the worker only what is listed, so a forgotten line hides too
+  much and breaks visibly. A hand-built `unshare` script starts from the
+  full view and fails the other way, so it is not a fallback. The user
+  switch does not replace the sandbox: `claude` has its own home, which may hold the
   login used by the walled emet sessions, and it has the network.
 - **Filesystem.** The worktree is the only writable path. System directories
   and the worker config are read-only. No home directory is mounted, neither
