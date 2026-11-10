@@ -38,7 +38,7 @@ case $TASK in /srv/mates/tasks/?*) ;; *) die "task dir must be under /srv/mates/
 [ -d "$TASK/wt" ] || die "no worktree at $TASK/wt"
 for d in ctl state sock; do [ -d "$TASK/$d" ] || die "missing $TASK/$d"; done
 
-BASE_ENV=(PATH=/usr/bin:/bin HOME=/home/mates TERM="${TERM:-xterm-256color}" LANG=C.UTF-8 USER=claude)
+BASE_ENV=(PATH=/usr/bin:/bin HOME=/home/mates TERM="${TERM:-xterm-256color}" LANG=C.UTF-8 USER=claude PYTHONDONTWRITEBYTECODE=1)
 RT_ENV=()
 if [ -n "$RUNTIME" ]; then
   RUNTIME=$(realpath -e "$RUNTIME") || die "no runtime dir"
@@ -91,4 +91,4 @@ A+=(--chdir /work)
 exec sudo -n -u claude /usr/bin/bwrap "${A[@]}" -- /bin/bash -c '
   python3 /srv/mates/bin/fwd.py in --sock /run/mates/ollama.sock --listen 127.0.0.1:11434 &
   for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && break; sleep 0.1; done
-  "$@"; rc=$?; kill %1 2>/dev/null; exit $rc' bash "$@"
+  umask 002; "$@"; rc=$?; kill %1 2>/dev/null; exit $rc' bash "$@"
