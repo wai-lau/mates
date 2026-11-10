@@ -74,7 +74,8 @@ it first: "Threat model and sandbox", "Settled after the builder review",
 
 ## Review Focus
 
-1. **Check needs a runtime missing in the sandbox.** For example, a repo
+1. **Check needs a runtime missing in the sandbox, even after Task 3b's
+   runtime and injections.** For example, a repo
    `.venv`, `node_modules`, or a tool under `/home/wai/.local`. Expected: the
    red-on-base run reports `runtime-missing`, distinct from "check failed",
    and the task is dropped from the pilot, not run. Test in Task 7
@@ -301,6 +302,65 @@ def test_below_32k_means_fallback_quant():
   line PASS, the no-bwrap file and git lines PASS, and exit 0. Save the
   output to `~/.claude/mates/pilot/escape.txt` as PII-bar evidence.
 - [ ] **Step 6: Commit** `mates/sandbox.sh tests/sandbox_escape.sh` with "feat(mates): bwrap sandbox as claude user + escape test".
+
+### Task 3b: Runtimes, from the repo or injected at launch
+
+**Files:**
+- Create: `mates/runtime.py`
+- Modify: `mates/sandbox.sh`
+- Test: `tests/test_runtime.py`
+
+**Interfaces:**
+- Consumes: `sandbox.sh` (Task 3).
+- Produces:
+  - `runtime_hash(repo, base) -> str|None`. The sha256 of
+    `.mates/runtime.sh` at `base` plus every lockfile it names on its
+    `# lockfiles:` line, read with `git show base:<path>`. Returns `None`
+    if the repo has no runtime script.
+  - `ensure_runtime(repo, base) -> pathlib.Path|None` builds into
+    `/srv/mates/runtimes/<repo-name>/<hash>/` unless that already exists
+    (atomic: build into `.tmp-<pid>`, then rename). It runs the script as
+    wai with `MATES_RUNTIME=<dir>`, and stores its env additions from
+    `<dir>/env` (`KEY=VALUE` lines).
+  - `check_inject(path) -> None` raises `ValueError` on the spec's refuse
+    list, or when a file's text matches
+    `(?i)(api[_-]?key|secret|token|passwd|password)\s*[:=]\s*\S{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bsk-[A-Za-z0-9]{20,}|\bgh[pousr]_[A-Za-z0-9]{30,}`.
+  - `stage_injects(task_dir, injects: list[str]) -> list[dict]` copies each
+    into `ctl/inject/<n>`. It returns `[{"src","dest","sha256"}]` for the
+    log.
+  - `sandbox.sh` gains `--runtime <dir>` (read-only bind at the same path,
+    plus env from `<dir>/env`) and repeated `--inject <ctl-path>:<dest>`
+    (read-only bind).
+
+- [ ] **Step 1: Write failing tests:**
+  - `test_no_runtime_script_is_none`
+  - `test_hash_changes_with_lockfile`: a temp repo commits
+    `.mates/runtime.sh` with `# lockfiles: uv.lock`; changing `uv.lock` in
+    a new commit changes the hash.
+  - `test_hash_ignores_worker_tree`: an uncommitted edit to `runtime.sh`
+    leaves the hash for `base` unchanged.
+  - `test_ensure_runtime_builds_once`: the script appends to a counter file;
+    two calls leave one line.
+  - `test_runtime_env_loaded`
+  - `test_inject_refuses_secret_paths`: `~/.ssh/id_ed25519`, `x/.env`, and
+    `a.pem` all raise.
+  - `test_inject_refuses_token_content`: a file holding
+    `GH_TOKEN=ghp_` plus 36 characters raises.
+  - `test_stage_injects_records_hash`
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement `runtime.py` and the `sandbox.sh` flags.**
+- [ ] **Step 4: Run, expect PASS.** Then extend `tests/sandbox_escape.sh`:
+  inside the sandbox, the runtime dir is readable and not writable.
+- [ ] **Step 5: Commit** "feat(mates): repo runtimes and launch injections".
+
+Task 7's `prepare` calls `ensure_runtime` and `stage_injects`. It passes
+`--runtime`/`--inject` to every sandbox run (red-on-base, worker, verifier,
+rerun), and logs the injections. Task 8's candidate filter tries the
+runtime first: a candidate whose repo has no `.mates/runtime.sh` gets a
+generated one when its lockfile is `uv.lock`, `package-lock.json`, or
+`requirements*.txt`. The lead commits that script to the repo only with
+Wai's yes, so for the pilot it lives in `~/.claude/mates/pilot/runtimes/`
+and is injected as the repo script would be.
 
 ### Task 4: Worker harness probe (spec First step 3) and gate
 

@@ -5,3 +5,4 @@
 
 # local Claude worktrees
 /.claude/
+__pycache__/

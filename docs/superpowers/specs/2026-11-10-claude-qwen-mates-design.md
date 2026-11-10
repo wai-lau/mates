@@ -297,6 +297,41 @@ both `wai` and `claude`.
 - **Environment.** Started from an empty environment plus a short allowlist
   (`PATH`, `HOME` pointing at the sandbox home, `TERM`, the Ollama settings).
   No tokens, and `MATES_LEAD` is not passed on.
+- **Runtimes (Wai, 2026-11-10: "ensure that any necessary files are either
+  in the worktree repo or (can be) injected by lauching claude").** The
+  sandbox hides `/home/wai`, which takes with it a repo's `.venv`,
+  `node_modules`, and tools under `~/.local`. Nothing a check needs may
+  depend on that folder. A check gets what it needs through one of two
+  channels, and through no other:
+  1. **From the repo.** A tracked `.mates/runtime.sh` at the base commit.
+     `mates` runs it as `wai`, outside the sandbox, with network, and
+     points it at a runtime directory it should fill. Example:
+     `UV_PROJECT_ENVIRONMENT=$MATES_RUNTIME/venv uv sync --frozen`, with uv's
+     Python and cache also under `$MATES_RUNTIME`.
+     - The script comes from the base commit, never from the worker's tree,
+       so a worker cannot change it.
+     - The result is cached in `/srv/mates/runtimes/<repo>/<hash>/`, where
+       the hash covers the script plus the lockfiles it names. It is built
+       once and reused by every later task until the lockfiles change.
+     - It is mounted read-only in the sandbox, at the same absolute path it
+       was built at, so paths baked into a venv still resolve. The script's
+       `PATH` and env additions come with it.
+  2. **Injected at launch.** `mates spawn --inject <path>[:<dest>]` (and a
+     default list in the lead's launch config). `mates` copies the path, as
+     `wai`, into the task's read-only `ctl/inject/` and mounts it at
+     `<dest>`.
+     - **Refused** for anything under `~/.ssh`, `~/.gnupg`, `~/.secrets`,
+       `~/.claude`, `~/.config/gh`, any `.credentials*`, `.env*`, `*.pem`,
+       or `*.key`, and anything holding a token the guard's secret scan
+       finds.
+     - Every injection is logged with its path and hash.
+
+  The runtime is built outside the sandbox, and is therefore trusted code.
+  That is why it may only come from the committed repo or from the lead's
+  launch, never from the worker. If a check still finds a tool missing,
+  red-on-base reports `runtime-missing` with the command that failed, so
+  the lead can add the runtime script or an injection before spawning
+  again.
 - **Version.** The worker's Claude Code is pinned to the tested version with
   auto-update off. A new version is re-tested before workers use it.
 - **No fallback.** If the sandbox cannot start, `mates spawn` fails. It never
