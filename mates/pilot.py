@@ -266,9 +266,19 @@ def run_one(task: dict, *, claude_bin=CLAUDE_BIN, lead_cmd=LEAD_CMD, sandbox=str
         finally:
             _stop(fwd)
     finally:
-        for td in reversed(c.dirs):
-            _git(c.repo, "worktree", "remove", "--force", str(td / "wt"), check=False)
-            shutil.rmtree(td, ignore_errors=True)
+        _cleanup(c)
+
+
+def _cleanup(c: Ctx):
+    """Keep each sandbox's in-namespace socket samples, then drop the worktrees."""
+    (c.state / "net").mkdir(parents=True, exist_ok=True)
+    for td in reversed(c.dirs):
+        nl = td / "sock" / "net.log"
+        if nl.exists():
+            with open(c.state / "net" / f"{c.id}.log", "a") as f:
+                f.write(nl.read_text())
+        _git(c.repo, "worktree", "remove", "--force", str(td / "wt"), check=False)
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def _finish(c: Ctx, rec: dict) -> dict:
@@ -329,9 +339,7 @@ def run_solo(task: dict, *, claude_cmd=SOLO_CMD, sandbox=str(HERE / "sandbox.sh"
         rec.update(outcome="accepted" if ok else "failed", tree=tree, detail=None if ok else tail[-300:])
         return _finish(c, rec)
     finally:
-        for d in reversed(c.dirs):
-            _git(c.repo, "worktree", "remove", "--force", str(d / "wt"), check=False)
-            shutil.rmtree(d, ignore_errors=True)
+        _cleanup(c)
 
 
 def score(records: list[dict], fidelity: dict[str, bool], escape_ok: bool, outbound: int) -> dict:
@@ -347,12 +355,136 @@ def score(records: list[dict], fidelity: dict[str, bool], escape_ok: bool, outbo
             "cost": ratio <= 0.5, "mates_tokens_per_accept": m, "solo_tokens_per_accept": s, "ratio": ratio}
 
 
+def plan_order(task_ids: list[str], seed: int) -> list[tuple[str, tuple[str, str]]]:
+    """Shuffled task order (fixed seed, logged), alternating which arm runs first."""
+    import random
+    ids = list(task_ids)
+    random.Random(seed).shuffle(ids)
+    return [(t, ("mates", "solo") if i % 2 == 0 else ("solo", "mates")) for i, t in enumerate(ids)]
+
+
+def count_outbound(net_log) -> int:
+    """Lines of `ss -tn` output (sampled for uid 1001) whose peer is not loopback."""
+    n = 0
+    for line in pathlib.Path(net_log).read_text().splitlines():
+        addrs = [x for x in line.split() if ":" in x and x.rsplit(":", 1)[-1].isdigit()]
+        if len(addrs) < 2:
+            continue
+        peer = addrs[1]
+        if not (peer.startswith("127.") or peer.startswith("[::1]") or peer.startswith("::1")):
+            n += 1
+    return n
+
+
+def render_report(s: dict, arms: dict, extra: str = "") -> str:
+    ok = lambda b: "PASS" if b else "FAIL"
+    rows = [("PII security", "sandbox escape test passes; zero outbound connections", "see escape.txt / net.log", s["pii"]),
+            ("Output fidelity", "zero false passes among accepted changes", "fidelity reads", s["fidelity"]),
+            ("Cost-saving", "Claude tokens per accepted change <= 50% of solo",
+             f"{s['mates_tokens_per_accept']:.0f} vs {s['solo_tokens_per_accept']:.0f} ({s['ratio']:.0%})", s["cost"])]
+    md = "# Mates pilot report\n\n| Bar | Pass rule | Measured | Result |\n|---|---|---|---|\n"
+    md += "".join(f"| {a} | {b} | {c} | {ok(d)} |\n" for a, b, c, d in rows)
+    md += "\n| Arm | Accepted | Escalated | Failed | Worker wall time (s) |\n|---|---|---|---|---|\n"
+    md += "".join(f"| {k} | {v['accepted']} | {v['escalated']} | {v['failed']} | {v['wall_s']:.0f} |\n"
+                  for k, v in arms.items())
+    return md + ("\n" + extra + "\n" if extra else "")
+
+
+PILOT = STATE_ROOT / "pilot"
+FIDELITY_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", "",
+                "--strict-mcp-config", "--setting-sources", "project", "--system-prompt-file",
+                str(PROMPTS / "fidelity.md")]
+
+
+def _private_ollama(ctx: dict):
+    env = {**os.environ, "OLLAMA_HOST": "127.0.0.1:11435", "OLLAMA_MODELS": "/usr/share/ollama/.ollama/models",
+           "OLLAMA_NOPRUNE": "1", "OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KEEP_ALIVE": "30m",
+           "OLLAMA_NUM_PARALLEL": str(ctx.get("parallel", 1)), "OLLAMA_MAX_LOADED_MODELS": "1",
+           "OLLAMA_KV_CACHE_TYPE": ctx.get("kv_cache_type", "q8_0")}
+    log = open(STATE_ROOT / "pilot-ollama.log", "a")
+    return subprocess.Popen(["ollama", "serve"], env=env, stdout=log, stderr=subprocess.STDOUT)
+
+
+def run_all(seed: int = 20261110):
+    import runtime as rtmod
+    ctx = json.loads((STATE_ROOT / "ctx.json").read_text())
+    tasks = {json.loads(f.read_text())["id"]: json.loads(f.read_text()) for f in sorted((PILOT / "tasks").glob("*.json"))}
+    order = plan_order(list(tasks), seed)
+    (PILOT / "order.json").write_text(json.dumps({"seed": seed, "order": order}, indent=1))
+    srv = _private_ollama(ctx)
+    t0 = time.time()
+    try:
+        for i, (tid, arms) in enumerate(order, 1):
+            task = tasks[tid]
+            rt = rtmod.ensure_runtime(task["repo"], task["base"], script=task["runtime_script"].encode()) \
+                if task.get("runtime_script") else None
+            for arm in arms:
+                rec = run_one(task, num_ctx=ctx["num_ctx"], runtime=rt) if arm == "mates" else run_solo(task, runtime=rt)
+                with open(PILOT / "results.jsonl", "a") as f:
+                    f.write(json.dumps(rec) + "\n")
+                print(f"[{i}/{len(order)}] {tid} {arm}: {rec['outcome']} lead_tokens={rec.get('lead_tokens')}", flush=True)
+            if i == 2:
+                per = (time.time() - t0) / 2
+                print(f"ETA: {per * (len(order) - 2) / 60:.0f} min more ({per / 60:.1f} min per task)", flush=True)
+    finally:
+        _stop(srv)
+        with open(PILOT / "net.log", "w") as f:  # every sandbox's own-namespace samples
+            for nl in sorted((STATE_ROOT / "net").glob("*.log")):
+                f.write(nl.read_text())
+
+
+def fidelity(cmd=FIDELITY_CMD) -> dict:
+    import claudejson
+    tasks = {json.loads(f.read_text())["id"]: json.loads(f.read_text()) for f in (PILOT / "tasks").glob("*.json")}
+    out = {}
+    for line in (PILOT / "results.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        if r["outcome"] != "accepted":
+            continue
+        t = tasks[r["task_id"]]
+        ref = _git(t["repo"], "diff", f"{t['base']}..{t['target']}")
+        acc = _git(t["repo"], "diff", f"{t['base']}..{r['commit']}")
+        prompt = (f"Brief: {json.dumps(t['brief'])}\n\nReference change:\n{ref[:40000]}\n\n"
+                  f"Accepted change:\n{acc[:40000]}\n")
+        res = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=str(PILOT))
+        ans = claudejson.parse(res.stdout)["result"]
+        out[f"{r['arm']}:{r['task_id']}"] = ans.startswith("CORRECT")
+        print(r["arm"], r["task_id"], ans[:200], flush=True)
+    (PILOT / "fidelity.json").write_text(json.dumps(out, indent=1))
+    return out
+
+
+def report() -> str:
+    recs = [json.loads(l) for l in (PILOT / "results.jsonl").read_text().splitlines()]
+    fid = json.loads((PILOT / "fidelity.json").read_text())
+    escape_ok = "FAIL" not in (PILOT / "escape.txt").read_text()
+    s = score(recs, fid, escape_ok, count_outbound(PILOT / "net.log"))
+    arms = {}
+    for arm in ("mates", "solo"):
+        rs = [r for r in recs if r.get("arm") == arm]
+        arms[arm] = {k: sum(1 for r in rs if r["outcome"] == k) for k in ("accepted", "escalated", "failed")}
+        arms[arm]["wall_s"] = sum(r.get("worker_wall_s", 0) for r in rs)
+    extra = "Context pick: " + (STATE_ROOT / "ctx.json").read_text()
+    md = render_report(s, arms, extra)
+    (PILOT / "report.md").write_text(md)
+    return md
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     o = sub.add_parser("run-one")
     o.add_argument("--task", required=True)
+    sub.add_parser("run-all")
+    sub.add_parser("fidelity")
+    sub.add_parser("report")
     a = ap.parse_args()
+    if a.cmd == "run-all":
+        return run_all()
+    if a.cmd == "fidelity":
+        return fidelity()
+    if a.cmd == "report":
+        return print(report())
     if a.cmd == "run-one":
         task = json.loads(pathlib.Path(a.task).read_text())
         ctx = json.loads((STATE_ROOT / "ctx.json").read_text())
