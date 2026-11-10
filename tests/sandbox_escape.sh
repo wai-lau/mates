@@ -19,12 +19,12 @@ echo canary > ~/.mates-canary; chmod 600 ~/.mates-canary
 python3 -c 'import http.server as h
 class H(h.BaseHTTPRequestHandler):
     def do_POST(s):
-        s.rfile.read(int(s.headers["Content-Length"])); b=b"{\"model\":\"qwen3.8-mates\"}"
+        s.rfile.read(int(s.headers["Content-Length"])); b=b"{\"model\":\"mates-qwen\"}"
         s.send_response(200); s.send_header("Content-Length",str(len(b))); s.end_headers(); s.wfile.write(b)
     def log_message(s,*a): pass
 h.HTTPServer(("127.0.0.1",11499),H).serve_forever()' & UP=$!
 python3 "$HERE/mates/fwd.py" out --sock "$T/sock/ollama.sock" --upstream 127.0.0.1:11499 \
-  --log ~/.claude/mates/fwd/escape-test.jsonl --model qwen3.8-mates & FWD=$!
+  --log ~/.claude/mates/fwd/escape-test.jsonl --model mates-qwen & FWD=$!
 sleep 0.5
 mkdir -p "$RT"; echo marker > "$RT/marker"; echo "MATES_PROBE_RT=$RT" > "$RT/env"
 

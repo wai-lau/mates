@@ -4,7 +4,7 @@ import logrec
 def rec(**kw):
     r = dict(repo="r", task_id="t1", summary="s", route="qwen", reason="checkable", check="bash .mates/check.sh",
              check_sha="abc", red_on_base=True, flags=[], attempts=1, outcome="accepted",
-             answered_by=["qwen3.8-mates"], worker_wall_s=10.0, worker_tokens=100, verdict={"pass": True, "findings": 0},
+             answered_by=["mates-qwen"], worker_wall_s=10.0, worker_tokens=100, verdict={"pass": True, "findings": 0},
              lead_tokens=50)
     r.update(kw); return r
 
