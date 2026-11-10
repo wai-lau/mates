@@ -15,7 +15,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("STUB_LEAD_COUNTER", str(tmp_path / "lead.count"))
     fwdlog = tmp_path / "fwd.jsonl"
     def fake_fwd(sock, log, model):
-        pathlib.Path(log).write_text(json.dumps({"response_model": os.environ.get("STUB_MODEL", "mates-qwen"),
+        pathlib.Path(log).write_text(json.dumps({"response_model": os.environ.get("STUB_MODEL", "mates"),
                                                  "input_tokens": 1000, "output_tokens": 200, "status": 200}) + "\n")
         return None
     cfg = dict(claude_bin=str(STUBS / "claude_stub.py"), lead_cmd=[str(STUBS / "lead_stub.py")],
@@ -30,7 +30,7 @@ def last_log(tmp): return json.loads((tmp / "state/log.jsonl").read_text().split
 def test_accept_logs_record(env):
     task, cfg, tmp = env
     rec = pilot.run_one(task, **cfg)
-    assert rec["outcome"] == "accepted" and rec["attempts"] == 1 and rec["answered_by"] == ["mates-qwen"]
+    assert rec["outcome"] == "accepted" and rec["attempts"] == 1 and rec["answered_by"] == ["mates"]
     assert rec["red_on_base"] is True and rec["flags"] == [] and rec["lead_tokens"] == 115 and rec["lead_cache_read"] == 50
     assert last_log(tmp)["task_id"] == "t1"
 

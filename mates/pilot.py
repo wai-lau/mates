@@ -24,7 +24,7 @@ import logrec
 
 HERE = pathlib.Path(__file__).resolve().parent
 PROMPTS = HERE / "prompts"
-MODEL = "mates-qwen"
+MODEL = "mates"
 TASKS_ROOT = pathlib.Path("/srv/mates/tasks")
 STATE_ROOT = pathlib.Path.home() / ".claude" / "mates"
 # Claude calls (lead review, fidelity) run from here: outside /home/wai, so no CLAUDE.md is discovered
