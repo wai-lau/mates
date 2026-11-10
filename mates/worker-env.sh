@@ -22,3 +22,8 @@ DISABLE_AUTOUPDATER=1
 CLAUDE_CODE_AUTO_COMPACT_WINDOW=@NUM_CTX@
 # The window itself, for a model name Claude Code does not know (it assumes 200K otherwise).
 CLAUDE_CODE_MAX_CONTEXT_TOKENS=@NUM_CTX@
+# Qwen's default reasoning is very long (one chunk-count step: ~9.5K thinking tokens at ~20 tok/s).
+# Soft cap; Ollama may not enforce budgets (thinking:disabled is honoured, budget not verified).
+MAX_THINKING_TOKENS=8192
+# Claude Code reserves room for output when deciding to compact: measured compaction at ~36.5K of 64K.
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=16384
