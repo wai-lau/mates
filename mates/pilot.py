@@ -31,7 +31,7 @@ CLAUDE_BIN = "/srv/mates/bin/claude-2.1.322"
 # system prompt (the review instructions) and no tools/MCP: what is counted is the review's own cost.
 LEAD_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", "",
             "--strict-mcp-config", "--setting-sources", "project", "--system-prompt-file", str(PROMPTS / "lead-review.md")]
-MISSING = re.compile(r"command not found|No such file|ModuleNotFoundError|cannot execute")
+MISSING = re.compile(r"command not found|No module named|cannot execute")
 MAX_ATTEMPTS = 2
 
 
@@ -82,6 +82,8 @@ def make_task_dir(c: Ctx, name: str, commit: str, check_text: str, extra: dict |
         shutil.rmtree(td, ignore_errors=True)
     for d in ("ctl", "state", "sock"):
         (td / d).mkdir(parents=True)
+    for d in ("state", "sock"):  # the worker (user claude, same group) writes here
+        (td / d).chmod(0o2770)
     _git(c.repo, "worktree", "add", "--detach", str(td / "wt"), commit)
     (td / "wt" / ".mates").mkdir(exist_ok=True)
     files = {"check.sh": check_text, "settings.json": (HERE / "worker-settings.json").read_text(),

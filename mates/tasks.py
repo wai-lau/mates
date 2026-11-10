@@ -87,6 +87,8 @@ def _run_check(repo, commit, check, sandbox, td, rt):
         shutil.rmtree(td, ignore_errors=True)
     for d in ("ctl", "state", "sock"):
         (td / d).mkdir(parents=True)
+    for d in ("state", "sock"):
+        (td / d).chmod(0o2770)
     _git(repo, "worktree", "add", "--detach", str(td / "wt"), commit)
     (td / "wt" / ".mates").mkdir(exist_ok=True)
     (td / "ctl" / "check.sh").write_text("#!/usr/bin/env bash\n" + check + "\n")

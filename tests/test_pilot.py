@@ -117,3 +117,19 @@ def test_solo_failed_check_not_accepted(env, monkeypatch):
     rec = pilot.run_solo(task, claude_cmd=[str(STUBS / "solo_stub.py")], sandbox=cfg["sandbox"],
                          tasks_root=cfg["tasks_root"], state_root=cfg["state_root"])
     assert rec["outcome"] == "failed"
+
+def test_red_on_base_ignores_unrelated_no_such_file(env):
+    task, cfg, tmp = env
+    task["check"] = "echo 'FileNotFoundError: [Errno 2] No such file or directory' >&2; exit 1"
+    rec = pilot.run_one(task, **cfg)
+    assert rec["red_on_base"] is True and not rec.get("detail", "").startswith("runtime-missing")
+
+def test_task_dirs_group_writable(env):
+    task, cfg, tmp = env
+    c = pilot.Ctx(task, cfg["claude_bin"], cfg["lead_cmd"], cfg["sandbox"], cfg["tasks_root"], cfg["state_root"],
+                  cfg["start_fwd"], 65536, 60)
+    import os
+    os.umask(0o022)
+    td = pilot.make_task_dir(c, "perm", task["base"], "true\n")
+    assert all((td / d).stat().st_mode & 0o020 for d in ("sock", "state"))
+    pilot._cleanup(c)

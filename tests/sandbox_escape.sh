@@ -6,16 +6,24 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 T=/srv/mates/tasks/escape-test
 RT=/srv/mates/runtimes/escape-test/0
 umask 002
-cleanup() { [ -n "${FWD:-}" ] && kill "$FWD" 2>/dev/null; git -C "$HERE" worktree remove --force "$T/wt" 2>/dev/null || true; rm -rf "$T" "$RT"; }
+cleanup() { [ -n "${UP:-}" ] && kill "$UP" 2>/dev/null; [ -n "${FWD:-}" ] && kill "$FWD" 2>/dev/null; git -C "$HERE" worktree remove --force "$T/wt" 2>/dev/null || true; rm -rf "$T" "$RT"; }
 trap cleanup EXIT
-cleanup; FWD=
-mkdir -p "$T"/{ctl,state,sock} ~/.claude/mates/fwd
+cleanup; FWD= UP=
+mkdir -p "$T"/{ctl,state,sock} ~/.claude/mates/fwd; chmod 2770 "$T/state" "$T/sock"
 git -C "$HERE" worktree add -q --detach "$T/wt" HEAD
 mkdir -p "$T/wt/.mates"
 install -m 644 "$HERE/tests/sandbox_probe.py" "$T/ctl/check.sh"
 echo '{}' > "$T/ctl/settings.json"; echo "probe" > "$T/ctl/CLAUDE.md"; chmod 644 "$T/ctl/"*
 echo canary > ~/.mates-canary; chmod 600 ~/.mates-canary
-python3 "$HERE/mates/fwd.py" out --sock "$T/sock/ollama.sock" --upstream 127.0.0.1:11434 \
+# Dummy upstream: the test checks the route through the forwarder, not a model (a real Ollama would load one).
+python3 -c 'import http.server as h
+class H(h.BaseHTTPRequestHandler):
+    def do_POST(s):
+        s.rfile.read(int(s.headers["Content-Length"])); b=b"{\"model\":\"qwen3.8-mates\"}"
+        s.send_response(200); s.send_header("Content-Length",str(len(b))); s.end_headers(); s.wfile.write(b)
+    def log_message(s,*a): pass
+h.HTTPServer(("127.0.0.1",11499),H).serve_forever()' & UP=$!
+python3 "$HERE/mates/fwd.py" out --sock "$T/sock/ollama.sock" --upstream 127.0.0.1:11499 \
   --log ~/.claude/mates/fwd/escape-test.jsonl --model qwen3.8-mates & FWD=$!
 sleep 0.5
 mkdir -p "$RT"; echo marker > "$RT/marker"; echo "MATES_PROBE_RT=$RT" > "$RT/env"

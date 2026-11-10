@@ -89,7 +89,7 @@ A+=(--chdir /work)
 
 # Inside: start the Ollama forwarder (the only route out), then the command.
 exec sudo -n -u claude /usr/bin/bwrap "${A[@]}" -- /bin/bash -c '
-  python3 /srv/mates/bin/fwd.py in --sock /run/mates/ollama.sock --listen 127.0.0.1:11434 &
+  python3 /srv/mates/bin/fwd.py in --sock /run/mates/ollama.sock --listen 127.0.0.1:11434 2>>/run/mates/fwd-in.log &
   # Audit: sample this namespace'"'"'s TCP sockets every 5 s (pilot PII bar: zero non-loopback peers).
   (while :; do ss -tnH >> /run/mates/net.log 2>/dev/null; sleep 5; done) &
   for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && break; sleep 0.1; done
