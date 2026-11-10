@@ -167,6 +167,10 @@ cat > "$STATE/aider/qwen-model-settings.yml" <<EOF
 - name: ollama_chat/$MODEL
   edit_format: diff
   use_repo_map: true
+  # aider's default for unknown models ("user") appends its SEARCH/REPLACE rules to YOUR
+  # last message, so the model thinks you pasted them. Put them in the system prompt.
+  reminder: sys
+  examples_as_sys_msg: true
   extra_params:
     num_ctx: $CTX
 EOF
