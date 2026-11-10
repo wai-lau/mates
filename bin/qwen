@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# qwen: chat-to-code with local Qwen through aider, on a private Ollama server.
+#
+#   qwen [aider args...]   start (or reuse) the Qwen server, then run aider on it
+#   qwen server            start (or reuse) the server and print its URL
+#   qwen stop              stop the server and give the GPU back to hosaka TTS
+#
+# The server's port is never fixed: an already-running private Ollama is found
+# from its own environment (/proc/<pid>/environ, OLLAMA_HOST), and a new one is
+# started on a free port picked at launch. Qwen needs both GPUs, so starting it
+# stops hosaka TTS (Wai: "Qwen wins vs TTS").
+#
+# env: QWEN_MODEL (default qwen3.8-mates), QWEN_CTX (default 65536)
+set -euo pipefail
+
+MODEL=${QWEN_MODEL:-qwen3.8-mates}
+CTX=${QWEN_CTX:-65536}
+STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
+mkdir -p "$STATE"
+
+die() { echo "qwen: $*" >&2; exit 1; }
+
+# A private `ollama serve` of ours: OLLAMA_HOST set and not the system default port.
+find_server() {
+  local pid host
+  for pid in $(pgrep -u "$(id -u)" -x ollama 2>/dev/null); do
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -qx serve || continue
+    host=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^OLLAMA_HOST=//p')
+    [ -n "$host" ] || continue
+    host=${host#http://}
+    curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { echo "$host"; return 0; }
+  done
+  return 1
+}
+
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+
+start_server() {
+  local host
+  if host=$(find_server); then echo "$host"; return; fi
+  systemctl --user stop hosaka-server 2>/dev/null && echo "qwen: stopped hosaka TTS (GPU goes to Qwen; 'qwen stop' gives it back)" >&2 || true
+  host=127.0.0.1:$(free_port)
+  OLLAMA_HOST=$host OLLAMA_MODELS=/usr/share/ollama/.ollama/models OLLAMA_NOPRUNE=1 \
+  OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_SCHED_SPREAD=1 \
+  OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=60m \
+    setsid nohup ollama serve >> "$STATE/serve.log" 2>&1 < /dev/null &
+  for _ in $(seq 60); do
+    curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { echo "$host"; return; }
+    sleep 0.5
+  done
+  die "server did not start (log: $STATE/serve.log)"
+}
+
+stop_server() {
+  local pid
+  for pid in $(pgrep -u "$(id -u)" -x ollama 2>/dev/null); do
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^OLLAMA_HOST=' && kill "$pid" && echo "qwen: stopped server pid $pid"
+  done
+  systemctl --user start hosaka-server 2>/dev/null && echo "qwen: hosaka TTS back up" || true
+}
+
+case "${1:-}" in
+  server) start_server; exit ;;
+  stop) stop_server; exit ;;
+  -h|--help) sed -n '2,15p' "$0"; exit ;;
+esac
+
+command -v aider >/dev/null || die "aider not found"
+host=$(start_server)
+# aider would otherwise pick its own (small) num_ctx and use ~/.aider.conf.yml's weak model,
+# which would load a second model into the GPUs.
+settings=$STATE/aider-model-settings.yml
+cat > "$settings" <<EOF
+- name: ollama_chat/$MODEL
+  edit_format: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: $CTX
+EOF
+echo "qwen: $MODEL on http://$host (first reply is slow while the model loads)" >&2
+OLLAMA_API_BASE=http://$host exec aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
+  --model-settings-file "$settings" "$@"
