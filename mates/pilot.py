@@ -27,7 +27,10 @@ MODEL = "qwen3.8-mates"
 TASKS_ROOT = pathlib.Path("/srv/mates/tasks")
 STATE_ROOT = pathlib.Path.home() / ".claude" / "mates"
 CLAUDE_BIN = "/srv/mates/bin/claude-2.1.322"
-LEAD_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", ""]
+# The lead review is one turn of a session that already exists, so the pilot runs it with a minimal
+# system prompt (the review instructions) and no tools/MCP: what is counted is the review's own cost.
+LEAD_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", "",
+            "--strict-mcp-config", "--setting-sources", "project", "--system-prompt-file", str(PROMPTS / "lead-review.md")]
 MISSING = re.compile(r"command not found|No such file|ModuleNotFoundError|cannot execute")
 MAX_ATTEMPTS = 2
 
@@ -165,16 +168,14 @@ def rerun(c: Ctx, attempt: int, commit: str) -> tuple[bool, str, str]:
 
 
 def _lead_call(c: Ctx, prompt: str):
-    r = subprocess.run([*c.lead_cmd, prompt], capture_output=True, text=True, timeout=600,
-                       cwd=str(c.state))
-    d = json.loads(r.stdout)
-    u = d.get("usage") or {}
-    tokens = int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0)) + int(u.get("cache_creation_input_tokens", 0))
-    return str(d.get("result", "")).strip(), tokens, int(u.get("cache_read_input_tokens", 0))
+    import claudejson
+    r = subprocess.run(c.lead_cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=str(c.state))
+    d = claudejson.parse(r.stdout)
+    return d["result"], d["tokens"], d["cache_read"]
 
 
 def lead_review(c: Ctx, fields: dict, diff: str):
-    head = (PROMPTS / "lead-review.md").read_text() + "\n\n" + json.dumps(fields, indent=1)
+    head = "Proposed change, fixed fields:\n" + json.dumps(fields, indent=1)
     ans, tok, cache = _lead_call(c, head)
     full = False
     if ans.startswith("NEED-DIFF"):
@@ -282,7 +283,8 @@ def _finish(c: Ctx, rec: dict) -> dict:
     return rec
 
 
-SOLO_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json",
+SOLO_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--strict-mcp-config",
+            "--setting-sources", "project",
             "--permission-mode", "acceptEdits", "--allowedTools", "Bash(bash .mates/check.sh)"]
 
 
@@ -308,16 +310,12 @@ def run_solo(task: dict, *, claude_cmd=SOLO_CMD, sandbox=str(HERE / "sandbox.sh"
         td = make_task_dir(c, f"{c.id}-solo", task["base"], check_text)
         shutil.copy(td / "ctl" / "check.sh", td / "wt" / ".mates" / "check.sh")
         t0 = time.time()
-        r = subprocess.run([*claude_cmd, brief_text(brief, [])], capture_output=True, text=True,
+        import claudejson
+        r = subprocess.run(claude_cmd, input=brief_text(brief, []), capture_output=True, text=True,
                            timeout=timeout, cwd=str(td / "wt"), env=env)
         rec["worker_wall_s"] = round(time.time() - t0, 1)
-        try:
-            u = json.loads(r.stdout).get("usage") or {}
-        except ValueError:
-            u = {}
-        rec["lead_tokens"] = int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0)) + \
-            int(u.get("cache_creation_input_tokens", 0))
-        rec["lead_cache_read"] = int(u.get("cache_read_input_tokens", 0))
+        d = claudejson.parse(r.stdout)
+        rec["lead_tokens"], rec["lead_cache_read"] = d["tokens"], d["cache_read"]
         (td / "wt" / ".mates" / "report.md").write_text("solo\n")
         commit, diff, flags, why = collect(td, task["base"], brief, c.id)
         rec["flags"] = flags

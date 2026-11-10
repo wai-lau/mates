@@ -18,8 +18,11 @@ BROWSER = re.compile(r"_browser\.py$")
 
 UV_SCRIPT = """# lockfiles: uv.lock pyproject.toml
 set -euo pipefail
-export UV_CACHE_DIR=$MATES_RUNTIME/uv-cache UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=$MATES_RUNTIME/venv
+# uv's own Python must live inside the runtime: ~/.local/share/uv is invisible in the sandbox.
+export UV_PYTHON_INSTALL_DIR=$MATES_RUNTIME/python UV_CACHE_DIR=$MATES_RUNTIME/uv-cache UV_LINK_MODE=copy
+export UV_PROJECT_ENVIRONMENT=$MATES_RUNTIME/venv UV_PYTHON_PREFERENCE=only-managed
 ~/.local/bin/uv sync --frozen --quiet  # default + dev groups only: no GPU extras
+"$MATES_RUNTIME/venv/bin/python" -c "import pytest" 2>/dev/null || ~/.local/bin/uv pip install --quiet --python "$MATES_RUNTIME/venv/bin/python" pytest
 rm -rf "$UV_CACHE_DIR"
 echo "PATH=$MATES_RUNTIME/venv/bin:/usr/bin:/bin" > "$MATES_RUNTIME/env"
 echo "VIRTUAL_ENV=$MATES_RUNTIME/venv" >> "$MATES_RUNTIME/env"
@@ -27,7 +30,16 @@ echo "VIRTUAL_ENV=$MATES_RUNTIME/venv" >> "$MATES_RUNTIME/env"
 REQ_SCRIPT = """# lockfiles: {req}
 set -euo pipefail
 python3 -m venv "$MATES_RUNTIME/venv"
-"$MATES_RUNTIME/venv/bin/pip" install -q -r {req}
+"$MATES_RUNTIME/venv/bin/pip" install -q -r {req} pytest
+echo "PATH=$MATES_RUNTIME/venv/bin:/usr/bin:/bin" > "$MATES_RUNTIME/env"
+echo "VIRTUAL_ENV=$MATES_RUNTIME/venv" >> "$MATES_RUNTIME/env"
+"""
+
+
+PLAIN_SCRIPT = """# lockfiles:
+set -euo pipefail
+python3 -m venv "$MATES_RUNTIME/venv"
+"$MATES_RUNTIME/venv/bin/pip" install -q pytest
 echo "PATH=$MATES_RUNTIME/venv/bin:/usr/bin:/bin" > "$MATES_RUNTIME/env"
 echo "VIRTUAL_ENV=$MATES_RUNTIME/venv" >> "$MATES_RUNTIME/env"
 """
@@ -62,7 +74,7 @@ def runtime_script_for(repo) -> str | None:
     for req in ("requirements-dev.txt", "requirements.txt"):
         if (r / req).exists():
             return REQ_SCRIPT.format(req=req)
-    return None
+    return PLAIN_SCRIPT
 
 
 def check_for(test_files: list[str]) -> str:
@@ -128,16 +140,18 @@ def validate(repo, cand: dict, check: str, *, sandbox, tasks_root, script: str |
     return True, "ok", base
 
 
-BRIEF_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", ""]
+BRIEF_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-format", "json", "--tools", "",
+             "--strict-mcp-config", "--setting-sources", "project"]
 
 
 def write_brief(repo, cand: dict, cmd=BRIEF_CMD, prompts=pathlib.Path(__file__).parent / "prompts") -> dict:
     test_diff = _git(repo, "diff", f"{cand['parent']}..{cand['commit']}", "--", *cand["test_files"])[:20000]
     prompt = ((prompts / "brief-writer.md").read_text() + f"\n\nCommit message: {cand['msg']}\n"
               f"Source files: {', '.join(cand['src_files'])}\n\nTest diff:\n{test_diff}\n")
-    r = subprocess.run([*cmd, prompt], capture_output=True, text=True, timeout=300, cwd="/tmp")
     import json as _json
-    text = str(_json.loads(r.stdout).get("result", "")).strip()
+    import claudejson
+    r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd="/tmp")
+    text = claudejson.parse(r.stdout)["result"]
     text = text[text.find("{"): text.rfind("}") + 1]
     b = _json.loads(text)
     b["files"] = cand["src_files"]

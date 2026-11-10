@@ -34,8 +34,14 @@ def test_runtime_script_for_uv(repo):
     s = tasks.runtime_script_for(repo)
     assert s.startswith("# lockfiles: uv.lock pyproject.toml") and "uv sync --frozen" in s and "--all-extras" not in s
 
-def test_runtime_script_for_plain_is_none(repo):
-    assert tasks.runtime_script_for(repo) is None
+def test_runtime_script_for_plain_gets_pytest_venv(repo):
+    s = tasks.runtime_script_for(repo)
+    assert "python3 -m venv" in s and "pytest" in s
+
+def test_uv_runtime_keeps_python_inside_runtime(repo):
+    (repo / "uv.lock").write_text("x")
+    s = tasks.runtime_script_for(repo)
+    assert "UV_PYTHON_INSTALL_DIR=$MATES_RUNTIME/python" in s and "pytest" in s
 
 def test_check_for():
     assert tasks.check_for(["tests/test_a.py"]) == "python3 -m pytest -q -p no:cacheprovider tests/test_a.py"
@@ -54,8 +60,8 @@ def test_write_brief_uses_test_diff_not_source(repo, tmp_path):
     c = tasks.candidates(repo, since="10 years ago")[0]
     seen = tmp_path / "prompt.txt"
     stub = tmp_path / "brief_stub.sh"
-    stub.write_text(f'#!/usr/bin/env bash\nprintf "%s" "${{@: -1}}" > {seen}\n'
-                    'echo \'{"result": "{\\"goal\\": \\"make add sum\\", \\"files\\": [\\"x\\"], \\"constraints\\": \\"none\\"}"}\'\n')
+    stub.write_text(f'#!/usr/bin/env bash\ncat > {seen}\n'
+                    'echo \'[{"type": "result", "result": "{\\"goal\\": \\"make add sum\\", \\"files\\": [\\"x\\"], \\"constraints\\": \\"none\\"}"}]\'\n')
     stub.chmod(0o755)
     b = tasks.write_brief(repo, c, cmd=[str(stub)])
     assert b == {"goal": "make add sum", "files": ["src/calc.py"], "constraints": "none"}
