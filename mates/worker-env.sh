@@ -4,13 +4,13 @@
 # Every model slot points at local Qwen, so no request can name a Claude model.
 ANTHROPIC_BASE_URL=http://127.0.0.1:11434
 ANTHROPIC_AUTH_TOKEN=ollama
-ANTHROPIC_MODEL=mates
-ANTHROPIC_DEFAULT_OPUS_MODEL=mates
-ANTHROPIC_DEFAULT_SONNET_MODEL=mates
-ANTHROPIC_DEFAULT_HAIKU_MODEL=mates
-ANTHROPIC_DEFAULT_FABLE_MODEL=mates
-ANTHROPIC_SMALL_FAST_MODEL=mates
-CLAUDE_CODE_SUBAGENT_MODEL=mates
+ANTHROPIC_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
+ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
+ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
+ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
+ANTHROPIC_DEFAULT_FABLE_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
+ANTHROPIC_SMALL_FAST_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
+CLAUDE_CODE_SUBAGENT_MODEL=qwen3.8-27b-turbo-heretic:mtp-iq4xs
 # Unknown model name: run with no per-model client data instead of exiting (2.1.322 binary strings).
 CLAUDE_CODE_ALLOW_OTHER_MODELS=1
 CLAUDE_CONFIG_DIR=/home/mates/.claude-cfg

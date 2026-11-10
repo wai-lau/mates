@@ -24,7 +24,7 @@ import logrec
 
 HERE = pathlib.Path(__file__).resolve().parent
 PROMPTS = HERE / "prompts"
-MODEL = "mates"
+MODEL = "qwen3.8-27b-turbo-heretic:mtp-iq4xs"  # the worker model: one place (worker-env.sh mirrors it)
 TASKS_ROOT = pathlib.Path("/srv/mates/tasks")
 STATE_ROOT = pathlib.Path.home() / ".claude" / "mates"
 # Claude calls (lead review, fidelity) run from here: outside /home/wai, so no CLAUDE.md is discovered

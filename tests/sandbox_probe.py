@@ -42,7 +42,7 @@ out["git_write"] = can_write(os.path.join(gitdir, "HEAD")) if gitdir else "denie
 out["check_write"] = can_write(".mates/check.sh") if os.path.exists(".mates/check.sh") else "absent"
 try:
     req = urllib.request.Request("http://127.0.0.1:11434/v1/messages", method="POST",
-        data=json.dumps({"model": "mates", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}).encode(),
+        data=json.dumps({"model": "probe-model", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}).encode(),
         headers={"Content-Type": "application/json", "anthropic-version": "2023-06-01"})
     try: urllib.request.urlopen(req, timeout=20); out["ollama_fwd"] = "reached"
     except urllib.error.HTTPError: out["ollama_fwd"] = "reached"
