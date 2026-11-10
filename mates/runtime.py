@@ -31,8 +31,9 @@ def _show(repo, base, path):
     return r.stdout if r.returncode == 0 else None
 
 
-def runtime_hash(repo, base) -> str | None:
-    script = _show(repo, base, SCRIPT)
+def runtime_hash(repo, base, script: bytes | None = None) -> str | None:
+    """`script` overrides the repo's committed one (pilot: generated scripts, injected as the repo's would be)."""
+    script = script if script is not None else _show(repo, base, SCRIPT)
     if script is None:
         return None
     h = hashlib.sha256(script)
@@ -42,8 +43,8 @@ def runtime_hash(repo, base) -> str | None:
     return h.hexdigest()[:16]
 
 
-def ensure_runtime(repo, base, root=ROOT) -> pathlib.Path | None:
-    h = runtime_hash(repo, base)
+def ensure_runtime(repo, base, root=ROOT, script: bytes | None = None) -> pathlib.Path | None:
+    h = runtime_hash(repo, base, script)
     if h is None:
         return None
     dest = pathlib.Path(root) / pathlib.Path(repo).resolve().name / h
@@ -54,7 +55,7 @@ def ensure_runtime(repo, base, root=ROOT) -> pathlib.Path | None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir()
     with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as f:
-        f.write(_show(repo, base, SCRIPT))
+        f.write(script if script is not None else _show(repo, base, SCRIPT))
     try:
         # Built at its final path's name so absolute paths baked in (venvs) resolve after rename:
         # build in tmp, but expose the final path via MATES_RUNTIME by symlinking it during the build.
