@@ -10,10 +10,10 @@
 # started on a free port picked at launch. Qwen needs both GPUs, so starting it
 # stops hosaka TTS (Wai: "Qwen wins vs TTS").
 #
-# env: QWEN_MODEL (default mates-qwen = Qwen3.6-35B-A3B, text-only), QWEN_CTX (default 131072)
+# env: QWEN_MODEL (default mates = the current worker model), QWEN_CTX (default 131072)
 set -euo pipefail
 
-MODEL=${QWEN_MODEL:-mates-qwen}
+MODEL=${QWEN_MODEL:-mates}
 CTX=${QWEN_CTX:-131072}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 mkdir -p "$STATE"
