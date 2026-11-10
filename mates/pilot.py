@@ -412,6 +412,12 @@ FIDELITY_CMD = ["env", "-u", "ANTHROPIC_API_KEY", "claude", "-p", "--output-form
 
 
 def _private_ollama(ctx: dict):
+    import urllib.request
+    try:  # already running (e.g. started by hand): reuse it
+        urllib.request.urlopen("http://127.0.0.1:11435/api/version", timeout=2)
+        return None
+    except OSError:
+        pass
     env = {**os.environ, "OLLAMA_HOST": "127.0.0.1:11435", "OLLAMA_MODELS": "/usr/share/ollama/.ollama/models",
            "OLLAMA_NOPRUNE": "1", "OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_KEEP_ALIVE": "30m",
            "OLLAMA_NUM_PARALLEL": str(ctx.get("parallel", 1)), "OLLAMA_MAX_LOADED_MODELS": "1",
