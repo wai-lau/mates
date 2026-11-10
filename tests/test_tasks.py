@@ -32,7 +32,7 @@ def test_candidates_skip_browser_tests(repo):
 def test_runtime_script_for_uv(repo):
     (repo / "uv.lock").write_text("x"); (repo / "pyproject.toml").write_text("[project]\nname='p'\n")
     s = tasks.runtime_script_for(repo)
-    assert s.startswith("# lockfiles: uv.lock pyproject.toml") and "uv sync --frozen" in s
+    assert s.startswith("# lockfiles: uv.lock pyproject.toml") and "uv sync --frozen" in s and "--all-extras" not in s
 
 def test_runtime_script_for_plain_is_none(repo):
     assert tasks.runtime_script_for(repo) is None

@@ -19,7 +19,7 @@ BROWSER = re.compile(r"_browser\.py$")
 UV_SCRIPT = """# lockfiles: uv.lock pyproject.toml
 set -euo pipefail
 export UV_CACHE_DIR=$MATES_RUNTIME/uv-cache UV_LINK_MODE=copy UV_PROJECT_ENVIRONMENT=$MATES_RUNTIME/venv
-~/.local/bin/uv sync --frozen --all-extras --quiet
+~/.local/bin/uv sync --frozen --quiet  # default + dev groups only: no GPU extras
 rm -rf "$UV_CACHE_DIR"
 echo "PATH=$MATES_RUNTIME/venv/bin:/usr/bin:/bin" > "$MATES_RUNTIME/env"
 echo "VIRTUAL_ENV=$MATES_RUNTIME/venv" >> "$MATES_RUNTIME/env"
