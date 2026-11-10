@@ -105,7 +105,8 @@ def sandbox_run(c: Ctx, td, cmd, timeout=None):
     try:
         return subprocess.run(full, capture_output=True, text=True, timeout=timeout or c.timeout)
     except subprocess.TimeoutExpired as e:
-        return subprocess.CompletedProcess(full, 124, e.stdout or "", (e.stderr or "") + "\ntimeout")
+        dec = lambda b: b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
+        return subprocess.CompletedProcess(full, 124, dec(e.stdout), dec(e.stderr) + "\ntimeout")
 
 
 def red_on_base(c: Ctx, td) -> str:
@@ -209,7 +210,7 @@ def _stop(p):
 
 
 def run_one(task: dict, *, claude_bin=CLAUDE_BIN, lead_cmd=LEAD_CMD, sandbox=str(HERE / "sandbox.sh"),
-            tasks_root=TASKS_ROOT, state_root=STATE_ROOT, start_fwd=start_fwd, num_ctx=65536, timeout=2700,
+            tasks_root=TASKS_ROOT, state_root=STATE_ROOT, start_fwd=start_fwd, num_ctx=65536, timeout=3600,
             runtime=None, injects=()) -> dict:
     os.umask(0o002)
     c = Ctx(task, claude_bin, lead_cmd, sandbox, tasks_root, state_root, start_fwd, num_ctx, timeout, runtime, injects)

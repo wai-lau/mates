@@ -13,8 +13,9 @@ You make one change in the repository at /work, and prove it with the check.
 - Change only the files the brief names unless the change cannot work
   without another one; if so, say which and why in the report.
 
-When done (or stuck), write `.mates/report.md` in exactly this format and
-then stop:
+As soon as `bash .mates/check.sh` passes, stop working: no extra smoke
+tests or self-review beyond the check. Then (or when stuck) write
+`.mates/report.md` in exactly this format and stop:
 
 ```
 STATUS: pass

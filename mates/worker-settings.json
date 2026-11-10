@@ -1,9 +1,26 @@
 {
   "permissions": {
-    "allow": ["Read", "Edit", "Write", "Glob", "Grep", "Bash(bash .mates/check.sh)"],
-    "deny": ["WebFetch", "WebSearch", "Bash(git push:*)", "Bash(curl:*)", "Bash(wget:*)",
-             "Edit(.mates/check.sh)", "Write(.mates/check.sh)"]
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash(git push:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(nc:*)",
+      "Bash(ssh:*)",
+      "Edit(.mates/check.sh)",
+      "Write(.mates/check.sh)"
+    ]
   },
   "hooks": {},
-  "enableAllProjectMcpServers": false
+  "enableAllProjectMcpServers": false,
+  "_comment": "Second layer only: the bwrap sandbox (no network, no home, read-only check) is the guard. Headless -p auto-denies anything not allowed, so ordinary shell use is allowed inside the sandbox."
 }

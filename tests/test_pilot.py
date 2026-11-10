@@ -144,3 +144,12 @@ def test_cleanup_keeps_worker_transcripts(env):
     task, cfg, tmp = env
     pilot.run_one(task, **cfg)
     assert (tmp / "state" / "transcripts" / "t1").is_dir()
+
+def test_sandbox_timeout_returns_124(env, tmp_path):
+    task, cfg, tmp = env
+    c = pilot.Ctx(task, cfg["claude_bin"], cfg["lead_cmd"], cfg["sandbox"], cfg["tasks_root"], cfg["state_root"],
+                  cfg["start_fwd"], 65536, 1)
+    td = pilot.make_task_dir(c, "slow", task["base"], "true\n")
+    r = pilot.sandbox_run(c, td, ["bash", "-c", "echo hi; sleep 5"], timeout=1)
+    assert r.returncode == 124 and "timeout" in r.stderr
+    pilot._cleanup(c)
