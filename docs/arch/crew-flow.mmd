@@ -3,8 +3,10 @@ flowchart TD
   R -- no: divergent reasoning --> C[Claude does it: lead or Claude subagent]
   R -- yes: lead writes check --> S[crew spawn: worktree + branch + pane]
   S --> W[Qwen worker: edit, run check, loop]
-  W --> P[Worker commits + short report]
-  P --> V{Lead reviews diff, reruns check}
+  W --> P[Worker commits, authorship stripped]
+  P --> Q[Fresh Qwen verifier: goal + diff + check only]
+  Q -- fail --> W
+  Q -- pass --> V{Lead reads verdict, reruns check}
   V -- pass --> M[Merge, crew close]
   V -- fail, attempt 1 --> B[Send back with notes]
   B --> W
