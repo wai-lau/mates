@@ -349,6 +349,8 @@ run_sandboxed() {
     case "$mnt/" in "$rt"/*) die "QWEN_RUNTIME refused (it holds the repo, which would turn read-only): $rt" ;; esac
     [ "$rt" != / ] || die "QWEN_RUNTIME refused: /"
     refuse_secret "$rt" && die "QWEN_RUNTIME refused (secret path): $rt"
+    # Its env PATH runs inside every pane and check: another account able to swap it would own those.
+    safe_ancestry "$rt" || die "QWEN_RUNTIME refused (it or a folder above it is writable by another account): $rt"
   fi
   RUN=$(mktemp -d "$STATE/run.XXXXXX")
   make_home "$RUN/home"

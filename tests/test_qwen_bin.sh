@@ -10,7 +10,8 @@ QWEN=$HERE/bin/qwen
 command -v bwrap >/dev/null || { echo "SKIP: bwrap not installed"; exit 0; }
 
 T=$(mktemp -d)
-cleanup() { pkill -f "$T/stub/ollama" 2>/dev/null; rm -rf "$T"; }
+RT=""
+cleanup() { pkill -f "$T/stub/ollama" 2>/dev/null; rm -rf "$T"; [ -z "$RT" ] || rm -rf "$RT"; }
 trap cleanup EXIT
 
 mkdir -p "$T/stub" "$T/state" "$T/config"
@@ -87,9 +88,12 @@ QWEN_GIT_RO=1 in_ "$T/wt" "$QWEN" exec -- sh -c 'echo "gitdir: /tmp/elsewhere" >
 check "[wt] RO: the .git file cannot be repointed" '[ "$rc" != 0 ] && grep -q '\''^gitdir: .*/worktrees/'\'' "$T/wt/.git"'
 
 # --- runtime mount ------------------------------------------------------
-mkdir -p "$T/rt/bin"; printf '#!/bin/sh\necho hello-from-runtime\n' > "$T/rt/bin/rt-hello"; chmod +x "$T/rt/bin/rt-hello"
-cat > "$T/rt/env" <<EOF
-PATH=$T/rt/bin
+# A runtime must sit where no other account can write, up to / (I4): a private folder
+# under the user runtime folder, not $T (under /tmp).
+RT=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-test-rt.XXXXXX")
+mkdir -p "$RT/bin"; printf '#!/bin/sh\necho hello-from-runtime\n' > "$RT/bin/rt-hello"; chmod +x "$RT/bin/rt-hello"
+cat > "$RT/env" <<EOF
+PATH=$RT/bin
 FOO=bar
 _U=a=b
 SP=a b c
@@ -101,20 +105,23 @@ export X=1
  LEAD=1
 bad-name=1
 EOF
-p=$(QWEN_RUNTIME=$T/rt in_ "$T/repo" "$QWEN" exec -- sh -c 'echo "$PATH"' 2>/dev/null)
-check "runtime PATH comes first" '[ "${p%%:*}" = "$T/rt/bin" ]'
+p=$(QWEN_RUNTIME=$RT in_ "$T/repo" "$QWEN" exec -- sh -c 'echo "$PATH"' 2>/dev/null)
+check "runtime PATH comes first" '[ "${p%%:*}" = "$RT/bin" ]'
 check "runtime PATH keeps the default after it" 'bash -c '\''[[ $1 == *:/opt/opencode:* && $1 == *:/usr/bin:/bin ]]'\'' _ "$p"'
-h=$(QWEN_RUNTIME=$T/rt in_ "$T/repo" "$QWEN" exec -- rt-hello 2>/dev/null)
+h=$(QWEN_RUNTIME=$RT in_ "$T/repo" "$QWEN" exec -- rt-hello 2>/dev/null)
 check "runtime bin runs inside" '[ "$h" = hello-from-runtime ]'
-QWEN_RUNTIME=$T/rt in_ "$T/repo" "$QWEN" exec -- sh -c 'echo x > "$1/w"' sh "$T/rt" 2>/dev/null; rc=$?
-check "runtime dir is read-only" '[ "$rc" != 0 ] && [ ! -e "$T/rt/w" ]'
+QWEN_RUNTIME=$RT in_ "$T/repo" "$QWEN" exec -- sh -c 'echo x > "$1/w"' sh "$RT" 2>/dev/null; rc=$?
+check "runtime dir is read-only" '[ "$rc" != 0 ] && [ ! -e "$RT/w" ]'
 base=$(in_ "$T/repo" "$QWEN" exec -- env 2>/dev/null | sort)
-with=$(QWEN_RUNTIME=$T/rt in_ "$T/repo" "$QWEN" exec -- env 2>/dev/null | sort)
+with=$(QWEN_RUNTIME=$RT in_ "$T/repo" "$QWEN" exec -- env 2>/dev/null | sort)
 bash_kept=$(comm -13 <(echo "$base") <(echo "$with") | grep -v '^PATH=' | sort)
 py_kept=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import runtime
-print("\n".join(l for l in runtime.runtime_env(sys.argv[2]) if not l.startswith("PATH=")))' "$HERE/mates" "$T/rt" | sort)
+print("\n".join(l for l in runtime.runtime_env(sys.argv[2]) if not l.startswith("PATH=")))' "$HERE/mates" "$RT" | sort)
 check "bash and runtime.runtime_env keep the same env lines" '[ "$bash_kept" = "$py_kept" ]'
 [ "$bash_kept" = "$py_kept" ] || { echo "  bash: $bash_kept"; echo "  py:   $py_kept"; }
+mkdir -p "$T/shared-rt"; cp "$RT/env" "$T/shared-rt/env"
+QWEN_RUNTIME=$T/shared-rt in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "a runtime under a folder others can write (/tmp): refused (I4)" '[ "$rc" != 0 ]'
 QWEN_RUNTIME=$T/nope in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
 check "a missing runtime dir refuses to run" '[ "$rc" != 0 ]'
 

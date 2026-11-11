@@ -1,13 +1,11 @@
-"""Runtimes a check needs inside the sandbox, from two channels only.
-
-1. The repo: a tracked `.mates/runtime.sh` read from the BASE commit (never
-   the worker's tree), run as wai outside the sandbox with $MATES_RUNTIME set,
-   cached under /srv/mates/runtimes/<repo>/<hash>/ (hash = script + the
-   lockfiles named on its `# lockfiles:` line). Env additions go in
-   $MATES_RUNTIME/env as KEY=VALUE lines.
-2. Injection at launch: paths the lead names, copied read-only into the
-   task's ctl/inject/, refused if they look like secrets.
+"""The runtime a Qwen pane and a check need inside the sandbox: a tracked
+`.mates/runtime.sh` read from the BASE commit (never Qwen's tree), run as Wai
+outside the sandbox with $MATES_RUNTIME set, cached under
+${XDG_STATE_HOME:-~/.local/state}/mates/runtimes/<repo>/<hash>/ (Wai-only
+folders; hash = script + the lockfiles named on its `# lockfiles:` line). Env
+additions go in $MATES_RUNTIME/env as KEY=VALUE lines.
 """
+import fcntl
 import hashlib
 import os
 import pathlib
@@ -15,15 +13,10 @@ import re
 import shutil
 import stat
 import subprocess
-import tempfile
 
-ROOT = pathlib.Path("/srv/mates/runtimes")
+import fsutil
+
 SCRIPT = ".mates/runtime.sh"
-HOME = pathlib.Path.home()
-SECRET_DIRS = [HOME / d for d in (".ssh", ".gnupg", ".secrets", ".claude", ".config/gh")]
-SECRET_NAME = re.compile(r"(^\.credentials|^\.env($|\.)|\.pem$|\.key$)")
-SECRET_TEXT = re.compile(r"(?i)(api[_-]?key|secret|token|passwd|password)\s*[:=]\s*\S{8,}"
-                         r"|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bsk-[A-Za-z0-9]{20,}|\bgh[pousr]_[A-Za-z0-9]{30,}")
 
 
 def _show(repo, base, path):
@@ -43,9 +36,8 @@ def runtime_files(repo, base) -> list[str]:
     return [] if script is None else [SCRIPT, *lockfiles(script)]
 
 
-def runtime_hash(repo, base, script: bytes | None = None) -> str | None:
-    """`script` overrides the repo's committed one (pilot: generated scripts, injected as the repo's would be)."""
-    script = script if script is not None else _show(repo, base, SCRIPT)
+def runtime_hash(repo, base) -> str | None:
+    script = _show(repo, base, SCRIPT)
     if script is None:
         return None
     h = hashlib.sha256(script)
@@ -54,37 +46,45 @@ def runtime_hash(repo, base, script: bytes | None = None) -> str | None:
     return h.hexdigest()[:16]
 
 
-def ensure_runtime(repo, base, root=ROOT, script: bytes | None = None) -> pathlib.Path | None:
-    h = runtime_hash(repo, base, script)
+def ensure_runtime(repo, base, root=None) -> pathlib.Path | None:
+    """The runtime for `repo` at `base`, built once. `root` (default
+    ${XDG_STATE_HOME:-~/.local/state}/mates/runtimes) and the per-repo folder must be
+    folders only Wai can write, up to `/` (fsutil.private_dir): a runtime in a folder
+    another account can write (the old /srv/mates/runtimes was group emetcode) could be
+    swapped, and its env PATH would then run that account's programs in every check.
+    Built straight at its final path (no symlink step); `<hash>.ok` marks it complete."""
+    h = runtime_hash(repo, base)
     if h is None:
         return None
-    dest = pathlib.Path(root) / pathlib.Path(repo).resolve().name / h
-    if dest.is_dir():
-        return dest
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.parent / f".tmp-{os.getpid()}"
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir()
-    with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as f:
-        f.write(script if script is not None else _show(repo, base, SCRIPT))
-    try:
-        # Built at its final path's name so absolute paths baked in (venvs) resolve after rename:
-        # build in tmp, but expose the final path via MATES_RUNTIME by symlinking it during the build.
-        dest.symlink_to(tmp)
-        r = subprocess.run(["bash", f.name], cwd=str(repo), env={**os.environ, "MATES_RUNTIME": str(dest)},
-                           capture_output=True, text=True)
-        dest.unlink()
+    root = fsutil.state_dir("runtimes") if root is None else fsutil.private_dir(root)
+    parent = pathlib.Path(fsutil.private_dir(pathlib.Path(root) / pathlib.Path(repo).resolve().name))
+    dest, ok = parent / h, parent / f"{h}.ok"
+    with open(parent / f"{h}.lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)  # two launches at once build it once
+        st = os.lstat(dest) if os.path.lexists(dest) else None
+        if st is not None and stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and ok.is_file():
+            return dest
+        ok.unlink(missing_ok=True)
+        if st is not None:  # unfinished, or not a plain folder of ours: never trusted
+            if stat.S_ISDIR(st.st_mode):
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        dest.mkdir(mode=0o700)
+        sh = parent / f"{h}.sh"
+        sh.write_bytes(_show(repo, base, SCRIPT))
+        try:
+            r = subprocess.run(["bash", str(sh)], cwd=str(repo), env={**os.environ, "MATES_RUNTIME": str(dest)},
+                               capture_output=True, text=True)
+        finally:
+            sh.unlink()
         if r.returncode != 0:
-            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(dest, ignore_errors=True)
             raise RuntimeError(f"runtime build failed ({r.returncode}): {r.stderr[-2000:]}")
-        for q in [tmp, *tmp.rglob("*")]:  # the worker's user shares the group: no group/other write
+        for q in [dest, *dest.rglob("*")]:  # read-only to everyone else
             if not q.is_symlink():
                 q.chmod(q.stat().st_mode & ~(stat.S_IWGRP | stat.S_IWOTH))
-        tmp.rename(dest)
-    finally:
-        os.unlink(f.name)
-        if dest.is_symlink():
-            dest.unlink()
+        ok.touch()
     return dest
 
 
@@ -93,55 +93,3 @@ def runtime_env(d) -> list[str]:
     if not p.exists():
         return []
     return [l for l in p.read_text().splitlines() if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", l)]
-
-
-def check_inject(path) -> None:
-    p = pathlib.Path(os.path.expanduser(str(path))).absolute()
-    for d in SECRET_DIRS:
-        if p == d or d in p.parents:
-            raise ValueError(f"refused: {p} is under {d}")
-    files = [p] if not p.is_dir() else [f for f in p.rglob("*") if f.is_file()]
-    for f in [p, *files]:
-        if SECRET_NAME.search(f.name):
-            raise ValueError(f"refused: {f.name} looks like a secret file")
-    for f in files:
-        if not f.exists():
-            continue
-        try:
-            text = f.read_bytes()[:2_000_000].decode("utf-8", "ignore")
-        except OSError:
-            continue
-        if SECRET_TEXT.search(text):
-            raise ValueError(f"refused: {f} contains something that looks like a secret")
-
-
-def _sha(p: pathlib.Path) -> str:
-    h = hashlib.sha256()
-    for f in sorted([p] if p.is_file() else [x for x in p.rglob("*") if x.is_file()]):
-        h.update(str(f.relative_to(p.parent if p.is_file() else p)).encode() + b"\0" + f.read_bytes())
-    return h.hexdigest()
-
-
-def _readonly(p: pathlib.Path):
-    for f in [p, *(p.rglob("*") if p.is_dir() else [])]:
-        mode = f.stat().st_mode
-        f.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-
-
-def stage_injects(task_dir, injects: list[str]) -> list[dict]:
-    out = []
-    base = pathlib.Path(task_dir) / "ctl" / "inject"
-    base.mkdir(parents=True, exist_ok=True)
-    for n, spec in enumerate(injects):
-        src, _, dest = spec.partition(":")
-        src_p = pathlib.Path(os.path.expanduser(src))
-        check_inject(src_p)
-        dest = dest or src_p.name
-        staged = base / str(n)
-        if src_p.is_dir():
-            shutil.copytree(src_p, staged, symlinks=False)
-        else:
-            shutil.copy2(src_p, staged)
-        _readonly(staged)
-        out.append({"src": str(src_p), "dest": dest, "sha256": _sha(staged)})
-    return out

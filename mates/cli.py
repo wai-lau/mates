@@ -245,7 +245,7 @@ def _warm(root):
 def _runtime(root, warnings):
     try:
         return runtime.ensure_runtime(root, "HEAD")
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, fsutil.UnsafeDir) as e:
         warnings.append(f"mates: .mates/runtime.sh failed, panes start without it: {e}")
         return None
 
