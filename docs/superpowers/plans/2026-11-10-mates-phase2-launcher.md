@@ -1,76 +1,72 @@
-# Mates Phase 2 (the `mates` command) Implementation Plan
+# Mates Phase 2 (two-pane `mates`) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `mates` command, a Claude lead in the left half of a tmux
-window that spawns sandboxed Qwen workers in panes on the right, reviews their
-work through fixed fields, and logs every routing decision. Also the hosaka
-lock and the daily retro.
+**Goal:** `mates` in a git repo opens Claude Code on the left and one or more
+sandboxed `qwen` (OpenCode) panes on the right. Each Qwen pane works in its
+own worktree. Claude delegates by typing into a Qwen pane as Wai, waits on
+`.mates/done.md` or `.mates/question.md`, reviews, and merges. It restores the
+previous Claude conversation and all Qwen panes the way spire-trio does.
 
 **Architecture:**
-- **One Python CLI, `mates/cli.py`, behind `bin/mates`.** Each subcommand is
-  a function over a per-task state file, with no daemon. The lead (Claude)
-  drives each step and waits on files with a Monitor.
-- **Workers are interactive Claude Code on Qwen,** in tmux panes, inside the
-  Phase 1 sandbox (`sandbox.sh`, run as user `claude` under bwrap).
-- **Review reuses the Phase 1 pieces** (`collect`, `verify`, `rerun`, guard
-  flags, the forwarder).
-- **The Ollama server is the one `qwen` uses,** found by `qwen server`. No
-  fixed port.
+- **`bin/mates`** (bash) launches and restores the tmux window, and
+  dispatches subcommands to `mates/cli.py`.
+- **`mates/cli.py`** works on a per-repo session file and the panes. There is
+  no daemon.
+- **Qwen panes run `bin/qwen`,** unchanged except for passing args through to
+  OpenCode, which supplies the sandbox.
 
-**Tech Stack:** Python 3.12 stdlib, bash, tmux 3.4, bwrap 0.9.0, Ollama 0.40.16, Claude Code 2.1.322 (pinned for workers).
+**Tech Stack:** bash, Python 3.12 stdlib (sqlite3 to read OpenCode's session DB), tmux 3.4, Claude Code (`--session-id`, `--resume`, `-n`), OpenCode 1.19.5 (`-s <session>`).
 
-**Spec:** `docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`.
-Read "How it works", "Layout", "Two commands", "Settled after the builder
-review", "Audit log", and "Daily retrospective". The Phase 1 plan and its
-ledger hold the measured facts this plan relies on.
+**Spec:** `docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`. The
+section "Revision 2026-11-10 (evening): two-pane mates" wins over everything
+below it.
 
 ## Global Constraints
 
-- **Wai skipped the pilot gate (2026-11-10, "c").** The Phase 1 safety pieces
-  still apply unchanged: the sandbox as user `claude`, the read-only original
-  check, red on base, guard flags, the blind verifier, the authoritative
-  rerun.
-- The commands are exactly **`mates`** and **`qwen`**. Model names stay
-  accurate, with no aliases.
-- Plain `claude` stays untouched: no global CLAUDE.md pointer, no global
-  skill.
-- `mates <subcommand>` refuses unless `MATES_LEAD=1`.
-- **One worker at a time.** A second spawn queues. Two at once measured
-  0.4-0.5 tok/s.
-- Never `--dangerously-skip-permissions`.
-- **Wai: "Qwen wins vs TTS".** Spawning stops hosaka; hosaka refuses to start
-  while `~/.claude/mates/running/*` exists.
-- **What merges is what was checked.** Accept refuses if the tree differs
-  from the one that passed the rerun.
+- The commands are exactly `mates` and `qwen`. Plain `claude` stays untouched.
+- **Fresh vs restore:**
+  - First run in a repo: 1 Claude and 1 Qwen.
+  - Later runs: restore the Claude conversation and every Qwen pane that was
+    open (Wai, verbatim).
+  - `mates --fresh` starts over.
+- **Session state:** `~/.claude/mates/sessions/<repo-key>.json`, where the key
+  is the repo root path mangled the way `~/.claude/projects` mangles it. It's
+  saved on every change.
 - **Layout:**
-  - the lead pane is pinned to 50% of the window, on the left;
-  - workers tile the right half in a grid of c columns by r rows;
-  - the grid is the one whose pane cols/rows is closest to 0.92, compared in
-    log space.
-- **Retro rules:** the retro writes `~/.claude/mates/retros/YYYY-MM-DD.md`.
-  - It may edit only `mates/lead-lessons.md`, task types only, with no repo
-    names.
-  - It proposes rule, concurrency or model changes in `OPEN-QUESTIONS.md`; it
-    never applies them.
+  - Claude is pinned to 50% of the width, on the left.
+  - The Qwen panes tile the right half in a grid of c columns by r rows,
+    whose pane cols/rows is closest to 0.92, compared in log space.
+- **Worktrees:** `<repo>/.claude/worktrees/mates-qwen-<n>`, on branch
+  `mates/qwen-<n>`, made from the lead's committed HEAD. `.mates/` is added to
+  the repo's `.git/info/exclude`.
+- **Messages:** Claude's messages to Qwen start with `[from Claude]`. The
+  protocol lives in `bin/qwen-sandbox.md` (already committed).
+- **Two failed tries on a task:** Claude does it itself, and logs it
+  `escalated`.
+- **Audit log:** `~/.claude/mates/log.jsonl` via `logrec`. Routes:
+  `qwen` / `claude-self`. Outcomes: `accepted`, `sent-back`, `escalated`,
+  `failed`. Questions are logged with the task.
+- Never `--dangerously-skip-permissions`.
 
 ## Review Focus
 
-1. **Worker pane dies before writing its report** (crash, OOM, the user
-   closing it). Expected: `mates wait` returns `dead` instead of hanging. Test
-   in Task 4 (`test_wait_reports_dead_pane`).
-2. **Lead branch moved since spawn.** Expected: accept rebases. On conflict it
-   refuses with a message and leaves both branches intact. Test in Task 5
-   (`test_accept_conflict_refuses`).
-3. **`mates` run inside a window that already has panes.** Expected: it opens
-   a new window, never splits someone's layout. Test in Task 6
-   (`test_launch_window_choice`).
-4. **Queue head whose base commit no longer exists or isn't an ancestor.**
-   Expected: the start fails cleanly and is logged `failed`. Test in Task 3
-   (`test_queue_start_bad_base`).
-5. **Stale `running/` lock after a crash, so hosaka never starts.** Expected:
-   `mates list` shows it, and `mates close --stale` clears locks whose pane is
-   gone. Test in Task 7 (`test_stale_lock_cleared`).
+1. **Qwen's worktree is dirty when Claude sends a new task** (unmerged work,
+   or work Wai did directly). Expected: `send` refuses and says so; it never
+   resets someone's work. Test in Task 4 (`test_send_refuses_dirty_worktree`).
+2. **The lead branch moved since Qwen's worktree was made.** Expected: on a
+   clean tree, `send` rebases Qwen's worktree to the lead HEAD first. On a
+   conflict, `merge` aborts the rebase and changes nothing. Test in Task 4
+   (`test_merge_conflict_refuses`).
+3. **The saved OpenCode session or Claude session no longer exists.**
+   Expected: restore starts that pane fresh, with a warning, and the rest
+   restores normally. Test in Task 2 (`test_restore_missing_session_fresh`).
+4. **`mates` run in a window that already has panes, or outside tmux.**
+   Expected: a new window or session, never splitting someone's layout. Test
+   in Task 3 (`test_launch_window_choice`).
+5. **The Qwen pane is closed by hand.** Expected: `wait` returns `dead`, and
+   the next save drops that pane from the state. Test in Task 4
+   (`test_wait_dead_pane`).
 
 ---
 
@@ -78,42 +74,16 @@ ledger hold the measured facts this plan relies on.
 
 | File | Responsibility |
 |---|---|
-| `mates/layout.py` | `pick_grid`, tmux geometry and apply |
-| `mates/taskstate.py` | per-task state JSON, queue, running locks |
-| `mates/cli.py` | subcommands: spawn, wait, review, accept, send-back, escalate, close, list, log, layout, retro |
-| `mates/server.py` | find or start the Ollama server via `qwen server` |
-| `mates/lead.md` | the lead role prompt |
-| `mates/lead-lessons.md` | routing lessons the retro maintains |
-| `mates/prompts/retro.md` | retro prompt |
-| `bin/mates` | launcher (tmux, lead) plus dispatch to `cli.py` |
-| `deploy/mates-retro.{service,timer}` | systemd user units |
-| `~/src/hosaka` | lock check before the server starts (separate repo commit) |
+| `mates/layout.py` | `pick_grid`, tmux apply |
+| `mates/session.py` | session-state load and save, OpenCode session lookup, worktree ensure |
+| `mates/cli.py` | `send`, `wait`, `answer`, `diff`, `merge`, `add`, `remove`, `list`, `log`, `log-route`, `layout`, `retro`, plus `launch` internals |
+| `bin/mates` | entry point: tmux window choice, then `cli.py launch`, or a subcommand |
+| `mates/lead.md`, `mates/lead-lessons.md` | lead role prompt and lessons |
+| `mates/prompts/retro.md`, `deploy/mates-retro.{service,timer}` | daily retro |
 
 ---
 
-### Task 1: Server discovery, no fixed port
-
-**Files:**
-- Create: `mates/server.py`
-- Modify: `mates/pilot.py` (`start_fwd` upstream), `mates/ctx.py` (`PORT`)
-- Test: `tests/test_server.py`
-
-**Interfaces:**
-- `ollama_host() -> str` runs `qwen server` (resolved via `$HOME/bin/qwen`,
-  then `PATH`) and returns `host:port`. It raises `RuntimeError` on failure.
-- `pilot.start_fwd(sock, log, model)` uses `ollama_host()` for upstream.
-
-- [ ] **Step 1: Failing tests**
-  - `test_ollama_host_parses_qwen_output`: a stub `qwen` printing
-    `127.0.0.1:4242` returns `127.0.0.1:4242`.
-  - `test_ollama_host_error`: a stub exiting 1 raises `RuntimeError`.
-- [ ] **Step 2: Run, expect FAIL.**
-- [ ] **Step 3: Implement.** The stub is found via the `MATES_QWEN` env
-  override. Replace the literal `127.0.0.1:11435` in `pilot.start_fwd`.
-- [ ] **Step 4: Run the suite, expect PASS.**
-- [ ] **Step 5: Commit** "feat(mates): find the model server via qwen, no fixed port".
-
-### Task 2: Layout
+### Task 1: Layout
 
 **Files:**
 - Create: `mates/layout.py`
@@ -121,241 +91,205 @@ ledger hold the measured facts this plan relies on.
 
 **Interfaces:**
 - `pick_grid(cols: int, rows: int, n: int, target=0.92) -> tuple[int, int]`
-  takes the right half's size in cells and returns `(c, r)` with `c*r >= n`.
-  It minimizes `abs(log((cols/c)/(rows/r)) - log(target))`; ties go to fewer
-  empty cells.
-- `apply(window: str, lead_pane: str, worker_panes: list[str]) -> None`:
-  - resizes the lead to 50% of the width;
-  - arranges the workers into the grid with `tmux split-window`,
-    `resize-pane` and `select-layout` (no `move-pane` across windows);
-  - is idempotent.
-
-- [ ] **Step 1: Failing tests** (spec examples):
-  - `test_one_worker_fills_half`: `pick_grid(120,60,1) == (1,1)`.
-  - `test_two_side_by_side`: `pick_grid(120,60,2) == (2,1)`.
-  - `test_four_workers`: `pick_grid(120,60,4) == (2,2)`.
-  - `test_tall_window`: `pick_grid(60,80,2) == (1,2)`.
-- [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement `pick_grid`** with an
-  exhaustive search over `c in 1..n`.
-- [ ] **Step 4: `apply` against a real tmux.**
-  `test_apply_real_tmux` (skipped if there's no tmux) starts a detached
-  `tmux new-session -d -x 240 -y 60` and creates 2 workers. It expects the
-  lead width to be 120±1, the workers side by side, then kills the session.
-- [ ] **Step 5: Commit** "feat(mates): phone-shaped worker grid".
-
-### Task 3: Task state, queue, running locks
-
-**Files:**
-- Create: `mates/taskstate.py`
-- Test: `tests/test_taskstate.py`
-
-**Interfaces:**
-- Root: `STATE = ~/.claude/mates`. A task is `tasks/<id>/state.json` with keys:
-  - `id`, `repo`, `lead_branch`, `base`, `brief`, `check`, `status`;
-  - `status` is one of `queued`, `running`, `reported`, `reviewing`,
-    `accepted`, `sent-back`, `escalated`, `failed`, `closed`;
-  - `attempt`, `worker_pane`, `verifier_pane`, `commit`, `tree`,
-    `checked_tree`, `flags`, `verdict`, `spawned_ts`, `log_fields`.
-- `new_id(repo) -> str` gives `<reponame>-<YYYYmmdd-HHMMSS>-<4 hex>`.
-- `load(id) -> dict` and `save(state)`, which writes a temp file then renames
-  it.
-- `enqueue(id)` and `pop_queue() -> id|None` use `queue` (one id per line,
-  locked with `fcntl`).
-- `lock(id)` / `unlock(id)` manage `running/<id>`; `running() -> list[str]`.
+  minimizes `abs(log((cols/c)/(rows/r)) - log(target))` over `c*r >= n`. Ties
+  go to fewer empty cells.
+- `apply(lead_pane: str, qwen_panes: list[str]) -> None`:
+  - lead pane at 50% of the window width;
+  - Qwen panes rebuilt into the grid on the right, using `tmux join-pane` /
+    `split-window` plus `resize-pane`;
+  - idempotent.
 
 - [ ] **Step 1: Failing tests:**
-  - `test_save_load_roundtrip`
-  - `test_queue_fifo`
-  - `test_lock_unlock`
-  - `test_queue_start_bad_base`: a state whose base isn't in the repo makes
-    `cli.start_queued()` log `failed`. This test lands in Task 4.
+  - `pick_grid(120,60,1)==(1,1)`
+  - `pick_grid(120,60,2)==(2,1)`
+  - `pick_grid(120,60,4)==(2,2)`
+  - `pick_grid(60,80,2)==(1,2)`
+  - `test_apply_real_tmux` (skipped without tmux): in a detached
+    `new-session -x 240 -y 60` with 1 lead and 2 Qwen panes, expect the lead
+    width 120±1 and the Qwen panes side by side.
 - [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
-- [ ] **Step 5: Commit** "feat(mates): task state, queue, locks".
+- [ ] **Step 5: Commit** "feat(mates): phone-shaped grid for qwen panes".
 
-### Task 4: `spawn` and `wait`
+### Task 2: Session state
 
 **Files:**
-- Create: `mates/cli.py`
-- Modify: `mates/sandbox.sh` (add `--interactive`)
-- Test: `tests/test_cli.py` (with stub tmux, sandbox and claude, as in Phase 1)
+- Create: `mates/session.py`
+- Test: `tests/test_session.py`
 
 **Interfaces:**
-- `mates spawn <brief.json> --check "<cmd>" [--green-base "<why>"] [--inject src:dest]... [--files a,b]`
-  prints the id.
-  1. Validate the brief (`guard.load_brief`).
-  2. Run red on base in the sandbox (refuse or log as in Phase 1).
-  3. `git worktree add` on branch `mates/<id>` from the lead's committed HEAD;
-     warn if the brief's files are dirty.
-  4. If another task is `running`: `enqueue`, print `queued <id>`, stop here.
-  5. Stop hosaka (`systemctl --user stop hosaka-server`, logged), `lock(id)`,
-     start the forwarder.
-  6. Open the worker pane with `tmux split-window`, then `layout.apply`. The
-     pane runs `sandbox.sh --interactive ... -- claude-2.1.322 --permission-mode acceptEdits --append-system-prompt <worker.md> "<brief text>"`.
-- `sandbox.sh --interactive` drops `--new-session`, so the TUI keeps its
-  terminal. That's safe here because `/proc/sys/dev/tty/legacy_tiocsti` is
-  `0`, so no keystroke injection. It refuses to start if that file isn't `0`.
-- `mates wait <id> [--timeout S]` blocks until `.mates/report.md` exists
-  (prints `reported`) or the worker pane is gone (prints `dead`, status
-  `failed`). It's meant to run as the lead's Monitor command.
+- `repo_key(root) -> str`.
+- `load(root) -> dict|None` and `save(root, state)`, with an atomic write. The
+  state is `{"root", "claude_session": uuid, "qwens": [{"n", "worktree", "branch", "opencode_session"|None}]}`.
+- `ensure_worktree(root, n) -> (path, branch)` creates or reuses
+  `.claude/worktrees/mates-qwen-<n>` on `mates/qwen-<n>` from HEAD, and adds
+  `.mates/` to `.git/info/exclude`.
+- `opencode_session(worktree, db=~/.local/state/qwen/opencode/opencode.db) -> str|None`
+  returns the newest `session.id` with `directory = worktree` and no
+  `parent_id`. The DB is opened read-only.
+- `claude_session_exists(root, uuid) -> bool` checks for
+  `~/.claude/projects/<mangled root>/<uuid>.jsonl`.
 
 - [ ] **Step 1: Failing tests:**
-  - `test_spawn_refuses_green_base`
-  - `test_spawn_queues_when_busy`
-  - `test_spawn_opens_pane_with_sandbox_interactive` (stub tmux records argv)
-  - `test_wait_reports_report`
-  - `test_wait_reports_dead_pane`
-  - `test_spawn_stops_hosaka` (stub systemctl)
-  - `test_interactive_refused_without_tiocsti_off` (env
-    `MATES_TIOCSTI_FILE` points at a file holding `1`)
+  - `test_roundtrip`
+  - `test_ensure_worktree_idempotent` (temp repo)
+  - `test_opencode_session_newest_for_dir` (fixture sqlite DB with the
+    `session` columns `id, directory, parent_id, time_updated`)
+  - `test_restore_missing_session_fresh` (with a missing uuid,
+    `launch_plan()` marks Claude as fresh)
 - [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
-- [ ] **Step 5: Real check.**
-  1. In a scratch repo inside a detached tmux session, spawn the Phase 1
-     probe task.
-  2. `wait` returns `reported` within 10 min.
-  3. `capture-pane` shows the Claude Code TUI.
-- [ ] **Step 6: Commit** "feat(mates): spawn and wait".
+- [ ] **Step 5: Commit** "feat(mates): per-repo session state".
 
-### Task 5: `review`, `accept`, `send-back`, `escalate`
+### Task 3: Launcher
+
+**Files:**
+- Create: `bin/mates`
+- Modify: `mates/cli.py` (`launch`)
+- Create: `mates/lead.md`, `mates/lead-lessons.md`
+- Test: `tests/test_launcher.sh`, `tests/test_cli.py`
+
+**Interfaces:**
+- `bin/mates [--fresh]`, run in a git repo:
+  - **Window choice:** outside tmux, it runs
+    `tmux new-session -s mates-<repo> "bin/mates"`. Inside tmux, it uses the
+    current window if it has one pane, else opens `tmux new-window` running
+    `bin/mates`.
+- `cli.py launch [--fresh]` builds a plan from the state:
+  - **Claude:** fresh means `--session-id <new uuid> -n "mates <repo>"`;
+    restore means `--resume <uuid>`.
+  - **Qwen panes:** one entry `n=1` when fresh, otherwise every saved entry,
+    each `qwen -s <id>`, or plain `qwen` if its session is gone.
+  - **Steps:**
+    1. Save the state.
+    2. Split the Qwen panes (each `cd <worktree> && exec qwen ...`).
+    3. Apply the layout.
+    4. `exec` the lead in this pane:
+       `env -u ANTHROPIC_API_KEY MATES_LEAD=1 MATES_ROOT=<root> command claude <session args> --append-system-prompt "$(cat lead.md lead-lessons.md)"`.
+- Subcommands (`bin/mates send ...` and the rest) refuse unless
+  `MATES_LEAD=1`, except `list`, `log` and `retro`.
+- **`lead.md`:**
+  - the routing rule (quoted);
+  - "no check, no Qwen";
+  - the loop: `mates send N "<task + files + how to check>"`, then a Monitor
+    on `mates wait N`, then `mates diff N` and run the check, then
+    `mates merge N` or `mates answer N "<notes>"`;
+  - two failures and Claude does it;
+  - `mates log-route claude-self "<summary>" "<reason>"` for Claude-only work;
+  - `mates add` when parallel work is truly independent.
+
+- [ ] **Step 1: Failing tests:**
+  - `test_launch_plan_fresh` (1 Qwen, new uuid)
+  - `test_launch_plan_restore` (N Qwen, resume ids)
+  - `test_subcommand_refused_without_lead_env`
+  - `tests/test_launcher.sh::test_launch_window_choice`: a detached tmux with
+    stub `claude`/`qwen` (`MATES_CLAUDE`, `MATES_QWEN` env overrides) checks
+    that a 1-pane window is reused and a 2-pane window gets a new window.
+- [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
+- [ ] **Step 5: Commit** "feat(mates): launcher with fresh/restore". Wai links `~/bin/mates`.
+
+### Task 4: Delegation: send, wait, answer, diff, merge
 
 **Files:**
 - Modify: `mates/cli.py`
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
-- `mates review <id>` uses `pilot.collect`, then `pilot.verify` (the verifier
-  runs headless in its own pane under `tmux` with `-p`, its output visible),
-  then `pilot.rerun` with the original check. It sets `checked_tree` and
-  prints one JSON object of fixed fields: `goal, verdict_text, diff_stat,
-  flags, rerun, check_tail, attempt`.
-  - The lead reads the full diff only via `mates diff <id>`. A flag or a
-    failing verdict tells it to.
-- `mates diff <id>` prints `git diff base..commit`.
-- `mates accept <id>`:
-  1. Rebase `mates/<id>` onto the lead's current branch HEAD, in the
-     worktree.
-  2. Refuse if the rebased tree differs from `checked_tree`; rerun `review`
-     first if the base moved.
-  3. `git merge --ff-only mates/<id>` in the lead's checkout.
-  4. Log `accepted`, then `close`.
-  - On a rebase conflict: abort the rebase, print `conflict`, change nothing.
-- `mates send-back <id> "<notes>"`: `attempt += 1`. With attempt > 2 it
-  refuses and prints "escalate". Otherwise it removes the old report and
-  types the notes into the worker pane (`tmux send-keys -l` then `Enter`).
-- `mates escalate <id> "<why>"` logs `escalated` and closes. The lead then
-  does the task itself.
+- `mates send N "<text>"`:
+  1. Refuse if pane N is missing, or its worktree has uncommitted or
+     unmerged changes.
+  2. Rebase `mates/qwen-N` onto the lead HEAD.
+  3. Delete `.mates/done.md` and `.mates/question.md`.
+  4. Record a task (id, summary, ts) in the session state.
+  5. Type `[from Claude] <text>` into the pane: `tmux send-keys -l`, then
+     `Enter`.
+  6. Log route `qwen`.
+- `mates wait N [--timeout S]` blocks until `.mates/question.md` (prints
+  `question: <text>`), `.mates/done.md` (prints `done: <text>`), or the pane
+  is gone (prints `dead`). It's built for a Monitor until-loop.
+- `mates answer N "<text>"` deletes `question.md`, types
+  `[from Claude] <text>`, and logs the Q&A.
+- `mates diff N` prints `git -C <wt> diff` (tracked plus untracked, `.mates`
+  excluded) and a diff stat.
+- `mates merge N`:
+  1. `git add -A ':!.mates'` and commit in the worktree
+     (`-m "mates qwen-N: <task summary>"`).
+  2. Rebase onto the lead branch.
+  3. `git merge --ff-only mates/qwen-N` in the lead checkout.
+  4. Reset the worktree to the new HEAD.
+  5. Log `accepted`.
+  - On a conflict: abort the rebase, print `conflict`, change nothing.
+- A second `answer` with notes after a failed check counts as an attempt.
+  After 2 attempts, `send` prints a reminder to escalate.
 
-- [ ] **Step 1: Failing tests:**
-  - `test_review_prints_fixed_fields`
-  - `test_accept_fast_forwards`
-  - `test_accept_refuses_changed_tree`
-  - `test_accept_conflict_refuses`
-  - `test_send_back_types_notes` (stub tmux)
-  - `test_third_attempt_refused`
+- [ ] **Step 1: Failing tests** (stub tmux records `send-keys`; temp repos):
+  - `test_send_types_prefixed_message`
+  - `test_send_refuses_dirty_worktree`
+  - `test_send_rebases_clean_worktree`
+  - `test_wait_done`, `test_wait_question`, `test_wait_dead_pane`
+  - `test_merge_fast_forwards_and_resets`
+  - `test_merge_conflict_refuses`
+  - `test_merge_excludes_mates_dir`
 - [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
-- [ ] **Step 5: Commit** "feat(mates): review, accept, send-back, escalate".
+- [ ] **Step 5: Commit** "feat(mates): send, wait, answer, diff, merge".
 
-### Task 6: `close`, `list`, `log`, `layout`, and the `mates` launcher
+### Task 5: Panes and housekeeping: add, remove, list, log, log-route, layout
 
 **Files:**
 - Modify: `mates/cli.py`
-- Create: `bin/mates`, `mates/lead.md`, `mates/lead-lessons.md`
-- Test: `tests/test_cli.py`, `tests/test_launcher.sh`
+- Test: `tests/test_cli.py`
 
 **Interfaces:**
-- `mates close <id> [--stale]`:
-  - kills the task's panes and removes its worktrees (`fsutil.rmtree`);
-  - unlocks, writes the final log line (with `lead_tokens` estimated, see
-    below);
-  - starts the next queued task;
-  - restarts hosaka if nothing is running;
-  - reapplies the layout.
-  - `--stale` closes every `running` task whose worker pane is gone.
-- `mates list` prints a table: id, status, attempt, pane, age.
-- `mates log [--repo R] [--route X] [--outcome Y]` prints a table from
-  `log.jsonl`.
+- `mates add` creates the next worktree, splits a Qwen pane, applies the
+  layout, and saves.
+- `mates remove N` refuses if worktree N is dirty (unless `--force`). It
+  kills the pane, removes the worktree and branch (`fsutil.rmtree` for the
+  sandbox's files), relayouts, and saves.
+- `mates list` prints a table: n, pane, branch, dirty?, last task, OpenCode
+  session.
+- `mates log [--repo] [--route] [--outcome]` prints a table.
+- `mates log-route <route> "<summary>" "<reason>"` appends a log line.
 - `mates layout` reapplies the grid.
-- **`lead_tokens` estimate:** in the lead's transcript (the newest
-  `~/.claude/projects/<mangled lead cwd>/*.jsonl`), sum `usage` (input,
-  output and cache-creation tokens) of assistant turns whose tool input or
-  text contains the task id.
-- **`bin/mates`** with no subcommand launches:
-  - **Window choice:** outside tmux, `tmux new-session -s mates` re-running
-    `bin/mates`. Inside tmux, use the current window if it has one pane,
-    else `tmux new-window` re-running `bin/mates`.
-  - **Warm start:** a background `qwen server` plus a 1-token request to
-    load the model.
-  - **The lead itself:**
-    `exec env -u ANTHROPIC_API_KEY MATES_LEAD=1 command claude --append-system-prompt "$(cat mates/lead.md mates/lead-lessons.md)" "$@"`.
-  - With a subcommand, it runs `python3 mates/cli.py "$@"`, refusing without
-    `MATES_LEAD=1`.
-- **`lead.md`** contains:
-  - the routing rule, quoted from the spec;
-  - the corollary: no check, no Qwen;
-  - the brief template (JSON keys `goal`, `files`, `constraints`);
-  - the loop: spawn, then a Monitor on `mates wait`, then review, then diff
-    if flagged, then accept / send-back / escalate;
-  - "never read the worker's transcript";
-  - "log Claude-only routes too": `mates log-route claude-self "<summary>" "<reason>"`.
+- **State hygiene:** `save()` drops Qwen entries whose pane is gone before
+  writing.
 
 - [ ] **Step 1: Failing tests:**
-  - `test_close_starts_next_queued`
-  - `test_stale_lock_cleared`
+  - `test_add_then_restore_has_two`
+  - `test_remove_refuses_dirty`
+  - `test_save_drops_dead_panes`
   - `test_log_filters`
-  - `test_lead_tokens_estimate` (a fixture transcript)
-  - `test_subcommand_refused_without_lead_env`
-  - `tests/test_launcher.sh::test_launch_window_choice` (detached tmux:
-    one-pane window reused, a two-pane window gets a new window)
-- [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement**, plus `mates log-route`.
-- [ ] **Step 4: Run, expect PASS.**
-- [ ] **Step 5: Real end-to-end check.**
-  1. In a scratch repo under tmux, run `bin/mates`.
-  2. The lead is told to fix the probe task.
-  3. Watch it spawn, wait, review and accept, and see the log line appear.
-  4. This step runs Claude, and Wai watches it.
-- [ ] **Step 6: Commit** "feat(mates): launcher, close/list/log/layout, lead role". Link `~/bin/mates` (Wai runs `ln -sf`).
+- [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
+- [ ] **Step 5: Real end-to-end check** (Wai watches):
+  1. `mates` in a scratch repo.
+  2. The lead sends the probe task to Qwen and waits.
+  3. Qwen writes `done.md`; the lead diffs, runs the check, and merges.
+  4. `mates` is closed and reopened: the same Claude conversation and Qwen
+     session come back.
+- [ ] **Step 6: Commit** "feat(mates): add/remove panes, list, log".
 
-### Task 7: Hosaka lock
-
-**Files:**
-- Modify: `~/src/hosaka/scripts/gpu_mode.sh`, plus the hosaka server unit's
-  `ExecStartPre` (hosaka repo)
-
-**Interfaces:**
-- Before `hosaka-server` starts: if `~/.claude/mates/running/` has entries
-  whose pane still exists, it exits non-zero with "mates worker running
-  (<ids>); `mates close` first".
-
-- [ ] **Step 1: Failing test in the hosaka repo** (its pytest style):
-  `test_start_refused_with_mates_lock`, using a temp `HOME` with
-  `running/x`. Also `test_stale_lock_cleared` in mates (Task 6).
-- [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement** as a small script,
-  `scripts/mates_lock_check.sh`, called from `ExecStartPre` and from
-  `gpu_mode.sh homo`.
-- [ ] **Step 4: Run, expect PASS.**
-- [ ] **Step 5: Commit in hosaka**, by path, with the repo's own conventions.
-
-### Task 8: Daily retro
+### Task 6: Daily retro
 
 **Files:**
 - Create: `mates/prompts/retro.md`, `deploy/mates-retro.service`, `deploy/mates-retro.timer`
-- Modify: `mates/cli.py` (`retro`)
+- Modify: `mates/cli.py`
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
-- `mates retro [--date D]` (allowed without `MATES_LEAD`):
-  1. Skip if there are no log lines for the date.
-  2. Otherwise run `claude -p --setting-sources project --tools Read,Edit --strict-mcp-config`
-     from `/srv/mates/neutral`. It gets the day's `log.jsonl` lines and the
-     last 7 retros, never worker reports or transcripts.
-  3. Write `retros/D.md`.
-  4. Allow edits only to `mates/lead-lessons.md`; verify after the run with
-     `git diff --name-only`, and revert anything else.
-  5. Commit lessons changes, dated.
-- The timer runs at 23:30 daily (`Persistent=true`).
+- `mates retro [--date D]`:
+  1. Skip a day with no log lines.
+  2. Otherwise run
+     `claude -p --setting-sources project --strict-mcp-config --tools Read,Edit`
+     from `/srv/mates/neutral`, on that day's log lines plus the last 7
+     retros.
+  3. Write `~/.claude/mates/retros/D.md`.
+  4. Allow edits only to `mates/lead-lessons.md` (task types only, no repo
+     names); revert anything else.
+  5. Commit the lessons file, dated.
+  - Proposals to change the routing rule, concurrency or model go to
+    `OPEN-QUESTIONS.md`; the retro never applies them.
+- The timer runs daily at 23:30 with `Persistent=true`.
 
 - [ ] **Step 1: Failing tests:**
   - `test_retro_skips_empty_day`
-  - `test_retro_reverts_disallowed_edits` (stub claude edits two files)
+  - `test_retro_reverts_disallowed_edits` (stub claude)
 - [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
-- [ ] **Step 5:** Wai installs the timer: `systemctl --user enable --now mates-retro.timer` after linking the units.
+- [ ] **Step 5:** Wai enables the timer (`systemctl --user enable --now mates-retro.timer` after linking).
 - [ ] **Step 6: Commit** "feat(mates): daily retro".

@@ -2,6 +2,51 @@
 
 Date: 2026-11-10. Status: draft for Wai's review.
 
+## Revision 2026-11-10 (evening): two-pane mates — this section wins
+
+Wai, verbatim:
+- "mates opens two panes (at first) / claude code left / qwen opencode right /
+  I want to be able to talk to qwen myself if I want to, otherwise claude
+  messages opencode as me"
+- "qwen own worktree, claude merges"
+- "take a look at spire-trio / if I haven't run `mates` before, run it with
+  1 qwen and 1 claude / if I have, restore the claude with N agents that were
+  previously running"
+- the Qwen-to-Claude question channel, plus "make sure qwen knows this"
+- "add in the conventions that qwen has no internet, just so that it doesn't try"
+- the 20-task pilot was skipped ("c")
+
+What `mates` is now:
+
+- **Panes.** Claude Code (the lead, a normal Claude session) on the left half.
+  One or more `qwen` panes on the right: OpenCode on the local model, in the
+  same bwrap sandbox as the `qwen` command. Wai can type into any pane.
+- **Worktrees.** Each Qwen pane works in its own worktree of the repo, on
+  branch `mates/qwen-<n>`, made from the lead's committed HEAD. The two never
+  edit the same files.
+- **Delegating.** Claude types the request into a Qwen pane as Wai (tmux
+  send-keys), prefixed `[from Claude]`. Qwen's standing instructions
+  (`bin/qwen-sandbox.md`) tell it that, for such messages, it writes
+  `.mates/done.md` when finished or `.mates/question.md` when unsure, and does
+  not commit. Claude waits on either file. It answers a question in the pane,
+  or asks Wai when it is really Wai's call.
+- **Merging.** Claude reads the diff in Qwen's worktree and runs the checks
+  there. If they pass, it commits there and rebases onto its branch, then
+  fast-forwards its branch and resets Qwen's worktree to the new HEAD.
+  Otherwise it types notes back. After two failed tries, Claude does the task
+  itself. Work Wai did with Qwen directly is merged the same way, on request.
+- **Save and restore, as spire-trio does.** The first `mates` in a repo
+  starts 1 Claude and 1 Qwen. Later runs restore the same Claude conversation
+  and every Qwen pane that was open, each resuming its OpenCode session. The
+  state is saved on every change, in `~/.claude/mates/sessions/<repo>.json`.
+  `mates --fresh` starts over.
+- **Routing, audit log, retro: unchanged.** Every routed task gets a log line,
+  Claude-only tasks too, with questions and answers. The retro reads the log.
+- **Retired (code stays on the branch):** the spawn queue, the blind Qwen
+  verifier, red-on-base enforcement, and workers running as user `claude`. The
+  right panes run as Wai inside bwrap. Claude's review of the diff and its own
+  check run are the gate.
+
 ## Intent
 
 Wai is on a Claude Max subscription. The goal is to **get more work out of the
