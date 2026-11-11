@@ -1721,3 +1721,24 @@ def test_wait_done_only_when_idle(m):
     code, out, _ = m.run("wait", 1, "--timeout", "1")
     assert code == 0 and out.startswith("done: a.txt: fixed")
     assert m.run("check", 1, "--", "true")[0] == 0
+
+
+def test_rmtree_never_follows_links_and_handles_mode_000(tmp_path):
+    import cli
+    target = tmp_path / "outside"
+    target.write_text("x")
+    target.chmod(0o600)
+    stage = tmp_path / "stage"
+    ro = stage / "ro"
+    ro.mkdir(parents=True)
+    (ro / "link").symlink_to(target)
+    ro.chmod(0o500)
+    locked = stage / "locked"
+    (locked / "deep").mkdir(parents=True)
+    (locked / "deep" / "f").write_text("y")
+    (locked / "deep").chmod(0o000)
+    locked.chmod(0o000)
+    cli._rmtree(stage)
+    assert not stage.exists()
+    assert target.read_text() == "x"
+    assert (target.stat().st_mode & 0o777) == 0o600

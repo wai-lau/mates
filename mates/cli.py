@@ -783,13 +783,20 @@ def answer(args):
 # --- check, diff ---------------------------------------------------------------------------
 
 def _rmtree(path):
-    """rmtree that also removes what a check made read-only."""
-    def again(fn, p, _exc):
+    """rmtree that also removes what a check made read-only. Only real folders are
+    chmodded (lstat, never through a link): a link the check left must not make Wai's
+    process change the mode of whatever it points at."""
+    def unlock(d):
         with contextlib.suppress(OSError):
-            os.chmod(os.path.dirname(p), 0o700)
-            os.chmod(p, 0o700)
-            fn(p)
-    shutil.rmtree(path, onexc=again)
+            os.chmod(d, 0o700)
+        with contextlib.suppress(OSError), os.scandir(d) as it:
+            for e in it:
+                if e.is_dir(follow_symlinks=False):
+                    unlock(e.path)
+    with contextlib.suppress(OSError):
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            unlock(path)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 @contextlib.contextmanager
