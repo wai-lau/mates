@@ -46,6 +46,20 @@ What `mates` is now:
   verifier, red-on-base enforcement, and workers running as user `claude`. The
   right panes run as Wai inside bwrap. Claude's review of the diff and its own
   check run are the gate.
+- **Still in force from below, after the adversarial review (late
+  2026-11-10):**
+  - Qwen-written code never runs as Wai before it is merged. The lead's
+    check runs inside the same sandbox (`mates check`), and every git step on
+    a Qwen worktree runs with hooks off.
+  - In mates panes Qwen's git metadata is read-only, apart from its own
+    worktree index, so it cannot move the lead's branch.
+  - Checks get their tools from a tracked `.mates/runtime.sh`, built outside
+    the sandbox and mounted read-only (the Runtimes channel 1 below).
+  - What merges is the tree that passed the check.
+  - One open task at a time until two panes are measured to work at once.
+  - The hosaka lock, the cost fields in the log, and the guard flags.
+  - The unattended retro sees no Qwen-written text, has no tools, and `mates`
+    writes and checks its lessons.
 
 ## Intent
 
