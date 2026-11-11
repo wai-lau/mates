@@ -92,7 +92,7 @@ from the model's Modelfile.
 - **Older attempts (gpt-oss era)**: the `gpt_oss.chat` reference
   implementation needs unpublished `triton_kernels`; Homebrew's llama.cpp is
   CPU-only (the official llama.cpp CUDA build works, in
-  `~/.local/opt/llama.cpp-b12257/`, but Ollama's automatic MoE placement made it
+  `~/.local/opt/llama.cpp-b12257/` until 2026-11-10, but Ollama's automatic MoE placement made it
   unnecessary).
 
 ## Files outside this repo
@@ -104,7 +104,6 @@ from the model's Modelfile.
 | `~/.config/qwen/digests/` | short digests of CLAUDE.md files, by hash |
 | `~/.local/state/qwen/` | server log, OpenCode sessions |
 | `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
-| `~/.cache/mates-models/turbo-mtp-iq4xs.gguf` | downloaded GGUF (Ollama keeps its own copy; this one can be deleted) |
 | `~/.claude/mates/` | mates pilot state (log, measurements, transcripts; local only) |
 | `/srv/mates/` | mates worker sandbox area (shared with user `claude`) |
 
@@ -112,8 +111,7 @@ from the model's Modelfile.
 
 ```
 qwen stop
-ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates qwen3.8-iq4-text \
-  hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS qwen3.8:27b
-rm -rf ~/.local/opt/opencode-* ~/.local/opt/llama.cpp-* ~/.cache/mates-models ~/.config/qwen ~/.local/state/qwen
+ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates qwen3.8:27b
+rm -rf ~/.local/opt/opencode-* ~/.config/qwen ~/.local/state/qwen
 rm ~/bin/qwen
 ```
