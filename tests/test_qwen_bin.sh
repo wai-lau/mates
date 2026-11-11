@@ -125,12 +125,74 @@ d_wt=$(in_ "$T/wt" "$QWEN" opencode-dir); d_other=$(in_ "$T/other" "$QWEN" openc
 check "opencode-dir is \$STATE/opencode/<key of main checkout>" '[ "$d_repo" = "$T/state/qwen/opencode/$(key "$T/repo")" ]'
 check "opencode-dir is the same in a subdir and in a worktree" '[ "$d_sub" = "$d_repo" ] && [ "$d_wt" = "$d_repo" ]'
 check "opencode-dir differs for another repo" '[ -n "$d_other" ] && [ "$d_other" != "$d_repo" ]'
-in_ "$T/wt" "$QWEN" exec -- sh -c 'echo s > ~/.local/share/opencode/probe' 2>/dev/null
+in_ "$T/wt" "$QWEN" shell -c 'echo s > ~/.local/share/opencode/probe' >/dev/null 2>&1
 check "the sandbox's OpenCode folder is the repo's folder" '[ -f "$d_repo/probe" ]'
-in_ "$T/other" "$QWEN" exec -- sh -c 'test ! -e ~/.local/share/opencode/probe' 2>/dev/null; rc=$?
+in_ "$T/other" "$QWEN" shell -c 'test ! -e ~/.local/share/opencode/probe' >/dev/null 2>&1; rc=$?
 check "another repo's sandbox does not see it" '[ "$rc" = 0 ]'
 ( cd "$T" && "$QWEN" opencode-dir >/dev/null 2>&1 ); rc=$?
 check "opencode-dir outside a repo fails" '[ "$rc" != 0 ]'
+
+in_ "$T/repo" "$QWEN" exec -- sh -c 'ls -A ~/.local/share/opencode; echo x > ~/.local/share/opencode/from-check' 2>/dev/null >"$T/oc.out"; rc=$?
+check "exec gets an empty OpenCode folder, and its writes do not persist" '[ "$rc" = 0 ] && [ ! -s "$T/oc.out" ] && [ ! -e "$d_repo/from-check" ]'
+
+# --- repo discovery cannot be steered by planted git files -------------
+L=$T/lead; mkrepo "$L"; echo lead > "$L/lead.txt"
+W=$L/.claude/worktrees/mates-qwen-1
+git -C "$L" worktree add -q -b mates/qwen-1 "$W"
+mkdir -p "$W/.mates/check/tree1"
+fakegit() { git init -q "$T/fk" && mv "$T/fk/.git" "$1" && rmdir "$T/fk"; }  # a non-bare git dir, moved
+fakegit "$W/.mates/fake"
+git config --file "$W/.mates/fake/config" core.worktree "$L"
+echo "gitdir: $W/.mates/fake" > "$W/.mates/.git"
+C=$W/.mates/check/tree1
+( cd "$C" && git rev-parse --show-toplevel ) > "$T/disc.out" 2>/dev/null
+check "setup: host git discovery from the check folder is steered to the lead checkout" '[ "$(cat "$T/disc.out")" = "$L" ]'
+plant='echo PLANTED > "$1/lead.txt"'
+QWEN_GIT_RO=1 in_ "$C" "$QWEN" exec -- sh -c "$plant" sh "$L" 2>/dev/null; rc=$?
+check "planted .mates/.git, no QWEN_ROOT: exec refuses" '[ "$rc" != 0 ] && grep -qx lead "$L/lead.txt"'
+QWEN_GIT_RO=1 QWEN_ROOT=$W in_ "$C" "$QWEN" exec -- sh -c "$plant" sh "$L" 2>/dev/null; rc=$?
+check "planted .mates/.git, QWEN_ROOT=worktree: the lead checkout is not mounted (host file unchanged)" 'grep -qx lead "$L/lead.txt"'
+QWEN_GIT_RO=1 QWEN_ROOT=$W in_ "$C" "$QWEN" exec -- sh -c 'echo ok > "$1/check.txt" && git -C "$2" status --short >/dev/null' sh "$C" "$W" 2>/dev/null; rc=$?
+check "QWEN_ROOT=worktree: exec from the check folder runs, git status works" '[ "$rc" = 0 ] && [ -f "$C/check.txt" ]'
+QWEN_ROOT=$W in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "QWEN_ROOT with a cwd outside it: refused" '[ "$rc" != 0 ]'
+mkdir -p "$W/sub"; fakegit "$W/sub-fake"; git config --file "$W/sub-fake/config" core.worktree "$L"
+echo "gitdir: $W/sub-fake" > "$W/sub/.git"
+in_ "$W/sub" "$QWEN" exec -- sh -c "$plant" sh "$L" 2>/dev/null; rc=$?
+check "planted sub/.git with core.worktree elsewhere: refused" '[ "$rc" != 0 ] && grep -qx lead "$L/lead.txt"'
+echo "gitdir: $T/other/.git" > "$W/sub/.git"
+in_ "$W/sub" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "planted sub/.git pointing at another repo's git dir: refused" '[ "$rc" != 0 ]'
+git -C "$L" worktree add -q -b mates/qwen-2 "$L/.claude/worktrees/mates-qwen-2"
+echo "gitdir: $L/.git/worktrees/mates-qwen-2" > "$W/sub/.git"
+in_ "$W/sub" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "planted sub/.git pointing at another worktree's admin dir: refused" '[ "$rc" != 0 ]'
+rm -rf "$W/sub" "$W/sub-fake"
+ln -s "$L/.git" "$T/symrepo-git"; mkdir "$T/symrepo"; ln -s "$L/.git" "$T/symrepo/.git"
+in_ "$T/symrepo" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "a .git symlink: refused" '[ "$rc" != 0 ]'
+mkrepo "$T/cw"; git -C "$T/cw" config core.worktree "$L"
+in_ "$T/cw" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "main checkout whose core.worktree points elsewhere: refused" '[ "$rc" != 0 ]'
+mkrepo "$T/inc"; git -C "$T/inc" config include.path "$T/inc-extra"
+in_ "$T/inc" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "git config with include: refused" '[ "$rc" != 0 ]'
+git -C "$T/repo" -c protocol.file.allow=always submodule add -q "$T/other" sm >/dev/null 2>&1
+in_ "$T/repo/sm" "$QWEN" exec -- git status --short 2>/dev/null >/dev/null; rc=$?
+check "a real submodule still works" '[ "$rc" = 0 ]'
+check "a submodule has its own OpenCode folder" '[ "$(in_ "$T/repo/sm" "$QWEN" opencode-dir)" != "$d_repo" ]'
+FH=$T/fakehome; mkrepo "$FH"
+( cd "$FH" && HOME=$FH "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "a repo top of \$HOME: refused" '[ "$rc" != 0 ]'
+mkdir -p "$FH/inner"
+( cd "$FH" && HOME=$FH/inner "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "a repo top above \$HOME: refused" '[ "$rc" != 0 ]'
+( cd / && QWEN_ROOT=/ "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "QWEN_ROOT=/: refused" '[ "$rc" != 0 ]'
+( cd "$HOME" && QWEN_ROOT=$HOME "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "QWEN_ROOT=\$HOME: refused" '[ "$rc" != 0 ]'
+mkdir -p "$T/rtwrap"; ( cd "$T/repo" && QWEN_RUNTIME=$T "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "a runtime dir that holds the repo: refused" '[ "$rc" != 0 ]'
 
 # --- GPU lock -----------------------------------------------------------
 rm -f "$T/ollama-started"

@@ -31,6 +31,7 @@ Environment overrides:
 | `QWEN_CTX` | context length OpenCode is told (default 65536) |
 | `QWEN_OPENCODE` | path to the OpenCode binary |
 | `QWEN_GIT_RO=1` | the whole git folder and a worktree's `.git` file are read-only: `git status` and `git diff` work; add, commit, ref and object writes fail, and the worktree cannot be pointed at another git folder. mates panes and `mates check` always set it. Any value but empty or `0` turns it on |
+| `QWEN_ROOT=<dir>` | the repo top to mount, instead of finding it from the current folder; the current folder must be inside it. mates sets it for every launch and check |
 | `QWEN_RUNTIME=<dir>` | `<dir>` is mounted read-only at the same path; its `env` file's `KEY=VALUE` lines (same filter as `mates/runtime.py`) are set inside, and a `PATH=` line goes in front of the sandbox PATH. A folder holding your home, or a secret path, is refused |
 
 ## What happens when you run it
@@ -63,6 +64,16 @@ flowchart TD
 | `/usr`, the OpenCode binary | read-only |
 | user | you (`wai`), so files it writes are yours |
 | your terminal | kept attached, so resizing the pane resizes the agent; safe because this kernel blocks terminal keystroke injection (`dev.tty.legacy_tiocsti = 0`). If that setting is ever on, `qwen` detaches the terminal and warns |
+
+**How the repo is found.** `qwen` never runs git on the host to find the
+repo, because a `.git` file or git config that Qwen planted in a folder it can
+write (such as `.mates/`, where `mates check` runs) would point git at the lead's
+checkout or at your home. The top is `QWEN_ROOT`, or else the nearest folder
+above with a `.git` (refused inside any `.mates` folder). It refuses when:
+`.git` is a symlink; a `.git` file points anywhere but this checkout's own
+worktree folder (whose `gitdir` file must point back) or a submodule git dir;
+`core.worktree` anywhere names a folder other than the top; a git config uses
+`include`; or the top or a git dir is `/`, your home or above it, or a secret path.
 
 OpenCode runs with every tool allowed (no approval prompts). Web fetch is
 denied, and there is no network anyway. The sandbox is the guard.
