@@ -164,9 +164,11 @@ def launch_plan(state, root, fresh, claude_args, runtime_dir=None):
     st = copy.deepcopy(state) if state is not None else session.new_state(root)
     st["runtime"] = str(runtime_dir) if runtime_dir else None
     session_args = _claude_plan(st, root, restore, warnings)
-    qwens = [{"n": q["n"], "worktree": q["worktree"],
-              "cmd": qwen_cmd(q["worktree"], q["opencode_session"], runtime_dir, root)}
-             for q in _qwen_entries(st, root, restore, warnings)]
+    qwens = []
+    for q in _qwen_entries(st, root, restore, warnings):
+        q["runtime"] = st["runtime"]  # what this pane runs on (mates runtime restarts the stale ones)
+        qwens.append({"n": q["n"], "worktree": q["worktree"],
+                      "cmd": qwen_cmd(q["worktree"], q["opencode_session"], runtime_dir, root)})
     return {"claude_argv": _claude_argv(root, session_args, claude_args), "qwens": qwens,
             "warnings": warnings, "state": st}
 
@@ -1063,6 +1065,77 @@ def discard(args):
     return 0
 
 
+# --- runtime: the lead installs what Qwen's checks need ----------------------------------------
+# Wai, 2026-11-11: "allow the leader to install things to that Qwen can run", the sandboxed-install
+# option, and "Ensure that Claude doesn't just install whatever Qwen tells it to". The lead commits
+# .mates/runtime.sh; this builds it in the build sandbox (runtime.py: only its lockfiles go in,
+# only package registries come out), logs why, and restarts the Qwen panes on it.
+
+def _restart_pane(root, pane, q, sid, dest):
+    """Restart Qwen pane `pane` on runtime `dest`, in OpenCode session `sid` (its chat kept)."""
+    _tmux_out("set-option", "-p", "-u", "-t", pane, QWEN_LIVE)  # -k kills the wrapper before it unsets it
+    _tmux_out("respawn-pane", "-k", "-t", pane, "-c", str(root), qwen_cmd(q["worktree"], sid, dest, root))
+    session.tag_pane(pane, root, q["n"])  # also clears a failed mark
+    release_pane(pane)
+
+
+def _log_runtime(root, reason, h, outcome, restarted):
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12], "route": "runtime",
+                        "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, 'HEAD'))}",
+                        "reason": reason, "outcome": outcome, "runtime": h, "restarted": restarted})
+
+
+def runtime_cmd(args):
+    p = _parser("runtime", 'mates runtime --reason "<what the checks need, and who asked>"')
+    p.add_argument("--reason", required=True)
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    h = runtime.runtime_hash(root, "HEAD")
+    if h is None:
+        die(f"no {runtime.SCRIPT} committed at HEAD: write it, `git add -f {runtime.SCRIPT}` "
+            "(.mates/ is excluded), commit, then run mates runtime again")
+    db = _db(root)
+    old = state.get("runtime")
+    open_ = []
+    for q in state["qwens"]:
+        hit = None if q.get("closed") else _find(root, state, q)
+        if hit is None:
+            continue
+        pane, _ = hit
+        if _busy(q, db):
+            die(f"Qwen pane {q['n']} is busy (OpenCode is replying); wait for it, then run mates runtime again")
+        live = _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() == "1"
+        if live and not input_empty(pane):
+            die(f"Qwen pane {q['n']} has text in its input box (Wai may be typing); not restarting it")
+        q.setdefault("runtime", old)
+        open_.append((q, pane))
+    try:
+        dest = str(runtime.ensure_runtime(root, "HEAD"))
+    except (RuntimeError, OSError, fsutil.UnsafeDir) as e:
+        _log_runtime(root, a.reason, h, "failed", [])
+        die(f"runtime build failed, panes left as they were: {e}", 1)
+    state["runtime"] = dest
+    save_state(root, state)
+    restarted = []
+    for q, pane in open_:
+        if q.get("runtime") == dest:
+            continue
+        sid = session.opencode_session(q["worktree"], db)
+        _restart_pane(root, pane, q, sid, dest)
+        q["runtime"] = dest
+        save_state(root, state)
+        restarted.append(q["n"])
+        print(f"restarted Qwen pane {q['n']} ({pane}) on runtime {h}" + (" with its chat" if sid else ", new chat"))
+    if not restarted and dest == old:
+        print(f"runtime {h} unchanged; no pane restarted")
+        return 0
+    _log_runtime(root, a.reason, h, "accepted", restarted)
+    print(f"runtime {h} ready at {dest}: checks and new panes use it")
+    return 0
+
+
 def retro(args):
     import retro as r  # imported here: retro reads cli's constants at import
     return r.main(args)
@@ -1070,7 +1143,7 @@ def retro(args):
 
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
-            "list": panes.list_, "log": panes.log, "log-route": panes.log_route}
+            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd}
 
 
 def main(argv=None):

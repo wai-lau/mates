@@ -1742,3 +1742,96 @@ def test_rmtree_never_follows_links_and_handles_mode_000(tmp_path):
     assert not stage.exists()
     assert target.read_text() == "x"
     assert (target.stat().st_mode & 0o777) == 0o600
+
+
+# --- mates runtime: the lead installs what Qwen needs (Wai, 2026-11-11: "allow the leader to
+# install things", the sandboxed-install option). Builds the committed .mates/runtime.sh and
+# restarts the idle Qwen panes on it, each with its OpenCode chat kept.
+
+RT_SCRIPT = '# lockfiles: a.txt\nmkdir -p "$MATES_RUNTIME/bin"; echo "PATH=$MATES_RUNTIME/bin" > "$MATES_RUNTIME/env"\n'
+
+
+def _rt_commit(m, script=RT_SCRIPT):
+    (m.root / ".mates").mkdir(exist_ok=True)
+    (m.root / ".mates/runtime.sh").write_text(script)
+    m.git("add", "-f", ".mates/runtime.sh")  # .mates/ is in info/exclude (Qwen's protocol files)
+    m.git("commit", "-q", "-m", "runtime")
+
+
+def test_runtime_needs_a_committed_script(m):
+    code, _, err = m.run("runtime", "--reason", "pytest for the checks")
+    assert code == 2 and ".mates/runtime.sh" in err and "commit" in err
+
+
+def test_runtime_needs_a_reason(m):
+    _rt_commit(m)
+    code, _, _ = m.run("runtime")
+    assert code == 2 and m.state().get("runtime") is None
+
+
+def test_runtime_builds_and_restarts_idle_panes(m):
+    _rt_commit(m)
+    m.ses("ses_1")
+    code, out, err = m.run("runtime", "--reason", "pytest for the checks")
+    assert code == 0, err
+    rt = m.state()["runtime"]
+    assert Path(rt).parent.parent == m.private / "mates" / "runtimes" and (Path(rt) / "env").is_file()
+    calls = m.tmux_calls()
+    respawn = next(c for c in calls if c.startswith("respawn-pane"))
+    assert respawn.startswith(f"respawn-pane -k -t %1 -c {m.root} ")
+    assert f"QWEN_RUNTIME={rt}" in respawn and "-s ses_1" in respawn  # the chat is kept
+    unlive = f"set-option -p -u -t %1 {cli.QWEN_LIVE}"
+    assert calls.index(unlive) < calls.index(respawn) < calls.index("wait-for -S mates-go-%1")
+    assert "restarted Qwen pane 1" in out
+
+
+def test_runtime_refuses_busy_pane(m):
+    _rt_commit(m)
+    m.ses("ses_1")
+    m.msg("ses_1", "user", time.time())  # a message with no reply yet
+    code, _, err = m.run("runtime", "--reason", "r")
+    assert code != 0 and "busy" in err
+    assert m.state().get("runtime") is None and not any(c.startswith("respawn-pane") for c in m.tmux_calls())
+
+
+def test_runtime_refuses_typed_input(m):
+    _rt_commit(m)
+    m.input("┃  half a sentence Wai is typ\n")
+    code, _, err = m.run("runtime", "--reason", "r")
+    assert code != 0 and "input box" in err and m.state().get("runtime") is None
+
+
+def test_runtime_unchanged_restarts_nothing(m):
+    _rt_commit(m)
+    assert m.run("runtime", "--reason", "r")[0] == 0
+    before = len([c for c in m.tmux_calls() if c.startswith("respawn-pane")])
+    code, out, _ = m.run("runtime", "--reason", "r")
+    assert code == 0 and "unchanged" in out
+    assert len([c for c in m.tmux_calls() if c.startswith("respawn-pane")]) == before
+
+
+def test_runtime_failure_keeps_the_old_runtime(m):
+    _rt_commit(m, "# lockfiles: a.txt\necho no-such-package >&2; exit 3\n")
+    code, _, err = m.run("runtime", "--reason", "r")
+    assert code == 1 and "no-such-package" in err
+    assert m.state().get("runtime") is None and not any(c.startswith("respawn-pane") for c in m.tmux_calls())
+    assert m.log()[-1]["route"] == "runtime" and m.log()[-1]["outcome"] == "failed"
+
+
+def test_runtime_is_logged(m):
+    _rt_commit(m)
+    assert m.run("runtime", "--reason", "pytest for the checks")[0] == 0
+    rec = m.log()[-1]
+    assert (rec["route"], rec["outcome"], rec["reason"]) == ("runtime", "accepted", "pytest for the checks")
+    assert rec["runtime"] == Path(m.state()["runtime"]).name and rec["restarted"] == [1]
+
+
+def test_runtime_restarts_a_pane_left_on_an_old_runtime(m):
+    _rt_commit(m)
+    assert m.run("runtime", "--reason", "r")[0] == 0
+    st = m.state()
+    st["qwens"][0]["runtime"] = "/old/runtime"  # it was busy when the runtime last changed
+    session.save(str(m.root), st)
+    code, out, _ = m.run("runtime", "--reason", "r")
+    assert code == 0 and "restarted Qwen pane 1" in out
+    assert m.state()["qwens"][0]["runtime"] == m.state()["runtime"]

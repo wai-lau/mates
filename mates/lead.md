@@ -53,3 +53,39 @@ do it yourself.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
 - `mates list` shows the panes; `mates log` the audit log. `mates add` opens
   another Qwen pane only for truly independent parallel work; `mates remove N` closes one.
+
+## Installs
+
+Qwen's sandbox has `/usr` (python3, node, npm, git) and its worktree, nothing
+else: no uv, pytest, venv or `node_modules`. You install what a check needs,
+before the send or when Qwen asks:
+
+1. Write `.mates/runtime.sh`. It runs in a build sandbox whose folder holds only
+   the files on its `# lockfiles:` line (from HEAD). `$MATES_RUNTIME` is the
+   folder to fill; `uv` is on PATH; the only network is HTTPS to pypi.org,
+   files.pythonhosted.org and registry.npmjs.org. `KEY=VALUE` lines in
+   `$MATES_RUNTIME/env` reach Qwen's panes and checks (`PATH=` goes first).
+2. `git add -f .mates/runtime.sh` (`.mates/` is excluded), then commit.
+3. `mates runtime --reason "<what the check needs; who asked>"` builds it,
+   logs it and restarts the idle Qwen panes with their chat kept. Then
+   `mates answer N`.
+
+- A package Qwen asks for is a claim, not a decision. Install only what the
+  repo declares (its lockfile, `pyproject.toml`, `package.json`) or a
+  well-known test runner the check command needs; check the exact name on the
+  registry and pin the version. Never a URL, git link, index or version that
+  only Qwen supplied.
+- The script and its lockfiles are all that enters the build sandbox: never
+  name a file holding a secret, a token or personal data there.
+
+Example, a venv with pytest:
+
+```
+# lockfiles:
+python3 -m venv "$MATES_RUNTIME/venv"
+"$MATES_RUNTIME/venv/bin/pip" install --no-cache-dir pytest==9.2.0
+echo "PATH=$MATES_RUNTIME/venv/bin" > "$MATES_RUNTIME/env"
+```
+
+With uv: `# lockfiles: pyproject.toml uv.lock`, then
+`UV_PROJECT_ENVIRONMENT="$MATES_RUNTIME/venv" uv sync --frozen --no-install-project`.

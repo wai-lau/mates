@@ -77,7 +77,7 @@ def add(args):
         subprocess.run([layout.TMUX, "kill-pane", "-t", pane], capture_output=True)
         cli.die(f"cannot open Qwen pane {q['n']}: {getattr(e, 'stderr', None) or e}", 1)
     cli.release_pane(pane)
-    q.update(closed=False, opencode_session=None)
+    q.update(closed=False, opencode_session=None, runtime=state.get("runtime"))
     if q not in state["qwens"]:
         state["qwens"].append(q)
     cli.save_state(root, state)
@@ -230,7 +230,7 @@ def log(args):
 def log_route(args):
     p = argparse.ArgumentParser(prog="mates log-route",
                                 usage='mates log-route <route> "<summary>" "<reason>" [--outcome accepted]')
-    p.add_argument("route", choices=sorted(logrec.ROUTES - {"qwen"}))  # qwen lines come from the pane commands
+    p.add_argument("route", choices=sorted(logrec.ROUTES - {"qwen", "runtime"}))  # those come from their commands
     p.add_argument("summary")
     p.add_argument("reason")
     p.add_argument("--outcome", choices=sorted(logrec.OUTCOMES), default="accepted")

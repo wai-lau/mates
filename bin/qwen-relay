@@ -4,16 +4,114 @@
   qwen-relay out --sock S --to 127.0.0.1:PORT      (outside: unix socket -> Ollama)
   qwen-relay in  --sock S --listen 127.0.0.1:11434 (inside, no network: TCP -> unix socket)
   qwen-relay clip --sock S --run PROG               (outside: each connection's bytes -> PROG's stdin)
+  qwen-relay egress --sock S                        (outside: HTTPS proxy for a runtime build)
 
 The sandbox has no network namespace route out; these sockets are the only
 ways to reach the model server and (write-only) the clipboard.
+
+egress is the one way out of a `mates` runtime build (mates/runtime.py): an HTTP
+CONNECT proxy that opens a tunnel only to port 443 of a package registry in
+REGISTRIES, at a public address. No other host, so an install can't fetch a URL
+or git link (from Qwen or anyone) and can't send anything to a host of its
+choosing. The name is resolved here, outside, and the tunnel goes to the checked
+address, so a name that resolves to loopback, the LAN or the WSL host never
+connects: local services stay out of reach (emet's MCP server listens on
+127.0.0.1). Each tunnel, allowed or refused, is one line on stderr.
 """
 import argparse
 import asyncio
+import ipaddress
 import os
+import re
+import socket
 import subprocess
+import sys
 
 CLIP_MAX = 1 << 20  # a copy bigger than 1 MiB is cut off
+EGRESS_PORT = 443
+# The package registries a runtime build may download from: exact names, no subdomains.
+# Adding one is a code change here, which Wai sees; the lead cannot widen it on its own.
+REGISTRIES = frozenset({"pypi.org", "files.pythonhosted.org", "registry.npmjs.org"})
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+HOST_RE = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
+
+
+def public_addr(ip):
+    """True only for a globally routed unicast address (an IPv4-mapped IPv6 one is judged as IPv4)."""
+    a = ipaddress.ip_address(ip.split("%", 1)[0])
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    return a.is_global and not a.is_multicast
+
+
+def parse_connect(head):
+    """(host, port) of a `CONNECT host:port HTTP/1.x` request head; ValueError for anything else."""
+    parts = head.split(b"\r\n", 1)[0].decode("ascii").split(" ")
+    if len(parts) != 3 or parts[0] != "CONNECT" or not parts[2].startswith("HTTP/1."):
+        raise ValueError("not a CONNECT request")
+    host, sep, port = parts[1].rpartition(":")
+    if not sep or not port.isdigit():
+        raise ValueError("no port")
+    if host.startswith("[") and host.endswith("]"):
+        host = str(ipaddress.IPv6Address(host[1:-1]))
+    elif not HOST_RE.match(host):
+        raise ValueError("bad host name")
+    return host, int(port)
+
+
+def allowed_host(host):
+    return host.lower() in REGISTRIES
+
+
+def pick_public(infos):
+    """[(family, sockaddr)] of the getaddrinfo answers that are public addresses."""
+    return [(fam, sa) for fam, _, _, _, sa in infos if public_addr(sa[0])]
+
+
+def _log(msg):
+    print(f"qwen-relay egress: {msg}", file=sys.stderr, flush=True)
+
+
+async def egress(r, w):
+    def refuse(why, code=b"403 Forbidden"):
+        _log(why)
+        w.write(b"HTTP/1.1 " + code + b"\r\n\r\n")
+        w.close()
+
+    try:
+        head = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), 30)
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+        w.close()
+        return
+    try:
+        host, port = parse_connect(head)
+    except ValueError as e:
+        first = head.split(b"\r\n", 1)[0][:120]
+        return refuse(f"refused request {first!r} ({e})")
+    target = f"{host}:{port}"
+    if port != EGRESS_PORT:
+        return refuse(f"refused {target} (only port {EGRESS_PORT})")
+    if not allowed_host(host):
+        return refuse(f"refused {target} (not a package registry)")
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        return refuse(f"refused {target} (no address)", b"502 Bad Gateway")
+    addrs = pick_public(infos)
+    if not addrs:
+        return refuse(f"refused {target} (not a public address: {sorted({sa[0] for *_, sa in infos})})")
+    for fam, sa in addrs:
+        try:
+            ur, uw = await asyncio.wait_for(asyncio.open_connection(sa[0], sa[1], family=fam), 15)
+            break
+        except (OSError, asyncio.TimeoutError):
+            continue
+    else:
+        return refuse(f"failed {target} (no answer)", b"502 Bad Gateway")
+    _log(f"allowed {target} -> {sa[0]}")
+    w.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+    await w.drain()
+    await asyncio.gather(pipe(r, uw), pipe(ur, w))
 
 
 async def pipe(r, w):
@@ -29,7 +127,7 @@ async def pipe(r, w):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["in", "out", "clip"])
+    ap.add_argument("mode", choices=["in", "out", "clip", "egress"])
     ap.add_argument("--sock", required=True)
     ap.add_argument("--to")
     ap.add_argument("--listen")
@@ -49,6 +147,11 @@ async def main():
         if os.path.exists(a.sock):
             os.unlink(a.sock)
         srv = await asyncio.start_unix_server(handle, path=a.sock)
+        os.chmod(a.sock, 0o600)
+    elif a.mode == "egress":
+        if os.path.exists(a.sock):
+            os.unlink(a.sock)
+        srv = await asyncio.start_unix_server(egress, path=a.sock)
         os.chmod(a.sock, 0o600)
     elif a.mode == "out":
         host, port = a.to.rsplit(":", 1)
