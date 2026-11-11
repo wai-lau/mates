@@ -53,6 +53,12 @@ set -euo pipefail
 
 MODEL=${QWEN_MODEL:-qwen3.8-27b-turbo-heretic:mtp-iq4xs}
 CTX=${QWEN_CTX:-65536}
+# What OpenCode's status line shows for the model: short, still accurate (Wai: the full
+# id plus provider name was too long for a phone-width pane).
+case $MODEL in
+  qwen3.8-27b-turbo-heretic:*) LABEL=qwen3.8-27b-turbo ;;
+  *) LABEL=${MODEL%%:*} ;;
+esac
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
 OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1 || true)}  # none: only the TUI start refuses
@@ -510,9 +516,9 @@ cfg='{
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama (local, sandboxed)",
+      "name": "local",
       "options": { "baseURL": "http://127.0.0.1:11434/v1" },
-      "models": { "MODEL_": { "name": "MODEL_", "tool_call": true, "reasoning": true,
+      "models": { "MODEL_": { "name": "LABEL_", "tool_call": true, "reasoning": true,
                               "limit": { "context": CTX_, "output": 16384 } } }
     }
   },
@@ -520,7 +526,7 @@ cfg='{
   "tools": { "webfetch": false, "websearch": false },
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
 }'
-cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}
+cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}
 SANDBOX_ENV=(OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1
   OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 "OPENCODE_CONFIG_CONTENT=$cfg")
 echo "qwen: OpenCode on $MODEL at http://$host, sandboxed (first reply is slow while the model loads)" >&2
