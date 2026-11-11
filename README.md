@@ -1,195 +1,123 @@
 # Local LLM Learning
 
-Notes from setting up local LLM inference on this machine. What works, what failed, and the daily-use commands.
+Local LLM inference on this machine: what runs, how to use it, and what was
+tried. Updated 2026-11-10.
+
+- Daily use of the local coding model: [`docs/qwen.md`](docs/qwen.md)
+- Every model tried, with measurements: [`docs/models.md`](docs/models.md)
+- The Claude-led crew with local Qwen workers ("mates"): spec in
+  [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md),
+  build on branch `mates-phase1` (Phase 1 of 2, gate still open)
+- The TTS server (hosaka): [`docs/superpowers/specs/2026-06-22-local-tts-server-design.md`](docs/superpowers/specs/2026-06-22-local-tts-server-design.md)
 
 ## Hardware
 
 | Component | Spec |
-|-----------|------|
-| GPU | NVIDIA RTX 5070 Ti, 16 GB VRAM (Blackwell, SM 12.0) |
-| Host RAM | 16 GB |
-| WSL2 RAM | 12 GB (via `.wslconfig`) |
-| OS | Windows + WSL2 (Ubuntu) |
+|---|---|
+| GPU 0 | NVIDIA RTX 5070 Ti, 16 GB (Blackwell, sm_120), about 14.7 GB free with the Windows desktop up |
+| GPU 1 | NVIDIA GTX 1660, 6 GB (Turing, sm_75), about 5 GB free |
+| WSL2 RAM | 39 GB |
+| OS | Windows + WSL2, Ubuntu 24.04 |
 
-Hard rule: model must fit 100% in VRAM. Any CPU offload → kernel OOM-kills due to tight 8 GB default WSL RAM (now 12 GB but still tight with 12 GB models).
+Both GPUs together give about 19.7 GB for a model. With 39 GB of RAM, a model
+that spills to CPU no longer risks an OOM kill; it only gets slower (see
+`docs/models.md`). Mixture-of-experts models run well with their experts in RAM.
 
-## Current Setup
+## Current setup
 
-- **Runtime:** Ollama 0.30.0 (systemd service)
-- **Model:** `gpt-oss:20b` (mxfp4, ~13 GB on disk, ~15 GB VRAM at runtime)
-- **CLI agent:** aider 0.86.2 (Python venv at `~/aider-venv`)
+| Piece | What |
+|---|---|
+| Runtime | Ollama 0.40.16, system service on `127.0.0.1:11434` (settings in `/etc/systemd/system/ollama.service.d/override.conf`) |
+| Coding model | `qwen3.8-27b-turbo-heretic:mtp-iq4xs`, 64K context (why: `docs/models.md`) |
+| Coding agent | OpenCode 1.19.5 (`~/.local/opt/opencode-1.19.5/`), run through `qwen` inside a bubblewrap sandbox |
+| Fallback agent | aider 0.86.2 (`~/aider-venv/`), `qwen aider` |
+| Old default | `gpt-oss:20b` (still installed, fits the 5070 Ti alone at ~143 tok/s) |
+| Model definitions | `ollama/*.Modelfile` in this repo |
 
-## How to Use
+`qwen` runs its own private Ollama server on a free port (found again by
+reading its process environment, never a fixed number). The system service is
+left alone. Qwen uses both GPUs, so starting it stops hosaka TTS, and
+`qwen stop` brings TTS back.
 
-### Interactive chat
-
-```
-ollama run gpt-oss:20b
-```
-
-In-chat commands:
-- `/set parameter reasoning low` — fast mode (less reasoning before reply)
-- `/set system "..."` — set system prompt
-- `/show info` — model details
-- `/clear` — reset conversation
-- `/bye` — exit CLI (model stays loaded in VRAM)
-
-### HTTP API (OpenAI-compatible)
-
-Endpoint: `http://localhost:11434/v1`
+## Daily commands
 
 ```
-curl http://localhost:11434/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"gpt-oss:20b",
-    "messages":[{"role":"user","content":"hi"}],
-    "stream":false
-  }'
+qwen                 # OpenCode on the local model, sandboxed, in the current git repo
+qwen aider           # the same with aider
+qwen server          # start or find the private server, print its address
+qwen stop            # stop the private server, restart hosaka TTS
+qwen sandbox-test    # print what the sandbox can and cannot reach
+qwen --help          # the full rules
 ```
 
-Native Ollama API:
-```
-curl http://localhost:11434/api/chat -d '{
-  "model":"gpt-oss:20b",
-  "messages":[{"role":"user","content":"hi"}],
-  "options":{"reasoning":"low"}
-}'
-```
-
-### Coding agent (aider)
-
-In any git repo:
-```
-cd /path/to/repo
-aider
-```
-
-Common in-aider commands: `/add <file>`, `/drop`, `/diff`, `/run <cmd>`, `/lint`, `/test`, `/web <url>`, `/help`.
-
-Config files:
-- `~/.aider.conf.yml` — model + defaults
-- `~/.aider.env` — `OLLAMA_API_BASE`, `OLLAMA_CONTEXT_LENGTH`
-
-### Status checks
+Checks:
 
 ```
-ollama ps                  # what's loaded, VRAM use, processor split
-ollama list                # installed models
-nvidia-smi                 # VRAM + GPU util
-free -h                    # WSL RAM
-journalctl -u ollama -n 50 # service logs
+ollama ps                                         # system server: what is loaded
+OLLAMA_HOST=$(qwen server) ollama ps              # private server: model, CPU/GPU split, context
+nvidia-smi                                        # memory per GPU
+free -h                                           # WSL RAM
+journalctl -u ollama -n 50                        # system server log
+tail ~/.local/state/qwen/serve.log                # private server log
 ```
 
-`ollama ps` PROCESSOR column **must show `100% GPU`**. Anything else = CPU offload = will OOM.
+## Ollama service config
 
-### Lifecycle
-
-- Model loads on first request, stays resident until manual stop or service restart (`OLLAMA_KEEP_ALIVE=-1`).
-- `ollama stop gpt-oss:20b` — free VRAM.
-- `sudo systemctl restart ollama` — full reset.
-- `wsl --shutdown` (PowerShell) — release WSL VM RAM back to Windows.
-
-## Ollama Service Config
-
-systemd drop-in at `/etc/systemd/system/ollama.service.d/override.conf`:
+`/etc/systemd/system/ollama.service.d/override.conf`:
 
 ```
 [Service]
 Environment="OLLAMA_KEEP_ALIVE=-1"
 Environment="OLLAMA_FLASH_ATTENTION=1"
 Environment="OLLAMA_MAX_LOADED_MODELS=1"
-Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_NUM_PARALLEL=2"
+Environment="OLLAMA_CONTEXT_LENGTH=8192"
 ```
 
-| Var | Effect |
-|-----|--------|
-| `OLLAMA_KEEP_ALIVE=-1` | Model stays in VRAM forever (no 5-min auto-unload) |
-| `OLLAMA_FLASH_ATTENTION=1` | Flash Attention kernel → lower KV mem, faster on Blackwell |
-| `OLLAMA_MAX_LOADED_MODELS=1` | One model resident at a time (prevents VRAM oversubscription) |
-| `OLLAMA_NUM_PARALLEL=1` | Single concurrent slot (solo user; saves KV VRAM) |
+The private `qwen` server overrides the ones that matter for a coding agent:
+one slot (`NUM_PARALLEL=1`), an 8-bit KV cache (`KV_CACHE_TYPE=q8_0`), spread
+across both GPUs (`SCHED_SPREAD=1`), 60-minute keep-alive, and the context
+from the model's Modelfile.
 
-## Model Customization
+## What didn't work
 
-Modelfile params applied to `gpt-oss:20b`:
+- **Default Q4 `qwen3.8:27b` from the Ollama library** (17 GB): spills 5.3 GB
+  to CPU even at 32K and generates at 2 tok/s. Replaced by smaller quants.
+- **unsloth GGUF chat templates with Claude Code**: their Jinja template raises
+  "System message must be at the beginning" on Claude Code's multi-part system
+  prompt, so every request is HTTP 500. Fix: import the weights with Ollama's
+  own `RENDERER qwen3.8` / `PARSER qwen3.5` (see `ollama/*.Modelfile`).
+- **Long Hugging Face repo names**: Ollama rejects them ("invalid model name").
+  Download the GGUF with `curl` and `ollama create` from the file.
+- **Two workers at once on one 27B model**: 0.4-0.5 tok/s each. One at a time.
+- **aider's default for unknown models** appends its edit rules to your
+  message, so the model thinks you pasted them. `qwen aider` sets `reminder: sys`.
+- **Older attempts (gpt-oss era)**: the `gpt_oss.chat` reference
+  implementation needs unpublished `triton_kernels`; Homebrew's llama.cpp is
+  CPU-only (the official llama.cpp CUDA build works, in
+  `~/.local/opt/llama.cpp-b12257/`, but Ollama's automatic MoE placement made it
+  unnecessary).
 
-```
-PARAMETER use_mmap false   # weights load straight to VRAM, skip page cache thrash
-PARAMETER num_gpu 999      # all layers on GPU
-```
+## Files outside this repo
 
-Build pattern:
-```
-ollama show gpt-oss:20b --modelfile > /tmp/mf
-# edit /tmp/mf — change FROM to model name (not blob path), add PARAMETER lines
-ollama create gpt-oss:20b -f /tmp/mf
-```
+| Path | What |
+|---|---|
+| `~/bin/qwen` | symlink to `bin/qwen` here |
+| `~/.config/qwen/copy-in` | files copied into the sandbox at each launch |
+| `~/.config/qwen/digests/` | short digests of CLAUDE.md files, by hash |
+| `~/.local/state/qwen/` | server log, OpenCode sessions, aider state |
+| `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
+| `~/.cache/mates-models/turbo-mtp-iq4xs.gguf` | downloaded GGUF (Ollama keeps its own copy; this one can be deleted) |
+| `~/.claude/mates/` | mates pilot state (log, measurements, transcripts; local only) |
+| `/srv/mates/` | mates worker sandbox area (shared with user `claude`) |
+| `~/aider-venv/` | aider |
 
-## WSL2 RAM Config
-
-`C:\Users\wailu\.wslconfig`:
-```
-[wsl2]
-memory=12GB
-swap=8GB
-```
-
-Apply: `wsl --shutdown` in PowerShell → reopen WSL.
-
-Trade-off: WSL VM commits up to 12 GB host RAM permanently while running. `wsl --shutdown` releases it.
-
-## What We Tried That Didn't Work
-
-### `gpt_oss.chat` reference impl (OpenAI Python package)
-- Path: `pip install gpt-oss[triton]` → `python -m gpt_oss.chat`
-- Failed: needs `triton_kernels` package not on PyPI — must build from triton repo source.
-- Torch backend per README needs 4× H100s (for 120b; 20b unclear but slow).
-- Abandoned.
-
-### Brew-installed llama.cpp
-- `llama-cli` from `brew install llama.cpp` → CPU-only build, `-ngl 99` ignored.
-- 12 GB model + 8 GB RAM → OOM kill on load.
-- Would need rebuild from source with `cmake -DGGML_CUDA=ON` + CUDA toolkit (Blackwell needs ≥12.8).
-- Skipped in favor of Ollama (precompiled CUDA, simpler).
-
-### mxfp4 GGUF + llama.cpp
-- Downloaded `ggml-org/gpt-oss-20b-GGUF` → unused because llama.cpp was CPU-only.
-- Could import into Ollama as Modelfile, but Ollama's own pull is more foolproof (correct harmony chat template baked in).
-- Deleted to reclaim disk.
-
-## Performance Notes
-
-- Generation speed: ~143 tok/s on `gpt-oss:20b` (RTX 5070 Ti) — excellent for a 20B model.
-- Perceived slowness usually = gpt-oss reasoning channel (medium effort by default). Lower with `reasoning=low` for fast replies.
-- VRAM at idle (model loaded): ~15 GB / 16.3 GB. Free ~950 MB.
-- Don't increase context (`num_ctx`) without budget — KV cache grows and risks CUDA OOM.
-
-## Model Choice Reasoning
-
-`gpt-oss:20b` benchmarks well in this VRAM class:
-- 77.7% LiveCodeBench, 89.3% math, 97% pass rate on a 38-task real coding benchmark.
-- Beats DeepSeek-R1 distills, Llama 3.3 (won't fit anyway), Phi-4, Mistral Small 3.x for coding/reasoning.
-
-Secondary fast-lane candidate: `qwen3:14b` (q4_K_M, ~9 GB). Toggleable thinking via `/think` `/no_think`. Lower reasoning latency than gpt-oss for chat.
-
-Won't fit cleanly: Qwen3 32B q4 (~19 GB), Gemma 3 27B q4 (~17 GB w/o KV room), Llama 3.3 70B.
-
-## Files Created
-
-- `~/.aider.conf.yml`, `~/.aider.env` — aider config
-- `~/aider-venv/` — aider Python venv
-- `~/bin/aider` → symlink into venv
-- `~/gpt-oss-venv/` — OpenAI gpt_oss venv (kept for `hf` CLI; can delete)
-- `/etc/systemd/system/ollama.service.d/override.conf` — Ollama service tuning
-- `/mnt/c/Users/wailu/.wslconfig` — WSL2 12 GB RAM
-
-## Cleanup If Abandoning
+## Cleanup if abandoning
 
 ```
-ollama rm gpt-oss:20b
-sudo systemctl disable --now ollama
-sudo rm -rf /usr/local/bin/ollama /usr/share/ollama /etc/systemd/system/ollama.service*
-rm -rf ~/aider-venv ~/gpt-oss-venv ~/bin/aider
-rm ~/.aider.conf.yml ~/.aider.env
-# Optional: revert ~/.wslconfig memory line, then wsl --shutdown
+qwen stop
+ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates qwen3.8-iq4-text \
+  hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS qwen3.8:27b
+rm -rf ~/.local/opt/opencode-* ~/.local/opt/llama.cpp-* ~/.cache/mates-models ~/.config/qwen ~/.local/state/qwen
+rm ~/bin/qwen
 ```

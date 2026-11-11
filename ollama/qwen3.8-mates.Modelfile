@@ -1,0 +1,11 @@
+FROM /usr/share/ollama/.ollama/models/blobs/sha256-40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199
+TEMPLATE {{ .Prompt }}
+RENDERER qwen3.8
+PARSER qwen3.5
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+PARAMETER min_p 0
+PARAMETER presence_penalty 0
+PARAMETER repeat_penalty 1
+PARAMETER temperature 1
+PARAMETER num_ctx 65536
