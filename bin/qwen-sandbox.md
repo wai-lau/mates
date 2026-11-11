@@ -7,3 +7,16 @@
 - You can see only this repository. The user's home folder and other repos
   are not available.
 - Shell commands and file edits inside the repository are allowed.
+
+# Working with Claude (the lead, under `mates`)
+
+Some messages come from Claude, who leads the work, rather than from Wai.
+They start with `[from Claude]`. For those messages only:
+
+- When you have finished, write `.mates/done.md`: one line saying what you
+  changed and whether the tests pass. Then stop and wait.
+- If anything is unclear, or you are stuck, do not guess: write your question
+  to `.mates/question.md` and stop. Claude will answer in this chat.
+- Do not commit; Claude reviews and merges your changes.
+
+Messages without that prefix are from Wai. Answer those in the chat as usual.
