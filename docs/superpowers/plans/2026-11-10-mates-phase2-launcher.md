@@ -27,7 +27,7 @@ below it.
 **Revised 2026-11-10 (late)** after an adversarial review. What changed:
 Qwen-written code never runs as Wai before merge (`mates check`); Qwen's git
 metadata is read-only; panes are found by tag, not stored id; restore no
-longer erases itself; the grid rule got a minimum pane width (25 columns); `send` pastes
+longer erases itself; `send` pastes
 instead of typing; added `discard`, a default `wait` timeout, a duplicate-run
 guard, the hosaka lock, the cost fields, and a probe (Task 0) before any
 build; the retro has no tools and `cli` writes its output.
@@ -63,10 +63,10 @@ build; the retro has no tools and `cli` writes its output.
   `--no-ext-diff --no-textconv`. A tracked hooks folder (husky, `.githooks/`)
   that Qwen edited cannot run as Wai. The lead-checkout fast-forward in
   `merge` uses it too.
-- **Layout:**
-  - Claude is pinned to 50% of the width, on the left.
-  - The Qwen panes tile the right half in a grid of c columns by r rows (see
-    Task 2). Minimum Qwen pane width: **25 columns** (Wai, 2026-11-10: "25").
+- **Panes:** Claude takes the left half. Each Qwen pane opens with
+  `tmux split-window -h` (side by side; Wai: "make sure claude opens them with
+  vertical split"). Nothing re-tiles, and Wai resizes panes by hand. This
+  replaces the grid and its 25-column minimum.
 - **Worktrees:** `<repo>/.claude/worktrees/mates-qwen-<n>`, on branch
   `mates/qwen-<n>`, made from the lead's committed HEAD. `.mates/` and
   `/.claude/worktrees/` are added to the file
@@ -118,9 +118,9 @@ build; the retro has no tools and `cli` writes its output.
 | File | Responsibility |
 |---|---|
 | `bin/qwen`, `bin/qwen-sandbox.md` | `exec` mode, read-only git for mates, runtime mount; protocol text |
-| `mates/layout.py` | `pick_grid`, tmux apply |
+| `mates/layout.py` | `split_qwen`: the tmux argv for the next side-by-side Qwen pane |
 | `mates/session.py` | state load/save under flock, pane lookup by tag, OpenCode and Claude session lookup, worktree ensure |
-| `mates/cli.py` | `launch` internals, `send`, `wait`, `answer`, `check`, `diff`, `merge`, `discard`, `add`, `remove`, `list`, `log`, `log-route`, `layout`, `retro` |
+| `mates/cli.py` | `launch` internals, `send`, `wait`, `answer`, `check`, `diff`, `merge`, `discard`, `add`, `remove`, `list`, `log`, `log-route`, `retro` |
 | `mates/guard.py` (modify) | add a hook-path flag |
 | `mates/logrec.py` (modify) | add `questions`, `pane`, `tree` fields |
 | `bin/mates` | entry point: window choice, then `cli.py launch`, or a subcommand |
@@ -187,42 +187,34 @@ Every later task leans on these. Run them in a scratch repo with plain
 - [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
 - [ ] **Step 5: Commit** "feat(qwen): exec mode, read-only git for worktrees, runtime mount".
 
-### Task 2: Layout
+### Task 2: Pane splits
+
+Wai, 2026-11-10: "I know how to resize panes with a shortcut, it's OK, just
+make sure claude opens them with vertical split", meaning vim-style side by
+side, which is `tmux split-window -h`. There is no grid, no re-tiling and no
+`mates layout`. Wai resizes panes by hand.
 
 **Files:**
 - Create: `mates/layout.py`
 - Test: `tests/test_layout.py`
 
 **Interfaces:**
-- `pick_grid(cols: int, rows: int, n: int, target=0.92, min_w=25) -> tuple[int, int]`:
-  - `cols`, `rows` are the size of the right half. Pane size counts the
-    1-cell borders: `w = (cols - (c-1)) // c`, `h = (rows - (r-1)) // r`.
-  - Candidates are the **tight** grids only: `c*r >= n`, and dropping a column
-    or a row would leave fewer than `n` cells.
-  - Of those with `w >= min_w`, pick the one minimizing
-    `abs(log(w/h) - log(target))`; ties go to fewer empty cells.
-  - If none has `w >= min_w`, pick the one with the widest panes; `add`
-    prints a warning that the panes are narrow.
-- `apply(lead_pane: str, qwen_panes: list[str]) -> None`:
-  - lead pane at 50% of the window width;
-  - Qwen panes rebuilt into the grid on the right, using `tmux join-pane` /
-    `split-window` plus `resize-pane`;
-  - idempotent.
+- `split_qwen(window_panes: list[str], lead_pane: str) -> list[str]` returns
+  the tmux argv for the next Qwen pane:
+  - the first Qwen pane: `split-window -h -t <lead> -l 50%`, so Claude keeps
+    the left half;
+  - later panes: `split-window -h -t <rightmost Qwen pane>`, side by side.
+  - It never moves or resizes existing panes.
 
 - [ ] **Step 1: Failing tests:**
-  - `pick_grid(120,60,1)==(1,1)`
-  - `pick_grid(120,60,2)==(2,1)` (59×60 panes, not 120×29)
-  - `pick_grid(120,60,3)==(3,1)` (39×60 panes)
-  - `pick_grid(120,60,4)==(4,1)` (29×60 panes beat 59×29)
-  - `pick_grid(60,80,2)==(1,2)`
-  - `pick_grid(60,60,3)==(2,2)` (3×1 gives 19-wide panes, under the minimum)
-  - `pick_grid(20,60,2)==(1,2)` (nothing fits; widest panes)
-  - `test_apply_real_tmux` (skipped without tmux): in a detached
-    `new-session -x 240 -y 60` with 1 lead and 2 Qwen panes, expect the lead
-    width 120±1 and the Qwen panes side by side; applying twice changes
-    nothing.
+  - `test_first_qwen_splits_lead_half`: argv contains `-h`, `-t %lead`, `-l 50%`.
+  - `test_next_qwen_splits_rightmost`: with Qwen panes `%2,%3`, the argv has
+    `-h -t %3` and no `-l`.
+  - `test_real_tmux_side_by_side` (skipped without tmux): in a detached
+    `new-session -x 240 -y 60`, one lead plus 2 Qwen panes all have the same
+    top (side by side), and the lead is about 120 wide.
 - [ ] **Step 2: Run, expect FAIL.** **Step 3: Implement.** **Step 4: Run, expect PASS.**
-- [ ] **Step 5: Commit** "feat(mates): phone-shaped grid for qwen panes".
+- [ ] **Step 5: Commit** "feat(mates): qwen panes open side by side".
 
 ### Task 3: Session state and panes
 
@@ -301,7 +293,7 @@ Every later task leans on these. Run them in a scratch repo with plain
        HEAD; its dir becomes `QWEN_RUNTIME` for every pane and every check.
     4. Split the Qwen panes, tag each, and in each run
        `cd <worktree> && QWEN_GIT_RO=1 QWEN_RUNTIME=... exec qwen ...`.
-    5. Apply the layout, tag the lead pane and the window, save the state.
+    5. Tag the lead pane and the window, save the state.
     6. Run the lead in this pane, from the repo root:
        `env -u ANTHROPIC_API_KEY MATES_LEAD=1 MATES_ROOT=<root> command claude <session args> --append-system-prompt "$(cat lead.md lead-lessons.md [~/.claude/private.md])" <passed args>`.
        `private.md` is included when readable, as Wai's `claude` wrapper does.
@@ -418,19 +410,17 @@ Every later task leans on these. Run them in a scratch repo with plain
 
 **Interfaces:**
 - `mates add` reuses the lowest closed entry or creates the next worktree,
-  splits and tags a Qwen pane, applies the layout, and saves. It warns when
-  the grid falls under the minimum width.
+  splits (side by side, `split_qwen`) and tags a Qwen pane, and saves.
 - `mates remove N` refuses if worktree N is dirty (unless `--force`, which
   snapshots like `discard` first). It kills the pane, removes the worktree
   (`git worktree remove`; plain `shutil.rmtree` for leftovers, since Qwen
-  panes run as Wai) and the branch, relayouts, and drops the entry. This is
+  panes run as Wai) and the branch, and drops the entry. This is
   the only command that drops an entry.
 - `mates list` prints a table: n, pane, branch, dirty?, open task, attempts,
   OpenCode session, closed?
 - `mates log [--repo] [--route] [--outcome]` prints a table.
 - `mates log-route <route> "<summary>" "<reason>" [--outcome accepted]`
   appends a log line with a new task id.
-- `mates layout` reapplies the grid.
 - **Log line per finished attempt** (`accepted`, `sent-back`, `escalated`,
   `failed`), with these filled in:
   - `repo`, `task_id`, `summary`, `route` = `qwen`, `reason` (from `send
