@@ -5,7 +5,8 @@
 #   qwen aider [args...]   the same, with aider instead (the old default)
 #   qwen server            start (or reuse) the server and print its address
 #   qwen stop              stop the server and give the GPU back to hosaka TTS
-#   qwen sandbox-test      print what the sandbox can and cannot reach (no aider)
+#   qwen sandbox-test      print what the sandbox can and cannot reach (no agent)
+#   qwen shell [bash args] a bash inside the sandbox (no agent), to look around
 #
 # The sandbox (Wai: "always run the qwen in a bwrap whatever the setup"):
 #   - sees the current git repo read-write (plus its git dir if that lives
@@ -154,7 +155,15 @@ run_sandboxed() {
   python3 "$HERE/qwen-relay" out --sock "$run/ollama.sock" --to "$host" & local relay=$!
   trap "kill $relay 2>/dev/null; rm -rf '$run'" EXIT
   for _ in $(seq 50); do [ -S "$run/ollama.sock" ] && break; sleep 0.1; done
-  local A=(--unshare-all --die-with-parent --new-session --clearenv
+  # --new-session would block terminal keystroke injection (TIOCSTI), but it also detaches the
+  # terminal, so the agent never sees pane resizes (SIGWINCH). The kernel already blocks TIOCSTI
+  # when dev.tty.legacy_tiocsti is 0, so keep the terminal then; otherwise keep --new-session.
+  local session=()
+  if [ "$(cat /proc/sys/dev/tty/legacy_tiocsti 2>/dev/null)" != 0 ]; then
+    session=(--new-session)
+    echo "qwen: legacy TIOCSTI is enabled on this kernel; detaching the terminal (pane resizes will not reach the agent)" >&2
+  fi
+  local A=(--unshare-all --die-with-parent "${session[@]}" --clearenv
     --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home
     --bind "$run/home" /home/qwen --bind "$STATE/aider" /home/qwen/.aider
@@ -183,6 +192,7 @@ case "${1:-}" in
   server) start_server; exit ;;
   stop) stop_server; exit ;;
   -h|--help) sed -n '2,25p' "$0"; exit ;;
+  shell) host=$(start_server); shift; run_sandboxed "$host" bash "$@"; exit ;;
   sandbox-test)
     host=$(start_server)
     run_sandboxed "$host" python3 -c '
