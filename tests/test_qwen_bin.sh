@@ -191,6 +191,23 @@ git -C "$T/repo" -c protocol.file.allow=always submodule add -q "$T/other" sm >/
 in_ "$T/repo/sm" "$QWEN" exec -- git status --short 2>/dev/null >/dev/null; rc=$?
 check "a real submodule still works" '[ "$rc" = 0 ]'
 check "a submodule has its own OpenCode folder" '[ "$(in_ "$T/repo/sm" "$QWEN" opencode-dir)" != "$d_repo" ]'
+# S1: a linked worktree of a submodule (mates in a lead that is itself a submodule)
+SUP=$T/super; mkrepo "$SUP"
+git -C "$SUP" -c protocol.file.allow=always submodule add -q "$T/other" apps/sm >/dev/null 2>&1
+SMW=$SUP/apps/sm/.claude/worktrees/mates-qwen-1
+git -C "$SUP/apps/sm" worktree add -q -b mates/qwen-1 "$SMW"
+SMC=$(git -C "$SUP/apps/sm" rev-parse --path-format=absolute --git-common-dir)
+QWEN_GIT_RO=1 QWEN_ROOT=$SMW in_ "$SMW" "$QWEN" exec -- git status --short >/dev/null 2>&1; rc=$?
+check "S1: a submodule's linked worktree runs (shared core.worktree is the submodule's own)" '[ "$rc" = 0 ]'
+old=$(git config --file "$SMC/config" core.worktree)
+git config --file "$SMC/config" core.worktree "$T/other"
+QWEN_GIT_RO=1 QWEN_ROOT=$SMW in_ "$SMW" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "S1: a shared core.worktree pointing at another folder still refuses" '[ "$rc" != 0 ]'
+mkdir -p "$T/decoy"; echo "gitdir: $T/other/.git" > "$T/decoy/.git"
+git config --file "$SMC/config" core.worktree "$T/decoy"
+QWEN_GIT_RO=1 QWEN_ROOT=$SMW in_ "$SMW" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "S1: a shared core.worktree at a checkout of another git dir refuses" '[ "$rc" != 0 ]'
+git config --file "$SMC/config" core.worktree "$old"
 FH=$T/fakehome; mkrepo "$FH"
 ( cd "$FH" && HOME=$FH "$QWEN" exec -- true ) 2>/dev/null; rc=$?
 check "a repo top of \$HOME: refused" '[ "$rc" != 0 ]'

@@ -154,13 +154,27 @@ forbidden_dir() { # status 0 if this folder must never be mounted
   case "$HOME/" in "$1"/*) return 0 ;; esac
   refuse_secret "$1"
 }
-check_git_config() { # <config file> <git dir its relative paths start from> <top>
-  local f=$1 v
+# lead_checkout <folder> <shared git dir>: status 0 if <folder>/.git is a plain gitfile that
+# points at <shared git dir> (a submodule's own main checkout).
+lead_checkout() {
+  local line
+  [ -n "$1" ] && [ -f "$1/.git" ] && [ ! -L "$1/.git" ] || return 1
+  line=$(first_line "$1/.git") && [ "${line#gitdir: }" != "$line" ] || return 1
+  [ "$(rp "$(rel_to "$1" "${line#gitdir: }")")" = "$2" ]
+}
+check_git_config() { # <config file> <git dir its relative paths start from> <top> [<shared git dir>]
+  # With a 4th argument (the shared config, seen from a linked worktree): git ignores the
+  # shared core.worktree there, so it may also name the main checkout of that git dir
+  # (a submodule's own checkout), and nothing else.
+  local f=$1 v w
   [ -e "$f" ] || return 0
   git config --file "$f" --list >/dev/null 2>&1 || die "refusing: cannot parse $f"
   git config --file "$f" --name-only --list | grep -qiE '^include(if)?\.' && die "refusing: $f uses include"
   while IFS= read -r v; do
-    [ "$(rp "$(rel_to "$2" "$v")")" = "$3" ] || die "refusing: core.worktree in $f points away from $3 ($v)"
+    w=$(rp "$(rel_to "$2" "$v")")
+    [ "$w" = "$3" ] && continue
+    [ -n "${4:-}" ] && lead_checkout "$w" "$4" && continue
+    die "refusing: core.worktree in $f points away from $3 ($v)"
   done < <(git config --file "$f" --get-all core.worktree || true)
 }
 TOP="" GITADMIN="" GITDIR=""
@@ -201,8 +215,10 @@ resolve_repo() { # sets TOP, GITADMIN (this checkout's git dir), GITDIR (the sha
   for d in "$adm" "$common"; do
     forbidden_dir "$d" && die "refusing to mount git dir $d (/, your home or above it, or a secret path)"
   done
-  check_git_config "$common/config" "$adm" "$root"
-  check_git_config "$common/config.worktree" "$adm" "$root"
+  # Relative core.worktree values in the shared files start from the shared git dir.
+  if [ "$adm" = "$common" ]; then check_git_config "$common/config" "$common" "$root"
+  else check_git_config "$common/config" "$common" "$root" "$common"; fi
+  check_git_config "$common/config.worktree" "$common" "$root"
   [ "$adm" = "$common" ] || { check_git_config "$adm/config" "$adm" "$root"; check_git_config "$adm/config.worktree" "$adm" "$root"; }
   TOP=$root GITADMIN=$adm GITDIR=$common
 }
