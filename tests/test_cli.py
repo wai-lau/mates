@@ -172,14 +172,17 @@ def test_private_md_appended_when_readable(tmp_path):
     assert _after(plan["claude_argv"], "--append-system-prompt").endswith("PRIVATE-NOTE")
 
 
-def test_subcommand_refused_without_lead_env(capsys):
+def test_subcommand_refused_without_lead_env(capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "LOG", tmp_path / "no-log.jsonl")
     with pytest.raises(SystemExit) as e:
         cli.main(["send", "1", "--reason", "r", "do it"])
     assert e.value.code != 0
     assert "MATES_LEAD" in capsys.readouterr().err
     for open_cmd in ("list", "log", "retro"):
-        with pytest.raises(SystemExit):
+        try:
             cli.main([open_cmd])
+        except SystemExit:
+            pass
         assert "MATES_LEAD" not in capsys.readouterr().err
 
 
@@ -306,7 +309,9 @@ class Mates:
 T='{tmp_path}'
 printf '%s\\n' "$*" >> "$T/tmux.log"
 case $1 in
-  list-panes) cat "$T/panes" 2>/dev/null ;;
+  list-panes) case "$*" in *window_width*) cat "$T/widths" 2>/dev/null ;; *) cat "$T/panes" 2>/dev/null ;; esac ;;
+  split-window) [ -f "$T/noroom" ] && {{ echo "no space for new pane" >&2; exit 1; }}; cat "$T/split-id" ;;
+  kill-pane) sed -i "/^$3\t/d" "$T/panes" ;;
   display) cat "$T/live" 2>/dev/null ;;
   capture-pane) cat "$T/capture" 2>/dev/null ;;
   load-buffer) {{ cat; printf '\\n<<END>>\\n'; }} >> "$T/buffers" ;;
@@ -320,6 +325,7 @@ exit 0
         q.write_text(f"""#!/bin/sh
 case $1 in
   opencode-dir) echo '{self.oc}' ;;
+  host) [ -f '{tmp_path}/host' ] || exit 1; cat '{tmp_path}/host' ;;
   exec) shift; [ "$1" = -- ] && shift
         printf '%s|%s|%s|%s|%s\\n' "$PWD" "$QWEN_ROOT" "$QWEN_GIT_RO" "${{QWEN_RUNTIME:-}}" "$*" >> '{tmp_path}/exec.log'
         exec "$@" ;;
@@ -372,8 +378,11 @@ esac
         con.commit()
         con.close()
 
-    def msg(self, sid, role, created_s, completed_s=None, finish=None):
+    def msg(self, sid, role, created_s, completed_s=None, finish=None, tokens=None):
         data = {"role": role, "time": {"created": int(created_s * 1000)}}
+        if tokens:
+            data["tokens"] = {"input": tokens[0], "output": tokens[1], "reasoning": 0,
+                              "cache": {"read": 7, "write": 0}}
         if completed_s is not None:
             data["time"]["completed"] = int(completed_s * 1000)
         if finish:
@@ -1003,3 +1012,266 @@ def test_no_filter_runs_from_qwen_attributes(m):
     assert m.run("check", 1, "--", "true")[0] == 0
     assert m.run("discard", 1)[0] == 0
     assert not canary.exists()
+
+
+# --- panes, housekeeping and the log ---------------------------------------------------------
+
+def _lead_window(m, split_id, widths):
+    """The lead pane %0 is open; the next split makes `split_id`; `widths` are list-panes rows."""
+    m.pane("%0", "lead")
+    (m.t / "split-id").write_text(split_id + "\n")
+    (m.t / "widths").write_text("".join(f"{w}\n" for w in widths))
+
+
+def test_add_then_restore_has_two(m):
+    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 99 200"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    calls = m.tmux_calls()
+    split = next(c for c in calls if c.startswith("split-window"))
+    assert split.startswith(f"split-window -h -P -F #{{pane_id}} -t %1 -c {m.root} ")  # right of the rightmost
+    assert f"QWEN_ROOT={_wt(str(m.root), 2)}" in split
+    assert f"set-option -p -t %2 @mates {m.key}:2" in calls
+    assert calls.index(f"set-option -p -t %2 @mates {m.key}:2") < calls.index("wait-for -S mates-go-%2")
+    assert (m.root / ".claude/worktrees/mates-qwen-2").is_dir() and "pane 2" in out
+    st = m.state()
+    assert [(q["n"], q["closed"]) for q in st["qwens"]] == [(1, False), (2, False)]
+    plan = cli.launch_plan(st, str(m.root), False, [])
+    assert [q["n"] for q in plan["qwens"]] == [1, 2]
+
+
+def test_add_reuses_closed(m):
+    st = m.state()
+    st["qwens"] += [_q(str(m.root), 3, closed=True), _q(str(m.root), 2, closed=True)]
+    session.save(str(m.root), st)
+    _lead_window(m, "%5", ["%0 0 100 200", "%1 101 99 200"])
+    assert m.run("add")[0] == 0
+    by_n = {q["n"]: q["closed"] for q in m.state()["qwens"]}
+    assert by_n == {1: False, 2: False, 3: True}
+    assert (m.root / ".claude/worktrees/mates-qwen-2").is_dir()
+    assert not (m.root / ".claude/worktrees/mates-qwen-3").exists()
+    # a pane that is gone counts as closed: its entry is the one reused
+    m.no_panes()
+    _lead_window(m, "%6", ["%0 0 100 200"])
+    assert m.run("add")[0] == 0
+    calls = m.tmux_calls()
+    assert [c for c in calls if c.startswith("split-window")][-1].startswith(
+        "split-window -h -P -F #{pane_id} -t %0 -l 50% ")
+    assert f"set-option -p -t %6 @mates {m.key}:1" in calls
+    assert {q["n"]: q["closed"] for q in m.state()["qwens"]} == {1: False, 2: True, 3: True}
+
+
+def test_add_no_room_message(m):
+    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 99 200"])
+    (m.t / "noroom").write_text("")
+    before = m.state()
+    code, out, err = m.run("add")
+    assert code != 0
+    assert err.strip() == "mates: no room for another Qwen pane: widen the window or close a pane"
+    assert m.state() == before
+    assert not (m.root / ".claude/worktrees/mates-qwen-2").exists()
+    assert "mates/qwen-2" not in m.git("branch", "--list")
+    assert not [c for c in m.tmux_calls() if c.startswith(("set-option", "wait-for"))]
+
+
+def test_remove_refuses_dirty(m):
+    (m.wt / "a.txt").write_text("qwen's unmerged work\n")
+    code, _, err = m.run("remove", 1)
+    assert code != 0 and "a.txt" in err and "--force" in err
+    assert (m.wt / "a.txt").read_text() == "qwen's unmerged work\n"
+    assert [q["n"] for q in m.state()["qwens"]] == [1]
+    assert not [c for c in m.tmux_calls() if c.startswith("kill-pane")]
+
+
+def test_remove_refuses_open_task(m):
+    m.send()
+    code, _, err = m.run("remove", 1)
+    assert code != 0 and "open task" in err and m.task() is not None
+
+
+def test_remove_force_snapshots(m):
+    m.send()
+    (m.wt / "a.txt").write_text("a bad try\n")
+    (m.wt / "junk.py").write_text("j = 1\n")
+    code, out, err = m.run("remove", 1, "--force")
+    assert code == 0, err
+    (ref,) = m.git("for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
+    assert ref in out
+    assert m.git("show", f"{ref}:a.txt") == "a bad try" and m.git("show", f"{ref}:junk.py") == "j = 1"
+    assert not m.wt.exists()
+    assert "mates-qwen-1" not in m.git("worktree", "list")
+    assert m.git("branch", "--list", "mates/qwen-1") == ""
+    assert "kill-pane -t %1" in m.tmux_calls()
+    assert m.state()["qwens"] == []
+    assert [r["outcome"] for r in m.log()] == ["failed"]
+
+
+def test_remove_is_only_drop(m):
+    st = m.state()
+    st["qwens"] = []
+    session.save(str(m.root), st)  # a save without the entry keeps it
+    assert [q["n"] for q in m.state()["qwens"]] == [1]
+    m.no_panes()
+    assert m.run("list")[0] == 0  # a gone pane is marked closed, never dropped
+    assert [(q["n"], q["closed"]) for q in m.state()["qwens"]] == [(1, True)]
+    code, out, err = m.run("remove", 1)
+    assert code == 0, err
+    assert m.state()["qwens"] == [] and not m.wt.exists()
+    assert m.git("branch", "--list", "mates/qwen-1") == ""
+    # a leftover folder git does not know: refused as unreadable, removed with --force
+    left = m.root / ".claude/worktrees/mates-qwen-2"
+    (left / "sub").mkdir(parents=True)
+    (left / "sub" / "f").write_text("x\n")
+    st = m.state()
+    st["qwens"].append(_q(str(m.root), 2, closed=True))
+    session.save(str(m.root), st)
+    code, _, err = m.run("remove", 2)
+    assert code != 0 and "--force" in err and left.exists()
+    assert m.run("remove", 2, "--force")[0] == 0
+    assert not left.exists() and m.state()["qwens"] == []
+
+
+def test_list_shows_failed_pane(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    m.no_panes()
+    m.pane("%1", 1, failed=True)
+    st = m.state()
+    st["qwens"].append(_q(str(m.root), 2, closed=True))
+    session.save(str(m.root), st)
+    code, out, err = m.run("list")
+    assert code == 0, err
+    header, row1, row2 = out.splitlines()
+    assert header.split()[:4] == ["n", "pane", "branch", "dirty"]
+    t = m.task()
+    assert row1.split()[:5] == ["1", "%1", "failed", "mates/qwen-1", "yes"] and t["id"] in row1
+    assert row1.split()[-1] == "no"
+    assert row2.split()[:4] == ["2", "-", "mates/qwen-2", "no"] and row2.endswith("yes")
+    assert m.state()["qwens"][0]["closed"] is False  # failed is not gone
+
+
+def test_log_filters(m):
+    import logrec
+    root = str(m.root.resolve())
+    for repo, route, outcome, summary in ((root, "qwen", "accepted", "alpha"), (root, "claude-self", "accepted", "beta"),
+                                          ("/x/other", "qwen", "escalated", "gamma"), (root, "qwen", "sent-back", "delta")):
+        logrec.append(cli.LOG, {"repo": repo, "task_id": summary[:2], "summary": summary, "route": route,
+                                "reason": "r", "outcome": outcome})
+
+    def shown(*args):
+        code, out, err = m.run("log", *args)
+        assert code == 0, err
+        return [line.split()[-1] for line in out.splitlines()[1:]]
+
+    assert shown() == ["alpha", "beta", "gamma", "delta"]
+    assert shown("--route", "qwen") == ["alpha", "gamma", "delta"]
+    assert shown("--route", "qwen", "--outcome", "accepted") == ["alpha"]
+    assert shown("--repo") == ["alpha", "beta", "delta"]
+    assert shown("--repo", "/x/other") == ["gamma"]
+    assert m.run("log", "--route", "gpt")[0] != 0
+
+
+def test_log_route_appends(m):
+    code, out, err = m.run("log-route", "claude-self", "rename the helper", "divergent outcomes")
+    assert code == 0, err
+    code, _, err = m.run("log-route", "claude-subagent", "survey", "wide read", "--outcome", "escalated")
+    assert code == 0, err
+    a, b = m.log()
+    assert (a["route"], a["summary"], a["reason"], a["outcome"], a["repo"]) == \
+        ("claude-self", "rename the helper", "divergent outcomes", "accepted", str(m.root.resolve()))
+    assert (b["route"], b["outcome"]) == ("claude-subagent", "escalated")
+    assert len(a["task_id"]) == 12 and a["task_id"] != b["task_id"] and a["task_id"] in out
+    assert m.run("log-route", "qwen", "s", "r")[0] != 0  # qwen lines come from the pane commands
+    assert len(m.log()) == 2
+
+
+def _iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + f".{int(ts * 1000) % 1000:03d}Z"
+
+
+def _asst(ts, mid, cmd=None, usage=None, tool="Bash"):
+    content = [{"type": "tool_use", "id": "tu", "name": tool, "input": {"command": cmd}}] if cmd else \
+        [{"type": "text", "text": "thinking about it"}]
+    return {"type": "assistant", "timestamp": _iso(ts), "uuid": uuid.uuid4().hex,
+            "message": {"id": mid, "role": "assistant", "content": content, "usage": usage or {}}}
+
+
+def _usage(i, cc, o, cr):
+    return {"input_tokens": i, "cache_creation_input_tokens": cc, "output_tokens": o, "cache_read_input_tokens": cr}
+
+
+def test_lead_tokens_counts_only_this_pane(tmp_path):
+    now = time.time()
+    lines = [
+        _asst(now - 100, "old", "mates send 1 --reason r 'x'", _usage(1000, 0, 0, 0)),  # before since
+        _asst(now, "m1", None, _usage(10, 100, 2, 1000)),  # one API message in two entries:
+        _asst(now, "m1", "mates send 1 --reason 'clear' \"fix a.txt\"", _usage(10, 100, 5, 1000)),  # counted once
+        _asst(now + 1, "m2", "mates diff 2", _usage(999, 0, 0, 0)),  # another pane
+        _asst(now + 2, "m3", "mates check 12 -- true", _usage(999, 0, 0, 0)),  # pane 12, not 1
+        _asst(now + 3, "m4", "ls -la", _usage(999, 0, 0, 0)),
+        _asst(now + 4, "m5", "xmates send 1 y", _usage(999, 0, 0, 0)),
+        _asst(now + 5, "m6", "until bin/mates wait 1; do :; done", _usage(1, 2, 3, 40), tool="Monitor"),
+        _asst(now + 6, "m7", "cd /r && mates check 1 -- pytest -q", _usage(4, 0, 6, 0)),
+        {"type": "user", "timestamp": _iso(now + 7), "message": {"content": "mates send 1 z"}},
+    ]
+    p = tmp_path / "t.jsonl"
+    p.write_text("".join(json.dumps(x) + "\n" for x in lines) + "not json\n")
+    assert session.lead_tokens(p, 1, now - 50) == (10 + 100 + 5 + 1 + 2 + 3 + 4 + 6, 1000 + 40)
+    assert session.lead_tokens(p, 2, now - 50) == (999, 0)
+    assert session.lead_tokens(tmp_path / "missing.jsonl", 1, 0) == (0, 0)
+
+
+def test_log_line_has_cost_fields(m):
+    import http.server
+    import threading
+
+    class PS(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"models": [{"name": "qwen-x:latest", "model": "qwen-x:latest"}]}).encode()
+            self.send_response(200 if self.path == "/api/ps" else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), PS)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        (m.t / "host").write_text(f"127.0.0.1:{srv.server_address[1]}\n")
+        now = time.time()
+        d = session.PROJECTS_DIR / m.key
+        d.mkdir(parents=True)
+        (d / "lead-sid.jsonl").write_text("".join(json.dumps(x) + "\n" for x in [
+            {"type": "custom-title", "customTitle": "mates repo"},
+            _asst(now - 5, "m1", "mates send 1 --reason r 'fix a.txt'", _usage(10, 100, 5, 1000)),
+            _asst(now - 4, "m2", "mates diff 2", _usage(999, 0, 0, 0)),
+            _asst(now - 3, "m3", "mates check 1 -- true", _usage(1, 2, 3, 40))]))
+        m.on_enter_creates_session("ses_1")
+        m.send()
+        t0 = m.task()["attempt_ts"]
+        m.msg("ses_1", "assistant", t0 - 50, completed_s=t0 - 49, finish="stop", tokens=(1000, 1000))  # earlier
+        m.msg("ses_1", "user", t0 + 0.5)
+        m.msg("ses_1", "assistant", t0 + 1, completed_s=t0 + 3, finish="tool-calls", tokens=(100, 20))
+        m.msg("ses_1", "assistant", t0 + 4, completed_s=t0 + 6, finish="stop", tokens=(50, 5))
+        _checked_and_diffed(m)
+        assert m.run("merge", 1)[0] == 0
+        (rec,) = m.log()
+        assert rec["worker_tokens"] == 175
+        assert rec["worker_wall_s"] == pytest.approx(6.0, abs=0.11)
+        assert rec["answered_by"] == ["qwen-x:latest"]
+        assert (rec["lead_tokens"], rec["lead_cache_read"]) == (115 + 6, 1040)
+        assert (rec["pane"], rec["questions"], rec["tree"], rec["full_diff_read"]) == (1, [], rec["tree"], True)
+        assert m.state()["qwens"][0]["lead_since"] >= now
+        # no server: answered_by is null; the lead's earlier commands were counted already
+        (m.t / "host").unlink()
+        m.on_enter_creates_session("ses_2")  # the next task's session: ses_1's tokens are not counted again
+        m.send("next")
+        assert m.run("discard", 1)[0] == 0
+        rec2 = m.log()[-1]
+        assert rec2["answered_by"] is None and (rec2["lead_tokens"], rec2["lead_cache_read"]) == (0, 0)
+        assert rec2["worker_tokens"] == 0 and rec2["outcome"] == "escalated"
+    finally:
+        srv.shutdown()
+        srv.server_close()

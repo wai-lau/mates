@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 import layout
@@ -67,19 +68,32 @@ def save(root, state):
         have = {q["n"] for q in state.get("qwens", [])}
         kept = [q for q in old.get("qwens", []) if q["n"] not in have]
         out = dict(state, qwens=sorted(state.get("qwens", []) + kept, key=lambda q: q["n"]))
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(out, f, indent=2)
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp)
-            raise
+        _write(path, out)
     state["qwens"] = out["qwens"]
+
+
+def drop(root, n):
+    """Remove Qwen entry `n` from the saved state. Only `mates remove` calls this:
+    `save` never drops an entry."""
+    with _locked(root, fcntl.LOCK_EX) as path:
+        old = _read(path)
+        if old is not None:
+            _write(path, dict(old, qwens=[q for q in old.get("qwens", []) if q["n"] != n]))
+
+
+def _write(path, data):
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
 
 
 # --- panes by tag ---------------------------------------------------------------
@@ -226,7 +240,93 @@ def opencode_state(session, db, since):
     return "busy"
 
 
+def opencode_usage(session, db, since):
+    """(tokens, last_reply_s) of OpenCode `session`'s assistant messages created at or
+    after `since` (epoch s): tokens is the sum of `tokens.input + tokens.output`,
+    last_reply_s the newest `time.completed` (epoch s) or None."""
+    tokens, last = 0, None
+    if not Path(db).exists():
+        return tokens, last
+    with _ro(db) as con:
+        rows = con.execute("SELECT data FROM message WHERE session_id = ? AND time_created >= ?",
+                           (session, int(since * 1000))).fetchall()
+    for (raw,) in rows:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        if data.get("role") != "assistant":
+            continue
+        t = data.get("tokens") or {}
+        tokens += int(t.get("input") or 0) + int(t.get("output") or 0)
+        done = (data.get("time") or {}).get("completed")
+        if done and (last is None or done / 1000 > last):
+            last = done / 1000
+    return tokens, last
+
+
 # --- Claude ---------------------------------------------------------------------------
+
+LEAD_TOOLS = ("Bash", "Monitor")  # tools whose `command` input the lead runs `mates` through
+MATES_CALL = re.compile(r"(?<![\w.-])mates\s+([a-z][a-z-]*)\s+(\d+)(?!\w)")
+
+
+def _epoch(stamp):
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def lead_tokens(transcript, n, since):
+    """(lead_tokens, lead_cache_read) the lead spent on Qwen pane `n` after `since`
+    (epoch s), from its transcript (JSONL): the assistant messages with a tool call
+    whose command runs `mates <sub> n`. lead_tokens sums `input_tokens +
+    cache_creation_input_tokens + output_tokens`, lead_cache_read sums
+    `cache_read_input_tokens`. One API message is written as several entries (one per
+    content block) with the same id: its usage counts once (largest value per field).
+    Rough by design: other work the lead did while waiting is not counted."""
+    usage, hits = {}, set()
+    keys = ("input_tokens", "cache_creation_input_tokens", "output_tokens", "cache_read_input_tokens")
+    try:
+        fh = open(transcript, encoding="utf-8", errors="replace")
+    except OSError:
+        return 0, 0
+    with fh:
+        for line in fh:
+            if '"assistant"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            ts = _epoch(d.get("timestamp")) if d.get("type") == "assistant" else None
+            if ts is None or ts <= since:
+                continue
+            msg = d.get("message") or {}
+            mid = msg.get("id") or d.get("uuid")
+            u = msg.get("usage") or {}
+            have = usage.setdefault(mid, dict.fromkeys(keys, 0))
+            for k in keys:
+                have[k] = max(have[k], int(u.get(k) or 0))
+            for block in msg.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use" \
+                        or block.get("name") not in LEAD_TOOLS:
+                    continue
+                cmd = (block.get("input") or {}).get("command")
+                if isinstance(cmd, str) and any(int(m.group(2)) == n for m in MATES_CALL.finditer(cmd)):
+                    hits.add(mid)
+    tok = sum(usage[m]["input_tokens"] + usage[m]["cache_creation_input_tokens"] + usage[m]["output_tokens"]
+              for m in hits)
+    return tok, sum(usage[m]["cache_read_input_tokens"] for m in hits)
+
+
+def transcript_path(root, state):
+    """The lead's transcript file: the newest one titled as the state says, else the
+    stored conversation; None if neither exists."""
+    sid = claude_session(root, state.get("claude_title")) or state.get("claude_session")
+    p = PROJECTS_DIR / repo_key(root) / f"{sid}.jsonl" if sid else None
+    return p if p is not None and p.exists() else None
 
 def claude_session(root, title):
     """The newest transcript under ~/.claude/projects/<repo-key>/ whose last

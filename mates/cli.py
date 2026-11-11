@@ -9,22 +9,30 @@ import argparse
 import contextlib
 import copy
 import hashlib
+import http.client
+import json
 import os
 import re
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 import uuid
 from pathlib import Path
+
+if __name__ == "__main__":  # panes.py imports cli: let it get this module, not a second copy
+    sys.modules.setdefault("cli", sys.modules[__name__])
 
 import gitsafe
 import guard
 import layout
 import logrec
+import panes
 import runtime
 import session
 from gitsafe import GitError, git_lead, git_safe
@@ -530,6 +538,47 @@ def _clear_review(task):
     task.update(checked_tree=None, check_cmd=None, diffed_tree=None, flags=[])
 
 
+def answered_by():
+    """[<model>] that the Ollama server `qwen host` names has loaded now ([] if none),
+    or None when there is no server."""
+    try:
+        r = subprocess.run([session._qwen(), "host"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    host = r.stdout.strip()
+    if r.returncode != 0 or not host:
+        return None
+    try:
+        with urllib.request.urlopen(f"http://{host}/api/ps", timeout=5) as resp:
+            models = json.load(resp).get("models") or []
+        name = models[0].get("name") or models[0].get("model") if models else None
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
+        return None
+    return [name] if name else []
+
+
+def _costs(root, entry, t):
+    """The cost fields of the attempt on entry's task `t` that just finished."""
+    now = time.time()
+    sid = t.get("opencode_session") or entry.get("opencode_session")
+    tokens = last = None
+    if sid:
+        try:
+            tokens, last = session.opencode_usage(sid, session.opencode_db(root), t["attempt_ts"])
+        except (OSError, subprocess.CalledProcessError, sqlite3.Error) as e:
+            print(f"mates: cannot read Qwen's tokens: {e}", file=sys.stderr)
+    # finish: Qwen's last reply in this attempt; with none (Wai's own work), now
+    rec = {"worker_wall_s": round(max(0.0, (last or now) - t["attempt_ts"]), 1), "worker_tokens": tokens,
+           "answered_by": answered_by(), "lead_tokens": None, "lead_cache_read": None}
+    state = session.load(root) or {}
+    transcript = session.transcript_path(root, state)
+    if transcript:
+        rec["lead_tokens"], rec["lead_cache_read"] = session.lead_tokens(transcript, entry["n"],
+                                                                         entry.get("lead_since") or 0)
+    entry["lead_since"] = now  # the next attempt's lead tokens start here (the caller saves)
+    return rec
+
+
 def log_attempt(root, entry, outcome):
     """Append the log line for the attempt on entry's task that just finished."""
     t = entry["task"]
@@ -540,7 +589,7 @@ def log_attempt(root, entry, outcome):
            "check_sha": hashlib.sha256(t["check_cmd"].encode()).hexdigest() if t.get("check_cmd") else None,
            "tree": checked, "flags": t.get("flags") or [],
            "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
-           "questions": t.get("questions") or []}
+           "questions": t.get("questions") or [], **_costs(root, entry, t)}
     LOG.parent.mkdir(parents=True, exist_ok=True)
     logrec.append(LOG, rec)
 
@@ -953,6 +1002,18 @@ def sync(args):
     return 0
 
 
+def keep_work(root, n, task, why="discarded"):
+    """Keep Qwen worktree n's work (against the task base, else its HEAD) on a
+    `refs/mates/discarded/` ref; returns the ref, or None when there is nothing."""
+    base = task["base"] if task else git_safe(root, n, "rev-parse", "HEAD").stdout.strip()
+    tree = snapshot(root, n, base)
+    if tree == git_lead(root, "rev-parse", f"{base}^{{tree}}").stdout.strip():
+        return None
+    ref = _keep(root, n, _snapshot_commit(root, n, base, tree, why))
+    print(f"kept Qwen worktree {n}'s work on {ref}")
+    return ref
+
+
 def discard(args):
     p = _parser("discard", "mates discard N [--failed]")
     p.add_argument("n", type=int)
@@ -963,11 +1024,7 @@ def discard(args):
     q = _qentry(state, a.n)
     task = q.get("task")
     try:
-        base = task["base"] if task else git_safe(root, a.n, "rev-parse", "HEAD").stdout.strip()
-        tree = snapshot(root, a.n, base)
-        if tree != git_lead(root, "rev-parse", f"{base}^{{tree}}").stdout.strip():
-            ref = _keep(root, a.n, _snapshot_commit(root, a.n, base, tree, "discarded"))
-            print(f"kept Qwen worktree {a.n}'s work on {ref}")
+        keep_work(root, a.n, task)
         _reset_worktree(root, a.n, q["branch"], _lead_head(root))
     except GitError as e:
         die(f"discard failed: {e}", 1)
@@ -980,7 +1037,8 @@ def discard(args):
 
 
 COMMANDS = {"launch": launch, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
-            "merge": merge, "sync": sync, "discard": discard}
+            "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
+            "list": panes.list_, "log": panes.log, "log-route": panes.log_route}
 
 
 def main(argv=None):

@@ -31,3 +31,11 @@ def test_rejects_missing_required(tmp_path):
 def test_ts_added(tmp_path):
     p = tmp_path / "l"; logrec.append(p, rec())
     assert json.loads(p.read_text())["ts"].endswith("Z")
+
+def test_pane_fields_and_old_pilot_lines_validate(tmp_path):
+    p = tmp_path / "l"
+    logrec.append(p, rec(pane=2, questions=[{"q": "which?", "a": "add()"}], tree="t" * 40, full_diff_read=True,
+                         lead_cache_read=9, red_on_base=None, verdict=None))
+    logrec.append(p, rec(arm="mates", full_diff_read=False, lead_cache_read=3))  # a pilot line, as before
+    a, b = [json.loads(l) for l in p.read_text().splitlines()]
+    assert a["pane"] == 2 and a["questions"][0]["a"] == "add()" and "pane" not in b
