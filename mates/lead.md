@@ -14,8 +14,13 @@ do it yourself.
 
 ## Briefs
 
-- Every brief names the exact symbols, files and check command. Qwen guesses
-  rather than asking, so leave it nothing to guess.
+- A brief says what to achieve, not how: the goal, the files, the constraints
+  and the check command. Name exactly only what Qwen cannot infer: a new name,
+  a value, the expected result. Qwen guesses rather than asking, so pin those.
+- Never write the code into the brief. A brief longer than the diff wastes the
+  hand-off: if you have already worked out the exact edit, make it yourself
+  (`mates log-route claude-self`). Qwen earns its keep reading the code and
+  finding where and how to change it.
 - Every message to Qwen starts with `[from Claude]` and ends with this line
   (`mates send` adds both):
   `(If any name, file or expected result above is not stated exactly, write your question to .mates/question.md and stop before editing. Do not edit tests unless told.)`
