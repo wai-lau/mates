@@ -17,9 +17,12 @@
 #   - gets copies of the files listed in ~/.config/qwen/copy-in (one per line,
 #     `<path>` or `<path>:<path in sandbox home>`). Add lines there when aider
 #     needs another file. Secrets (~/.ssh, ~/.gnupg, ~/.secrets, ~/.claude,
-#     ~/.config/gh, .env*, *.pem, *.key, .credentials*) are refused, except
-#     ~/.claude/CLAUDE.md, which is loaded as standing instructions together
-#     with the repo's own CLAUDE.md (Wai: "load both");
+#     ~/.config/gh, .env*, *.pem, *.key, .credentials*) are refused;
+#   - gets short digests of ~/.claude/CLAUDE.md and the repo's CLAUDE.md as
+#     standing instructions (Wai: "load both", then "the CLAUDE.mds are usually
+#     huge"). Claude writes each digest once per change of its source (one small
+#     `claude -p` call, prompt in bin/qwen-digest-prompt.md); they are cached in
+#     ~/.config/qwen/digests/<hash>.md and never written into the repo;
 #   - OpenCode runs with every tool allowed (no approval prompts): the sandbox
 #     is what bounds it.
 #
@@ -81,7 +84,6 @@ stop_server() {
 
 refuse_secret() { # path -> status 0 if it must not go in
   local p; p=$(readlink -f "$1" 2>/dev/null || echo "$1")
-  [ "$p" = "$(readlink -f "$HOME/.claude/CLAUDE.md")" ] && return 1  # standing instructions, not a secret
   case $p in "$HOME"/.ssh*|"$HOME"/.gnupg*|"$HOME"/.secrets*|"$HOME"/.claude*|"$HOME"/.config/gh*) return 0 ;; esac
   case ${p##*/} in .env|.env.*|*.pem|*.key|.credentials*) return 0 ;; esac
   return 1
@@ -93,9 +95,36 @@ refuse_secret() { # path -> status 0 if it must not go in
 # Secrets are refused (see `qwen --help`). Add a line when aider needs a file.
 ~/.gitconfig
 ~/.config/git/ignore:.config/git/ignore
-~/.claude/CLAUDE.md:.claude/CLAUDE.md
 EOF
-grep -q '^~/.claude/CLAUDE.md' "$CONF/copy-in" || echo '~/.claude/CLAUDE.md:.claude/CLAUDE.md' >> "$CONF/copy-in"
+sed -i '\#^~/.claude/CLAUDE.md#d' "$CONF/copy-in"  # replaced by digests (it was refused as a secret path anyway)
+
+# digest <source file>: print the path of its cached short version, writing it with Claude if missing.
+digest() {
+  local src=$1 sum out tmp
+  [ -s "$src" ] || return 1
+  mkdir -p "$CONF/digests"
+  sum=$(sha256sum "$src" | cut -c1-16); out=$CONF/digests/$sum.md
+  if [ ! -s "$out" ]; then
+    echo "qwen: writing a short digest of $src (one small Claude call; cached until it changes)" >&2
+    tmp=$(mktemp -d)  # outside $HOME: no CLAUDE.md gets auto-loaded into the digest call
+    if ! (cd "$tmp" && env -u ANTHROPIC_API_KEY claude -p --output-format text --tools "" --strict-mcp-config \
+          --setting-sources project --system-prompt-file "$HERE/qwen-digest-prompt.md" < "$src" > "$out.tmp" 2>/dev/null) \
+       || [ ! -s "$out.tmp" ]; then
+      rm -rf "$tmp" "$out.tmp"; echo "qwen: digest failed for $src, continuing without it" >&2; return 1
+    fi
+    rm -rf "$tmp"; mv "$out.tmp" "$out"
+  fi
+  echo "$out"
+}
+
+# Put the global and repo digests in the sandbox home as ~/.qwen/{global,repo}.md.
+stage_digests() {
+  local home=$1 top d
+  mkdir -p "$home/.qwen"
+  d=$(digest "$HOME/.claude/CLAUDE.md") && cp "$d" "$home/.qwen/global.md"
+  top=$(git rev-parse --show-toplevel 2>/dev/null) && d=$(digest "$top/CLAUDE.md") && cp "$d" "$home/.qwen/repo.md"
+  return 0
+}
 
 # A fresh sandbox home with the copy-in files; aider's own state persists in $STATE/aider.
 make_home() {
@@ -120,6 +149,7 @@ run_sandboxed() {
   gitdir=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir)
   run=$(mktemp -d "$STATE/run.XXXXXX")
   make_home "$run/home"
+  stage_digests "$run/home"
   python3 "$HERE/qwen-relay" out --sock "$run/ollama.sock" --to "$host" & local relay=$!
   trap "kill $relay 2>/dev/null; rm -rf '$run'" EXIT
   for _ in $(seq 50); do [ -S "$run/ollama.sock" ] && break; sleep 0.1; done
@@ -190,7 +220,8 @@ if [ "${1:-}" = aider ]; then
     num_ctx: $CTX
 EOF
   echo "qwen: $MODEL on http://$host, sandboxed (first reply is slow while the model loads)" >&2
-  run_sandboxed "$host" aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
+  run_sandboxed "$host" bash -c 'r=(); for f in ~/.qwen/global.md ~/.qwen/repo.md; do [ -f "$f" ] && r+=(--read "$f"); done
+    exec aider "${r[@]}" "$@"' aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
     --model-settings-file /home/qwen/.aider/qwen-model-settings.yml --no-check-update --analytics-disable "$@"
   exit
 fi
@@ -214,7 +245,7 @@ cfg='{
                               "limit": { "context": CTX_, "output": 16384 } } }
     }
   },
-  "instructions": ["/home/qwen/.claude/CLAUDE.md", "CLAUDE.md"],
+  "instructions": ["/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
 }'
 cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}
