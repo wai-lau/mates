@@ -24,6 +24,9 @@ case "${1:-}" in -h|--help) sed -n '2,13p' "$SELF"; exit 0 ;; esac
 not_qwen() { case "$1/" in */.claude/worktrees/mates-qwen-*/*) return 1 ;; esac; }
 QWEN_REFUSAL="refusing to run inside a Qwen worktree (Qwen wrote these files); cd to the lead repo first"
 not_qwen "$(pwd -P)" || die "$QWEN_REFUSAL"
+# The retro reads only ~/.claude/mates and the mates checkout, never the folder it ran from:
+# it runs anywhere (the systemd timer starts it in the home folder, git repo or not).
+[ "${1:-}" = retro ] && exec python3 "$CLI" "$@"
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
 GITDIR=$(git rev-parse --absolute-git-dir 2>/dev/null) || die "not in a git repo"
 not_qwen "$ROOT" || die "$QWEN_REFUSAL"

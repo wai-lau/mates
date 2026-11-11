@@ -24,10 +24,10 @@ from pathlib import Path
 
 import claudejson
 import cli
+import fsutil
 import logrec
 
 SRC = cli.HERE.parent  # the mates source checkout: the one ~/bin/mates resolves to
-NEUTRAL = Path("/srv/mates/neutral")  # outside the home folder: no CLAUDE.md is found from here
 PROMPT = cli.HERE / "prompts" / "retro.md"
 CLAUDE_ARGS = ["-p", "--tools", "", "--strict-mcp-config", "--setting-sources", "project",
                "--output-format", "json"]
@@ -35,6 +35,7 @@ CLAUDE_TIMEOUT_S = 600
 LAST_RETROS = 7
 LESSON_MAX = 200
 LESSONS_MAX = 20
+DROP_MAX = 3  # a retro that would remove more of the current lessons proposes it instead
 LESSONS_REL = "mates/lead-lessons.md"
 NO_LESSONS = "None yet. The daily retro rewrites this section.\n"
 LOG_HEADER = "## Log lines"
@@ -43,6 +44,21 @@ LOG_HEADER = "## Log lines"
 SAFE_FIELDS = (set(logrec.FIELDS) | set(logrec.PILOT_FIELDS)) - {"detail"}
 LEADING_PATH = re.compile(r"(?:^|[\s(\[\"'`])~?/(?=[\w.~-])")
 FILE_PATH = re.compile(r"[\w.-]+/[\w./-]*\.[A-Za-z]\w{0,7}\b")
+NAME_MIN = 6
+# File names too plain to mark a lesson as naming a file (a flagged `check` or `Makefile`
+# must not reject every lesson that uses the word).
+COMMON = set("""
+about above action active added adding after again always answer answers before behind better branch
+broken bugfix change changed changes cheaper checks client commit commits common config configs
+create created delete deploy design detail diffed docker during either enough errors except failed
+failing figure finish findings fixture fixtures follow format gemfile handle handler helper
+helpers import inputs install itself justfile lesson lessons letter levels library linter little
+logger logging makefile master merged method module modules needed number object option options
+others output outputs parser passed plugin prompt public python reason recent report reports readme
+remove result results return review reviews rename routes runner sample sanity schema script scripts
+second server should simple single source spaces string struct styles summary system target tested
+testing tests things update useful values verify version within worker workers writer
+""".split())
 
 
 class RetroError(Exception):
@@ -80,22 +96,30 @@ def clean(rec):
     """The log line as the retro sees it."""
     out = {k: v for k, v in rec.items() if k in SAFE_FIELDS}
     if "questions" in out:  # the count stays; only the answers (the lead's or Wai's) are kept
-        out["questions"] = [{"a": q.get("a")} if isinstance(q, dict) else {} for q in out["questions"] or []]
+        out["questions"] = [{"a": q.get("a")} if isinstance(q, dict) else {} for q in _list(out["questions"])]
     if "flags" in out:  # `kind:path` -> `kind`: the path is Qwen's choice
-        out["flags"] = [str(f).split(":", 1)[0] for f in out["flags"] or []]
+        out["flags"] = [str(f).split(":", 1)[0] for f in _list(out["flags"])]
     return out
 
 
+def _list(v):
+    return v if isinstance(v, list) else []  # never iterate a string
+
+
+def _distinctive(name):
+    """A flagged path part counts as a file name only if it could not be a plain word."""
+    return "/" in name or "." in name or (len(name) >= NAME_MIN and name.lower() not in COMMON)
+
+
 def _names(recs):
-    """Repo and file names that appear in the log: a lesson must name none of them."""
+    """Repo names and flagged file names in the log: a lesson must name none of them."""
     names = set()
     for r in recs:
-        if isinstance(r.get("repo"), str) and r["repo"]:
+        if isinstance(r.get("repo"), str) and r["repo"].strip("/"):
             names.add(Path(r["repo"]).name)
-        for f in r.get("flags") or []:
-            path = str(f).split(":", 1)[1] if ":" in str(f) else ""
-            if path:
-                names.update({path, Path(path).name})
+        for f in _list(r.get("flags")):
+            path = str(f).split(":", 1)[1].strip() if ":" in str(f) else ""
+            names.update(n for n in {path, *Path(path).parts} if n and n != "/" and _distinctive(n))
     return {n.lower() for n in names if n.strip()}
 
 
@@ -144,11 +168,11 @@ def _prompt(day, lines, lessons_text, prior):
 
 def ask_claude(prompt):
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}  # the subscription, not the API
-    NEUTRAL.mkdir(parents=True, exist_ok=True)
     try:
-        r = subprocess.run([cli._claude(), *CLAUDE_ARGS], input=prompt, capture_output=True, text=True,
-                           timeout=CLAUDE_TIMEOUT_S, cwd=str(NEUTRAL), env=env)
-    except (OSError, subprocess.TimeoutExpired) as e:
+        with fsutil.private_cwd() as cwd:  # fresh and private: nothing planted there can run as Wai
+            r = subprocess.run([cli._claude(), *CLAUDE_ARGS], input=prompt, capture_output=True, text=True,
+                               timeout=CLAUDE_TIMEOUT_S, cwd=cwd, env=env)
+    except (OSError, subprocess.TimeoutExpired, fsutil.UnsafeDir) as e:
         raise RetroError(f"claude did not run: {e}")
     if r.returncode != 0:
         raise RetroError(f"claude exited {r.returncode}: {r.stderr.strip()[-300:]}")
@@ -219,13 +243,22 @@ def run_day(day, lines, names):
     prior = sorted(p for p in _retros_dir().glob("*.md") if p.stem < day)[-LAST_RETROS:]
     findings, lessons, proposals = ask_claude(_prompt(day, lines, old, prior))
     kept, rejected = sort_lessons(lessons, names)
+    current = [l[2:] for l in old.splitlines() if l.startswith("- ")]
+    dropped = [l for l in current if l not in kept]
+    held = ""
+    if len(dropped) > DROP_MAX:  # too big a change to make unattended: keep the old list, ask Wai
+        proposals = proposals + [f"replace the lead lessons with this list, which drops {len(dropped)} of the "
+                                 f"current {len(current)}: " + " | ".join(kept or ["(none)"])]
+        held = (f"The retro would drop {len(dropped)} of the current lessons (more than {DROP_MAX}), so the "
+                "old list stays and the new one is in OPEN-QUESTIONS.md.\n")
+        kept = current
     new = "## Lessons\n\n" + ("".join(f"- {l}\n" for l in kept) if kept else NO_LESSONS)
     if new != old:
         _write(lessons_path, new)
     committed = commit_lessons(day, new != old)
     append_proposals(day, proposals)
     out = [f"# Retro {day}\n", findings.strip() + "\n",
-           f"## Lessons\n\nKept {len(kept)} of {len(lessons)} in {LESSONS_REL}; {committed}.\n"]
+           f"## Lessons\n\n{held}Kept {len(kept)} of {len(lessons)} in {LESSONS_REL}; {committed}.\n"]
     if rejected:
         out.append("Rejected:\n\n" + "".join(f"- {l} ({why})\n" for l, why in rejected))
     out.append("## Proposals (in OPEN-QUESTIONS.md, not applied)\n\n"

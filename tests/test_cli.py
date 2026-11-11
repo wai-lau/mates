@@ -1319,7 +1319,10 @@ class Retro:
         import retro
         self.t, self.capsys, self.retro = tmp_path, capsys, retro
         monkeypatch.setattr(cli, "LOG", tmp_path / "mates" / "log.jsonl")
-        monkeypatch.setattr(retro, "NEUTRAL", tmp_path / "neutral")
+        import fsutil
+        self.run_dir = tmp_path / "run"  # stands in for the user runtime folder (tmp_path is under /tmp)
+        self.run_dir.mkdir(mode=0o700)
+        monkeypatch.setattr(fsutil, "_private_base", lambda: str(self.run_dir))
         self.src = tmp_path / "src"
         (self.src / "mates").mkdir(parents=True)
         self.lessons = self.src / "mates" / "lead-lessons.md"
@@ -1338,6 +1341,7 @@ class Retro:
                         f"t = pathlib.Path({str(tmp_path)!r})\n"
                         "n = len(list(t.glob('call-*.json')))\n"
                         "(t / f'call-{n}.json').write_text(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
+                        "    'mode': os.stat('.').st_mode & 0o777, 'listing': os.listdir('.'),\n"
                         "    'stdin': sys.stdin.read(), 'api_key': os.environ.get('ANTHROPIC_API_KEY')}))\n"
                         "print(json.dumps([{'type': 'result', 'result': (t / 'reply.json').read_text()}]))\n")
         stub.chmod(0o755)
@@ -1398,7 +1402,8 @@ def test_retro_runs_claude_with_no_tools(rt, monkeypatch):
     (c,) = rt.calls()
     assert c["argv"] == ["-p", "--tools", "", "--strict-mcp-config", "--setting-sources", "project",
                          "--output-format", "json"]
-    assert c["cwd"] == str(rt.t / "neutral") and c["api_key"] is None
+    assert Path(c["cwd"]).parent == rt.run_dir and c["mode"] == 0o700 and c["listing"] == []
+    assert not Path(c["cwd"]).exists() and c["api_key"] is None  # removed after the call
     assert "findings_md" in c["stdin"]
 
 

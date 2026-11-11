@@ -155,7 +155,8 @@ def write_brief(repo, cand: dict, cmd=BRIEF_CMD, prompts=pathlib.Path(__file__).
               f"Source files: {', '.join(cand['src_files'])}\n\nTest diff:\n{test_diff}\n")
     import json as _json
     import claudejson
-    r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd="/tmp")
+    with fsutil.private_cwd() as cwd:  # never a shared folder: another account could plant settings there
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd=cwd)
     text = claudejson.parse(r.stdout)["result"]
     text = text[text.find("{"): text.rfind("}") + 1]
     b = _json.loads(text)

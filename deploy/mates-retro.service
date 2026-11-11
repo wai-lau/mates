@@ -7,6 +7,4 @@ Description=mates daily retro
 Type=oneshot
 # systemd does not expand ~; %h is the home folder. PATH so that mates and claude are found.
 Environment=PATH=%h/bin:%h/.local/bin:/usr/bin:/bin
-# bin/mates runs its subcommands from inside a git repo; the home folder is one.
-WorkingDirectory=%h
 ExecStart=%h/bin/mates retro
