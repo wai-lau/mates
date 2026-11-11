@@ -45,3 +45,5 @@ do it yourself.
   `mates diff N`, then `mates merge N -m "<summary>"`.
 - Two failed tries: `mates discard N` and do the task yourself.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
+- `mates list` shows the panes; `mates log` the audit log. `mates add` opens
+  another Qwen pane only for truly independent parallel work; `mates remove N` closes one.

@@ -178,12 +178,19 @@ def test_subcommand_refused_without_lead_env(capsys, tmp_path, monkeypatch):
         cli.main(["send", "1", "--reason", "r", "do it"])
     assert e.value.code != 0
     assert "MATES_LEAD" in capsys.readouterr().err
+    root = tmp_path / "r"
+    root.mkdir()
+    monkeypatch.setenv("MATES_ROOT", str(root))
+    session.save(str(root.resolve()), session.new_state(str(root.resolve())))
     for open_cmd in ("list", "log", "retro"):
         try:
-            cli.main([open_cmd])
-        except SystemExit:
-            pass
-        assert "MATES_LEAD" not in capsys.readouterr().err
+            code = cli.main([open_cmd])
+        except SystemExit as e:
+            code = e.code
+        err = capsys.readouterr().err
+        assert "MATES_LEAD" not in err
+        if open_cmd != "retro":  # retro comes with Task 8
+            assert code == 0, err
 
 
 # --- launch against a stub tmux and a real repo ---------------------------------------
@@ -308,6 +315,7 @@ class Mates:
         tm.write_text(f"""#!/bin/sh
 T='{tmp_path}'
 printf '%s\\n' "$*" >> "$T/tmux.log"
+[ -x "$T/on-any" ] && "$T/on-any"
 case $1 in
   list-panes) case "$*" in *window_width*) cat "$T/widths" 2>/dev/null ;; *) cat "$T/panes" 2>/dev/null ;; esac ;;
   split-window) [ -f "$T/noroom" ] && {{ echo "no space for new pane" >&2; exit 1; }}; cat "$T/split-id" ;;
@@ -1077,10 +1085,35 @@ def test_add_no_room_message(m):
 def test_remove_refuses_dirty(m):
     (m.wt / "a.txt").write_text("qwen's unmerged work\n")
     code, _, err = m.run("remove", 1)
-    assert code != 0 and "a.txt" in err and "--force" in err
+    assert code != 0 and "a.txt" in err and "--force" in err and "mates add" in err
     assert (m.wt / "a.txt").read_text() == "qwen's unmerged work\n"
-    assert [q["n"] for q in m.state()["qwens"]] == [1]
-    assert not [c for c in m.tmux_calls() if c.startswith("kill-pane")]
+    assert [(q["n"], q["closed"]) for q in m.state()["qwens"]] == [(1, True)]  # closed, kept: add reopens it
+    assert m.git("branch", "--list", "mates/qwen-1") != ""
+
+
+def _qwen_writes_while_alive(m):
+    """Qwen stand-in: while pane %1 is open, any tmux call lets it write late.py."""
+    hook = m.t / "on-any"
+    hook.write_text(f"""#!/bin/sh
+grep -q '^%1	' '{m.t}/panes' 2>/dev/null && echo 'late = 1' > '{m.wt}/late.py'
+exit 0
+""")
+    hook.chmod(0o755)
+
+
+def test_remove_never_deletes_late_writes(m):
+    _qwen_writes_while_alive(m)
+    code, _, err = m.run("remove", 1)  # clean when asked, but Qwen writes until its pane is gone
+    assert code != 0 and "late.py" in err
+    assert (m.wt / "late.py").read_text() == "late = 1\n"
+    (m.t / "on-any").unlink()
+    m.pane("%1", 1)
+    _qwen_writes_while_alive(m)
+    (m.wt / "late.py").unlink()
+    code, out, err = m.run("remove", 1, "--force")
+    assert code == 0, err
+    (ref,) = m.git("for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
+    assert m.git("show", f"{ref}:late.py") == "late = 1" and not m.wt.exists()
 
 
 def test_remove_refuses_open_task(m):

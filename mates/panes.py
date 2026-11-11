@@ -99,6 +99,19 @@ def _remove_folder(root, n):
     git_lead(root, "worktree", "prune")
 
 
+def _close_pane(root, state, q):
+    """Kill entry q's pane (if open) and save the entry closed: from here Qwen cannot
+    change the worktree, and if a later step refuses, `mates add` reopens it as it is."""
+    hit = session.find_pane(root, q["n"])
+    if hit:
+        r = subprocess.run([layout.TMUX, "kill-pane", "-t", hit[0]], capture_output=True, text=True)
+        if r.returncode != 0:
+            cli.die(f"tmux kill-pane {hit[0]} failed: {r.stderr.strip()}", 1)
+    q["closed"] = True
+    cli.save_state(root, state)
+    return hit
+
+
 def remove(args):
     p = cli._parser("remove", "mates remove N [--force]")
     p.add_argument("n", type=int)
@@ -108,6 +121,12 @@ def remove(args):
     state = cli._load(root)
     q = cli._qentry(state, a.n)
     task = q.get("task")
+    if task and not a.force:  # state only: nothing Qwen does changes this
+        cli.die(f"Qwen pane {a.n} has an open task: mates merge {a.n} or mates discard {a.n} first "
+                f"(or mates remove {a.n} --force)")
+    # The pane goes first, so the clean check and the snapshot see the worktree's final files.
+    hit = _close_pane(root, state, q)
+    closed = f"its pane {hit[0]} is closed; " if hit else ""
     wt = gitsafe.worktree(root, a.n)
     dirty, readable = [], True
     if wt.exists() or wt.is_symlink():
@@ -116,27 +135,18 @@ def remove(args):
         except GitError as e:
             readable = False
             if not a.force:
-                cli.die(f"cannot read Qwen worktree {a.n} ({e}); mates remove {a.n} --force removes it as it is")
-    if not a.force:
-        if dirty:
-            cli.die(f"Qwen worktree {a.n} has work not merged ({', '.join(dirty[:10])}): mates merge {a.n}, "
-                    f"mates discard {a.n}, or mates remove {a.n} --force (keeps a snapshot ref)")
-        if task:
-            cli.die(f"Qwen pane {a.n} has an open task: mates merge {a.n} or mates discard {a.n} first "
-                    f"(or mates remove {a.n} --force)")
+                cli.die(f"cannot read Qwen worktree {a.n} ({e}); {closed}mates remove {a.n} --force "
+                        "deletes it with no snapshot")
+    if dirty and not a.force:
+        cli.die(f"Qwen worktree {a.n} has work not merged ({', '.join(dirty[:10])}); {closed}mates add reopens "
+                f"it as it is, or mates remove {a.n} --force (keeps a snapshot ref)")
     try:
         if a.force and readable and wt.exists():
             cli.keep_work(root, a.n, task, "removed")
         if task:
             cli.log_attempt(root, q, "failed")
             q["task"] = None
-        hit = session.find_pane(root, a.n)
-        if hit:
-            r = subprocess.run([layout.TMUX, "kill-pane", "-t", hit[0]], capture_output=True, text=True)
-            if r.returncode != 0:
-                cli.die(f"tmux kill-pane {hit[0]} failed: {r.stderr.strip()}", 1)
-        q["closed"] = True
-        cli.save_state(root, state)  # if a step below fails, the entry is closed, not half there
+            cli.save_state(root, state)
         ref = f"refs/heads/{q['branch']}"
         head = git_lead(root, "rev-parse", "-q", "--verify", ref, check=False).stdout.strip()
         if head and git_lead(root, "merge-base", "--is-ancestor", head, "HEAD", check=False).returncode != 0:
