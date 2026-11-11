@@ -15,3 +15,11 @@ detached tmux pane, scratch git repo.
 | Restore | **Works.** `qwen -s <session id>` reopens the same conversation (earlier edits and test runs shown). |
 | Claude title after `/clear` | Not probed (needs an interactive Claude session). `lead.md` tells the lead to `/rename "mates <repo>"` after a clear, as the plan's fallback. |
 | Two panes at once | Not re-measured. Phase 1 measured two concurrent workers on a dense 27B model at 0.4-0.5 tok/s each; the current model is dense too. `"parallel"` stays false: one open task at a time. |
+
+## Task 1 Step 4b: OpenCode under read-only git (2026-11-10)
+
+In a git worktree of a scratch repo, `QWEN_GIT_RO=1 bin/qwen` (branch build `2a5f9a1`):
+
+- `sandbox-test`: git status works; hooks, config, ref, object and worktree `.git` file writes are all blocked; clipboard write works, clipboard read is blocked.
+- Toy task (`[from Claude]` + the ask-suffix): OpenCode started and edited `calc.py`, with no git error in the pane. It wrote `.mates/done.md` in the new two-line form ("calc.py: changed add() from returning a - b to a + b" / "test status: passed"). 155 s. It did not commit.
+- Side effect: the test run left an untracked `__pycache__/`. In real repos `.gitignore` covers it; in a repo without one, `git add -A` in `mates check`'s snapshot would pick it up, and the guard flags it as an `unnamed-file`.
