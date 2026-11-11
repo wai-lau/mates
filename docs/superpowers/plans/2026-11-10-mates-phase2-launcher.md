@@ -27,7 +27,7 @@ below it.
 **Revised 2026-11-10 (late)** after an adversarial review. What changed:
 Qwen-written code never runs as Wai before merge (`mates check`); Qwen's git
 metadata is read-only; panes are found by tag, not stored id; restore no
-longer erases itself; the grid rule got a minimum pane width; `send` pastes
+longer erases itself; the grid rule got a minimum pane width (25 columns); `send` pastes
 instead of typing; added `discard`, a default `wait` timeout, a duplicate-run
 guard, the hosaka lock, the cost fields, and a probe (Task 0) before any
 build; the retro has no tools and `cli` writes its output.
@@ -66,8 +66,7 @@ build; the retro has no tools and `cli` writes its output.
 - **Layout:**
   - Claude is pinned to 50% of the width, on the left.
   - The Qwen panes tile the right half in a grid of c columns by r rows (see
-    Task 2). Minimum Qwen pane width: **40 columns** (Claude's call; Wai can
-    change it).
+    Task 2). Minimum Qwen pane width: **25 columns** (Wai, 2026-11-10: "25").
 - **Worktrees:** `<repo>/.claude/worktrees/mates-qwen-<n>`, on branch
   `mates/qwen-<n>`, made from the lead's committed HEAD. `.mates/` and
   `/.claude/worktrees/` are added to the file
@@ -195,7 +194,7 @@ Every later task leans on these. Run them in a scratch repo with plain
 - Test: `tests/test_layout.py`
 
 **Interfaces:**
-- `pick_grid(cols: int, rows: int, n: int, target=0.92, min_w=40) -> tuple[int, int]`:
+- `pick_grid(cols: int, rows: int, n: int, target=0.92, min_w=25) -> tuple[int, int]`:
   - `cols`, `rows` are the size of the right half. Pane size counts the
     1-cell borders: `w = (cols - (c-1)) // c`, `h = (rows - (r-1)) // r`.
   - Candidates are the **tight** grids only: `c*r >= n`, and dropping a column
@@ -213,11 +212,11 @@ Every later task leans on these. Run them in a scratch repo with plain
 - [ ] **Step 1: Failing tests:**
   - `pick_grid(120,60,1)==(1,1)`
   - `pick_grid(120,60,2)==(2,1)` (59×60 panes, not 120×29)
-  - `pick_grid(120,60,3)==(2,2)` (3×1 gives 39-wide panes, under the minimum)
-  - `pick_grid(120,60,4)==(2,2)` (4×1 gives 29-wide panes)
+  - `pick_grid(120,60,3)==(3,1)` (39×60 panes)
+  - `pick_grid(120,60,4)==(4,1)` (29×60 panes beat 59×29)
   - `pick_grid(60,80,2)==(1,2)`
-  - `pick_grid(60,60,3)==(1,3)`
-  - `pick_grid(30,60,2)==(1,2)` (nothing fits; widest panes)
+  - `pick_grid(60,60,3)==(2,2)` (3×1 gives 19-wide panes, under the minimum)
+  - `pick_grid(20,60,2)==(1,2)` (nothing fits; widest panes)
   - `test_apply_real_tmux` (skipped without tmux): in a detached
     `new-session -x 240 -y 60` with 1 lead and 2 Qwen panes, expect the lead
     width 120±1 and the Qwen panes side by side; applying twice changes
