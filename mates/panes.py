@@ -35,17 +35,17 @@ def _cut(text, n=SUMMARY_MAX):
 
 
 def _open_panes(root, state):
-    """{pane_id: n} for the Qwen panes that are open now; an open entry whose pane is
-    gone is marked closed (in `state` only: the caller saves)."""
+    """{pane_id: n} for the Qwen panes that are open now; an open entry whose pane Wai
+    closed is marked closed (session.closed_by_wai; in `state` only: the caller saves)."""
     found = {}
     for q in state["qwens"]:
         if q.get("closed"):
             continue
         hit = session.find_pane(root, q["n"])
-        if hit is None:
-            q["closed"] = True
-        else:
+        if hit is not None:
             found[hit[0]] = q["n"]
+        elif session.closed_by_wai(root, q["n"]):
+            q["closed"] = True
     return found
 
 
@@ -170,8 +170,8 @@ def list_(args):
     root = cli._lead_root()
     state = cli._load(root)
     rows = []
-    for q in state["qwens"]:
-        hit = cli._find(root, state, q)
+    for q in state["qwens"]:  # read-only: list never saves (I3: a list after a reboot kept nothing)
+        hit = session.find_pane(root, q["n"])
         pane = "-" if hit is None else hit[0] + (" failed" if hit[1] == "failed" else "")
         if not gitsafe.worktree(root, q["n"]).exists():
             dirty = "no worktree"

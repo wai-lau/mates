@@ -148,8 +148,10 @@ def test_mark_closed_only_when_gone(tmp_path, monkeypatch):
     _listing(tmp_path, monkeypatch, [("%5", f"{key}:1", "")])
     st = session.new_state("/r")
     st["qwens"] = [_qwen(1), _qwen(2)]
+    assert session.mark_closed(st, 2) is False   # pane 2 is gone, but so is the lead: not Wai closing it
+    _listing(tmp_path, monkeypatch, [("%5", f"{key}:1", ""), ("%4", f"{key}:lead", "")])
     assert session.mark_closed(st, 1) is False   # pane 1 is live
-    assert session.mark_closed(st, 2) is True    # pane 2 is gone
+    assert session.mark_closed(st, 2) is True    # pane 2 is gone while the lead lives
     assert [q["closed"] for q in st["qwens"]] == [False, True]
 
 

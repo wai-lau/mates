@@ -366,6 +366,10 @@ esac
     def no_panes(self):
         (self.t / "panes").write_text("")
 
+    def lead_pane(self, pid="%0"):
+        with open(self.t / "panes", "a") as f:
+            f.write(f"{pid}\t{self.key}:lead\t\n")
+
     def live(self, on):
         (self.t / "live").write_text("1\n" if on else "\n")
 
@@ -508,6 +512,7 @@ def test_send_refuses_nonempty_input(m):
 
 def test_send_refuses_missing_pane(m):
     m.no_panes()
+    m.lead_pane()
     code, _, err = m.run("send", 1, "--reason", "r", "task")
     assert code != 0 and "gone" in err
     assert m.state()["qwens"][0]["closed"] is True and m.buffers() == []
@@ -601,6 +606,7 @@ def test_wait_refuses_linked_protocol_file(m):
 def test_wait_dead_pane(m):
     m.send()
     m.no_panes()
+    m.lead_pane()
     assert m.run("wait", 1, "--timeout", "1")[1] == "dead\n"
     assert m.state()["qwens"][0]["closed"] is True
 
@@ -1175,7 +1181,8 @@ def test_remove_is_only_drop(m):
     session.save(str(m.root), st)  # a save without the entry keeps it
     assert [q["n"] for q in m.state()["qwens"]] == [1]
     m.no_panes()
-    assert m.run("list")[0] == 0  # a gone pane is marked closed, never dropped
+    m.lead_pane()
+    assert m.run("wait", 1, "--timeout", "1")[1] == "dead\n"  # a gone pane is marked closed, never dropped
     assert [(q["n"], q["closed"]) for q in m.state()["qwens"]] == [(1, True)]
     code, out, err = m.run("remove", 1)
     assert code == 0, err
@@ -1211,6 +1218,33 @@ def test_list_shows_failed_pane(m):
     assert row1.split()[-1] == "no"
     assert row2.split()[:4] == ["2", "-", "mates/qwen-2", "no"] and row2.endswith("yes")
     assert m.state()["qwens"][0]["closed"] is False  # failed is not gone
+
+
+def test_list_after_window_gone_keeps_restore(m):
+    """Final review I3: after a reboot (no tmux panes at all, no lead), `mates list` is
+    read-only, and the next restore still brings back every open entry."""
+    st = m.state()
+    st["qwens"].append(_q(str(m.root), 2))
+    session.save(str(m.root), st)
+    m.no_panes()
+    before = (session.STATE_DIR / f"{m.key}.json").read_bytes()
+    code, out, err = m.run("list")
+    assert code == 0, err
+    assert (session.STATE_DIR / f"{m.key}.json").read_bytes() == before  # list saves nothing
+    plan = cli.launch_plan(m.state(), str(m.root), False, [])
+    assert [q["n"] for q in plan["qwens"]] == [1, 2]
+
+
+def test_gone_pane_closed_only_while_lead_lives(m):
+    m.send()
+    m.no_panes()  # the whole window is gone: not Wai closing one pane
+    assert m.run("wait", 1, "--timeout", "1")[1] == "dead\n"
+    assert m.state()["qwens"][0]["closed"] is False
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "gone" in err and m.state()["qwens"][0]["closed"] is False
+    m.lead_pane()  # the lead is up and pane 1 is not: Wai closed it
+    assert m.run("wait", 1, "--timeout", "1")[1] == "dead\n"
+    assert m.state()["qwens"][0]["closed"] is True
 
 
 def test_log_filters(m):

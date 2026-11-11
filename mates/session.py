@@ -134,10 +134,17 @@ def tag_pane(pane_id, root, n):
             raise RuntimeError(f"tmux set-option {' '.join(args)} failed: {r.stderr.strip()}")
 
 
+def closed_by_wai(root, n):
+    """Pane `n` is gone while this repo's lead pane is alive: Wai closed it. With the
+    lead gone too (a reboot, the window closed) the pane is only away, and a restore
+    must bring it back. A failed pane is still there (find_pane says "failed")."""
+    return find_pane(root, n) is None and find_lead(root) is not None
+
+
 def mark_closed(state, n):
-    """Mark entry `n` closed if its pane is gone. A failed pane is still there
-    (find_pane says "failed"), so it stays open. Returns whether it was marked."""
-    if find_pane(state["root"], n) is not None:
+    """Mark entry `n` closed if Wai closed its pane (closed_by_wai). Returns whether
+    it was marked."""
+    if not closed_by_wai(state["root"], n):
         return False
     for q in state["qwens"]:
         if q["n"] == n:

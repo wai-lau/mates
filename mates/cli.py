@@ -383,7 +383,8 @@ def _tmux_out(*args):
 
 
 def _find(root, state, q):
-    """(pane_id, status) for entry q; a pane that is gone is marked closed and saved."""
+    """(pane_id, status) for entry q; a pane Wai closed is marked closed and saved
+    (session.mark_closed: never while the lead pane is gone too)."""
     hit = session.find_pane(root, q["n"])
     if hit is None and session.mark_closed(state, q["n"]):
         save_state(root, state)
@@ -396,7 +397,7 @@ def _live_pane(root, state, q):
         die(f"Qwen pane {q['n']} is closed (mates add opens one)")
     hit = _find(root, state, q)
     if hit is None:
-        die(f"Qwen pane {q['n']} is gone; marked it closed (mates add opens one)")
+        die(f"Qwen pane {q['n']} is gone" + ("; marked it closed (mates add opens one)" if q.get("closed") else ""))
     pane, status = hit
     if status == "failed":
         die(f"Qwen pane {q['n']} ({pane}) failed: qwen exited with an error; read the pane, then restart it")
