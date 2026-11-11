@@ -28,12 +28,13 @@ Kept here in case aider comes back:
 - Its clipboard (pyperclip) sees WSL and copies with `clip.exe`. The sandbox
   had a `clip.exe` stand-in for that, next to the `xclip` one OpenCode uses.
 
-## Deleted 2026-11-10 (35 GB freed)
+## Deleted 2026-11-10 (70 GB freed)
 
 | What | Size | To get it back |
 |---|---|---|
 | `~/.cache/mates-models/turbo-mtp-iq4xs.gguf` | 16 GB | re-download with the `curl` line at the top of `ollama/qwen3.8-27b-turbo-heretic-mtp-iq4xs.Modelfile` (only needed to rebuild that model) |
 | `~/.local/opt/llama.cpp-b12257/` | 1.8 GB | the official llama.cpp CUDA release b12257 |
+| Ollama models `qwen3.8-mates` (plain Qwen3.8-27B, unsloth UD-IQ4_XS, the first mates worker) and `qwen3.6:35b-a3b` | 35 GB | their Modelfiles are in `.archaeology/ollama/`; `qwen3.8-mates` needs the unsloth GGUF re-downloaded, `qwen3.6:35b-a3b` is `ollama pull` |
 | Ollama model `qwen3.8:27b` (library Q4, too slow: `docs/models.md`) | 16 GB | `ollama pull qwen3.8:27b` |
 | Ollama models `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS`, `qwen3.8-iq4-text` | ~1 GB on disk (their weights are shared with `qwen3.8-mates`, which stays) | `ollama create` from `qwen3.8-mates`'s blob |
 

@@ -101,10 +101,11 @@ lapsed, the digest is skipped with a warning and `qwen` runs without it.
 
 ## Switching models
 
-Try one for a session:
+Try one for a session (only the turbo model is installed now, so add the
+other one first, see below):
 
 ```
-QWEN_MODEL=qwen3.6:35b-a3b QWEN_CTX=131072 qwen
+QWEN_MODEL=<ollama name> QWEN_CTX=131072 qwen
 ```
 
 The default is the `MODEL=` line near the top of `bin/qwen`. To add a new

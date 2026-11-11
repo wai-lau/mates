@@ -31,8 +31,8 @@ that spills to CPU no longer risks an OOM kill; it only gets slower (see
 | Runtime | Ollama 0.40.16, system service on `127.0.0.1:11434` (settings in `/etc/systemd/system/ollama.service.d/override.conf`) |
 | Coding model | `qwen3.8-27b-turbo-heretic:mtp-iq4xs`, 64K context (why: `docs/models.md`) |
 | Coding agent | OpenCode 1.19.5 (`~/.local/opt/opencode-1.19.5/`), run through `qwen` inside a bubblewrap sandbox |
-| Old default | `gpt-oss:20b` (still installed, fits the 5070 Ti alone at ~143 tok/s) |
-| Model definitions | `ollama/*.Modelfile` in this repo |
+| Old default | `gpt-oss:20b` (still installed: emet's extractor and hosaka use it, with `nomic-embed-text`) |
+| Model definition | `ollama/qwen3.8-27b-turbo-heretic-mtp-iq4xs.Modelfile` |
 
 `qwen` runs its own private Ollama server on a free port (found again by
 reading its process environment, never a fixed number). The system service is
@@ -111,7 +111,7 @@ from the model's Modelfile.
 
 ```
 qwen stop
-ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates
+ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs
 rm -rf ~/.local/opt/opencode-* ~/.config/qwen ~/.local/state/qwen
 rm ~/bin/qwen
 ```

@@ -22,6 +22,8 @@ Ollama 0.40.16, 8-bit KV cache, model spread across both GPUs, one worker.
 
 ## Measurements
 
+Only the turbo model is still installed (2026-11-10); the other rows are history.
+
 | Model (Ollama name) | File | Context | On CPU | Output tok/s | Prompt tok/s | Probe |
 |---|---|---|---|---|---|---|
 | `qwen3.8:27b` (library Q4) | 17 GB | 32K | 5.3 GB | 2.1 | 567 | not run |
@@ -51,7 +53,7 @@ Notes:
 
 ## Rebuilding a model
 
-The Modelfiles are in `ollama/`.
+The turbo Modelfile is in `ollama/`. The retired ones (`qwen3.8-mates`, `qwen3.6:35b-a3b` text-only) are in the local `.archaeology/ollama/`.
 
 - **Library models:** `ollama pull <name>`.
 - **A GGUF from Hugging Face:**
