@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure Qwen context sizes on this GPU pair and pick the worker context.
 
-    python3 mates/ctx.py measure [--model qwen3.8:27b]
+    python3 mates/ctx.py measure [--model qwen3.8-27b-turbo-heretic:mtp-iq4xs]
 
 Runs a private `ollama serve` as wai on 127.0.0.1:11435 (the pilot's only
 Ollama; the system service is left alone), and for each context size and
@@ -113,7 +113,7 @@ def measure(model: str, parallels=PARALLELS) -> list[dict]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["measure"])
-    ap.add_argument("--model", default="qwen3.8:27b")
+    ap.add_argument("--model", default="qwen3.8-27b-turbo-heretic:mtp-iq4xs")
     ap.add_argument("--parallels", default="1,2")
     a = ap.parse_args()
     rows = measure(a.model, tuple(int(x) for x in a.parallels.split(",")))
