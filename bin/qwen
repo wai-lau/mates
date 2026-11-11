@@ -55,7 +55,7 @@ MODEL=${QWEN_MODEL:-qwen3.8-27b-turbo-heretic:mtp-iq4xs}
 CTX=${QWEN_CTX:-65536}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
-OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)}
+OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1 || true)}  # none: only the TUI start refuses
 SELF=$(readlink -f "$0"); HERE=$(dirname "$SELF")
 mkdir -p "$STATE/opencode" "$CONF"; chmod 700 "$STATE"  # the server lock and run dirs are ours only
 # The folder qwen starts in is the repo Qwen writes: hostile to every host-side helper. Keep

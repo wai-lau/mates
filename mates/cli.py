@@ -205,7 +205,7 @@ def snapshot(root, n, base):
         # Not `add -A -- . ':!.mates'`: git exits 1 when an excluded path is also ignored
         # (info/exclude lists .mates/). Add everything, then put .mates back as it was at base.
         git_safe(root, n, "add", "-A", "--", ".", index=idx, attrs=base)
-        git_safe(root, n, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".mates", index=idx, attrs=base)
+        git_safe(root, n, "rm", "-r", "-f", "-q", "--cached", "--ignore-unmatch", "--", ".mates", index=idx, attrs=base)
         kept = git_safe(root, n, "ls-tree", "-r", "-z", "--full-tree", base, "--", ".mates", index=idx,
                         attrs=base).stdout
         if kept:

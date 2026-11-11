@@ -60,6 +60,9 @@ check "exec leaves no run dir behind" '[ -z "$(ls -d "$T/state/qwen"/run.* 2>/de
 in_ "$T/repo" "$QWEN" exec 2>/dev/null; rc=$?
 check "exec with no command fails" '[ "$rc" != 0 ]'
 
+( cd "$T/repo" && env -u QWEN_OPENCODE HOME=$T/no-opencode-home "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "exec works with no OpenCode installed" '[ "$rc" = 0 ]'
+
 # --- read-only git ------------------------------------------------------
 in_ "$T/repo" "$QWEN" exec -- git update-ref refs/heads/rw-control HEAD 2>/dev/null
 check "control: without QWEN_GIT_RO a branch ref can be written" 'git -C "$T/repo" rev-parse -q --verify refs/heads/rw-control >/dev/null'

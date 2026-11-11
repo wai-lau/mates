@@ -712,6 +712,21 @@ def test_check_failure_records_nothing(m):
     assert m.task()["checked_tree"] is None
 
 
+def test_snapshot_survives_nested_repo_under_mates(m):
+    """Final review Minor 1: `!.mates/` in a Qwen .gitignore plus a git repo at .mates/x/."""
+    m.send()
+    (m.wt / ".gitignore").write_text("!.mates/\n")
+    nested = m.wt / ".mates" / "x"
+    nested.mkdir(parents=True)
+    _git(nested, "init", "-q")
+    (nested / "f").write_text("x\n")
+    _git(nested, "add", "f")
+    _git(nested, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+    code, out, err = m.run("diff", 1)
+    assert code == 0, err
+    assert ".mates/x" not in out and "Subproject" not in out
+
+
 def test_check_refuses_busy(m):
     m.ses("ses_1")
     m.msg("ses_1", "user", time.time())
