@@ -951,3 +951,55 @@ def test_discard_failed_logs_failed(m):
     assert m.run("discard", 1, "--failed")[0] == 0
     assert [r["outcome"] for r in m.log()] == ["failed"]
     assert m.git("for-each-ref", "refs/mates/discarded/") == ""  # nothing to keep
+
+
+def test_diff_ignores_qwen_attributes(m):
+    """A Qwen `.gitattributes` cannot hide a change from the lead or from the guard flags."""
+    m.send()
+    (m.wt / ".gitattributes").write_text("*.txt -diff\n")
+    (m.wt / "tests").mkdir()
+    (m.wt / "tests" / ".gitattributes").write_text("*.py binary\n")
+    (m.wt / "tests" / "test_a.py").write_text("import pytest\n@pytest.mark.skip\ndef test_x(): pass\n")
+    (m.wt / "a.txt").write_text("PAYLOAD\n")
+    (m.wt / "café.bin").write_bytes(b"\x00\x01binary")  # a name git quotes, binary content
+    assert m.run("check", 1, "--", "true")[0] == 0
+    code, out, _ = m.run("diff", 1)
+    assert code == 0
+    assert "+PAYLOAD" in out and "+@pytest.mark.skip" in out
+    assert "Binary files" not in out  # --text: even the binary file shows its bytes
+    flags = m.task()["flags"]
+    assert "test-skipped:tests/test_a.py" in flags and "hook-path:.gitattributes" in flags
+    assert "unnamed-file:café.bin" in flags
+
+
+def test_no_filter_runs_from_qwen_attributes(m):
+    """A lead-config filter, assigned by a Qwen `.gitattributes`, never runs as Wai:
+    not in snapshot, check, diff, sync, merge or discard."""
+    canary = m.t / "filter-canary"
+    for var in ("clean", "smudge"):
+        m.git("config", f"filter.evil.{var}", f"echo {var} >> {canary}; cat")
+    m.git("config", "filter.evil.process", f"sh -c 'echo process >> {canary}'")
+    m.git("config", "filter.lfs.clean", f"echo lfs >> {canary}; cat")
+    m.send()
+    (m.wt / ".gitattributes").write_text("* filter=evil\n*.bin filter=lfs\n")
+    (m.wt / "a.txt").write_text("b\n")
+    (m.wt / "x.bin").write_text("pointer?\n")
+    # the attack is real: plain git in the worktree runs the filter
+    probe = m.t / "probe-index"
+    subprocess.run(["git", "add", "-A"], cwd=m.wt, capture_output=True,
+                   env={"PATH": "/usr/bin:/bin", "HOME": str(m.t), "GIT_INDEX_FILE": str(probe)})
+    assert canary.exists()
+    canary.unlink()
+    assert cli.worktree_dirty(str(m.root), 1)
+    assert m.run("check", 1, "--", "true")[0] == 0
+    assert m.run("diff", 1)[0] == 0
+    m.lead_commit("b.txt", "lead\n")
+    assert m.run("sync", 1)[0] == 0
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0, "merge"
+    assert not canary.exists()
+    m.send("next")
+    (m.wt / "a.txt").write_text("again\n")
+    assert m.run("check", 1, "--", "true")[0] == 0
+    assert m.run("discard", 1)[0] == 0
+    assert not canary.exists()

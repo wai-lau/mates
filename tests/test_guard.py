@@ -70,3 +70,13 @@ def test_guard_hunk_line_cannot_rename_file():
     diff = d(".githooks/pre-commit", ["+ b/innocent.py", "evil"])  # an added `++ b/innocent.py` line
     f = guard.guard_flags(diff, ["innocent.py"])
     assert "hook-path:.githooks/pre-commit" in f and not any("innocent.py" in x for x in f)
+
+def test_guard_quoted_paths():
+    # git quotes non-ASCII names; a binary file has no ---/+++ lines, so the header is all there is
+    binary = ('diff --git "a/.githooks/caf\\303\\251" "b/.githooks/caf\\303\\251"\nnew file mode 100755\n'
+              'Binary files /dev/null and "b/.githooks/caf\\303\\251" differ\n')
+    assert "hook-path:.githooks/café" in guard.guard_flags(binary, [])
+    text = ('diff --git "a/tests/test_\\"q\\".py" "b/tests/test_\\"q\\".py"\n'
+            '--- "a/tests/test_\\"q\\".py"\n+++ "b/tests/test_\\"q\\".py"\n@@ -1 +1 @@\n+@pytest.mark.skip\n')
+    f = guard.guard_flags(text, [])
+    assert 'test-skipped:tests/test_"q".py' in f and 'unnamed-file:tests/test_"q".py' in f

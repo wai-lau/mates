@@ -45,8 +45,12 @@ def test_git_safe_env_and_flags(repo, calls, monkeypatch):
     r = gitsafe.git_safe(repo, 1, "diff", "--stat", "HEAD")
     assert r.returncode == 0
     argv, kw = calls[-1]
-    assert argv[:6] == ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "diff"]
-    assert argv[6:8] == ["--no-ext-diff", "--no-textconv"] and argv[8:] == ["--stat", "HEAD"]
+    head = gitsafe.git_lead(repo, "rev-parse", "HEAD").stdout.strip()
+    assert argv[:2] == ["git", f"--attr-source={head}"]  # attributes from the lead's HEAD, not Qwen's files
+    assert "filter.lfs.clean=" in argv and "filter.lfs.process=" in argv and "filter.lfs.required=false" in argv
+    i = argv.index("diff")
+    assert argv[i - 4:i] == ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+    assert argv[i + 1:i + 3] == ["--no-ext-diff", "--no-textconv"] and argv[i + 3:] == ["--stat", "HEAD"]
     env = kw["env"]
     assert env["GIT_DIR"] == str(common / "worktrees" / "mates-qwen-1")
     assert env["GIT_COMMON_DIR"] == str(common)
@@ -55,7 +59,10 @@ def test_git_safe_env_and_flags(repo, calls, monkeypatch):
     assert kw["cwd"] == wt and kw["text"] is True
     for sub in ("log", "show"):
         gitsafe.git_safe(repo, 1, sub, "-1", "HEAD")
-        assert calls[-1][0][5:8] == [sub, "--no-ext-diff", "--no-textconv"]
+        argv = calls[-1][0]
+        assert argv[argv.index(sub):][:3] == [sub, "--no-ext-diff", "--no-textconv"]
+    gitsafe.git_safe(repo, 1, "status", attrs="abc123")
+    assert calls[-1][0][1] == "--attr-source=abc123"
     gitsafe.git_safe(repo, 1, "status", "--porcelain")
     assert "--no-ext-diff" not in calls[-1][0]
 
@@ -116,3 +123,13 @@ def test_git_safe_ignores_redirected_commondir(repo, tmp_path):
     gitsafe.git_safe(repo, 1, "add", "-A", "--", ".")
     gitsafe.git_safe(repo, 1, "diff", "HEAD")
     assert not canary.exists()
+
+
+def test_git_safe_blanks_every_configured_filter(repo, tmp_path, calls):
+    canary = tmp_path / "canary"
+    _git(repo, "config", "filter.my.tool.clean", f"touch {canary}; cat")  # a name with a dot
+    _git(repo, "config", "filter.my.tool.required", "true")
+    gitsafe.git_safe(repo, 1, "status")
+    argv = calls[-1][0]
+    for var in ("clean=", "smudge=", "process=", "required=false"):
+        assert f"filter.my.tool.{var}" in argv

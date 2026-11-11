@@ -192,25 +192,26 @@ def snapshot(root, n, base):
     reach the tree."""
     with tempfile.TemporaryDirectory(prefix="mates-snap-") as tmp:
         idx = Path(tmp) / "index"
-        git_safe(root, n, "read-tree", base, index=idx)
+        git_safe(root, n, "read-tree", base, index=idx, attrs=base)
         # Not `add -A -- . ':!.mates'`: git exits 1 when an excluded path is also ignored
         # (info/exclude lists .mates/). Add everything, then put .mates back as it was at base.
-        git_safe(root, n, "add", "-A", "--", ".", index=idx)
-        git_safe(root, n, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".mates", index=idx)
-        kept = git_safe(root, n, "ls-tree", "-r", "-z", "--full-tree", base, "--", ".mates", index=idx).stdout
+        git_safe(root, n, "add", "-A", "--", ".", index=idx, attrs=base)
+        git_safe(root, n, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".mates", index=idx, attrs=base)
+        kept = git_safe(root, n, "ls-tree", "-r", "-z", "--full-tree", base, "--", ".mates", index=idx,
+                        attrs=base).stdout
         if kept:
-            git_safe(root, n, "update-index", "-z", "--index-info", index=idx, input=kept)
-        return git_safe(root, n, "write-tree", index=idx).stdout.strip()
+            git_safe(root, n, "update-index", "-z", "--index-info", index=idx, input=kept, attrs=base)
+        return git_safe(root, n, "write-tree", index=idx, attrs=base).stdout.strip()
 
 
 def worktree_dirty(root, n):
     """Paths where Qwen worktree n differs from its HEAD (untracked included, `.mates/`
     left out); empty means clean."""
     head = git_safe(root, n, "rev-parse", "HEAD^{tree}").stdout.strip()
-    tree = snapshot(root, n, "HEAD")
+    tree = snapshot(root, n, "HEAD")  # the worktree's HEAD: a commit mates put there
     if tree == head:
         return []
-    out = git_safe(root, n, "diff", "--name-only", "-z", "--no-renames", head, tree).stdout
+    out = git_safe(root, n, "diff", "--name-only", "-z", "--no-renames", head, tree, attrs="HEAD").stdout
     return [p for p in out.split("\0") if p]
 
 
@@ -511,10 +512,10 @@ def _reset_worktree(root, n, branch, commit):
     (ignored ones stay). Callers keep a snapshot first if anything there matters."""
     _, admin, _ = gitsafe.dirs(root, n)
     idx = admin / "index"
-    git_safe(root, n, "read-tree", "HEAD", index=idx)  # so reset deletes only files HEAD tracks
-    git_safe(root, n, "symbolic-ref", "HEAD", f"refs/heads/{branch}", index=idx)
-    git_safe(root, n, "reset", "-q", "--hard", commit, index=idx)
-    git_safe(root, n, "clean", "-fdq", "--", ".", ":!.mates", index=idx)
+    git_safe(root, n, "read-tree", "HEAD", index=idx, attrs=commit)  # so reset deletes only files HEAD tracks
+    git_safe(root, n, "symbolic-ref", "HEAD", f"refs/heads/{branch}", index=idx, attrs=commit)
+    git_safe(root, n, "reset", "-q", "--hard", commit, index=idx, attrs=commit)
+    git_safe(root, n, "clean", "-fdq", "--", ".", ":!.mates", index=idx, attrs=commit)
 
 
 def _task(base, direct=False, summary=None, reason=None, files=()):
@@ -727,7 +728,7 @@ def answer(args):
 
 # --- check, diff ---------------------------------------------------------------------------
 
-def _unpack(root, n, wt, tree):
+def _unpack(root, n, wt, tree, base):
     """Write `tree` to `<wt>/.mates/check/<tree>/`, replacing any older check folder.
     Built in a lead-owned temp folder and renamed in through folder fds: nothing is
     written through a link Qwen could have planted. `checkout-index`, not `git
@@ -736,8 +737,8 @@ def _unpack(root, n, wt, tree):
     try:
         with tempfile.TemporaryDirectory(prefix="mates-check-index-") as tmp:
             idx = Path(tmp) / "index"
-            git_safe(root, n, "read-tree", tree, index=idx)
-            git_safe(root, n, "checkout-index", "-a", "-f", f"--prefix={stage}/", index=idx)
+            git_safe(root, n, "read-tree", tree, index=idx, attrs=base)
+            git_safe(root, n, "checkout-index", "-a", "-f", f"--prefix={stage}/", index=idx, attrs=base)
         d = _mates_fd(wt, create=True)
         try:
             try:
@@ -782,7 +783,7 @@ def check(args):
             base = git_lead(root, "merge-base", "HEAD", f"refs/heads/{q['branch']}").stdout.strip()
             task = q["task"] = _task(base, direct=True)
         tree = snapshot(root, n, task["base"])
-        folder = _unsafe(_unpack, root, n, q["worktree"], tree)
+        folder = _unsafe(_unpack, root, n, q["worktree"], tree, task["base"])
     except GitError as e:
         die(f"git failed on Qwen worktree {n}: {e}")
     env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME",)}
@@ -816,11 +817,14 @@ def diff(args):
     base = task["base"]
     try:
         tree = snapshot(root, a.n, base)
-        full = git_safe(root, a.n, "diff", "--no-color", "--no-renames", base, tree).stdout
-        stat_ = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--stat", base, tree).stdout
+        # --text: a binary-looking file still shows its bytes (attributes come from base anyway)
+        full = git_safe(root, a.n, "diff", "--text", "--no-color", "--no-renames", base, tree, attrs=base).stdout
+        stat_ = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--stat", base, tree, attrs=base).stdout
     except GitError as e:
         die(f"git failed on Qwen worktree {a.n}: {e}")
     hooks = git_lead(root, "config", "core.hooksPath", check=False).stdout.strip() or None
+    if hooks and os.path.isabs(hooks) and Path(hooks).resolve().is_relative_to(Path(root)):
+        hooks = str(Path(hooks).resolve().relative_to(Path(root)))  # an absolute path inside the repo
     flags = guard.guard_flags(full, task["files"], hooks_path=hooks,
                               runtime_files=runtime.runtime_files(root, base))
     sys.stdout.write(full)
@@ -884,19 +888,23 @@ def merge(args):
         die("the lead checkout has uncommitted changes in paths this merge touches: " + ", ".join(clash[:10]))
     try:
         commit = git_lead(root, "commit-tree", checked, "-p", base, "-m", f"mates qwen-{a.n}: {summary}").stdout.strip()
-        git_lead(root, "merge", "--ff-only", "-q", commit)
+        git_lead(root, "merge", "--ff-only", "-q", commit, attrs=base)
+    except GitError as e:
+        die(f"merge failed: {e}", 1)
+    task["summary"] = summary  # merged: log it and close the task before the worktree tidy-up
+    log_attempt(root, q, "accepted")
+    q["task"] = None
+    save_state(root, state)
+    print(f"merged Qwen pane {a.n}: {commit[:12]} mates qwen-{a.n}: {summary}")
+    try:
         now_tree = snapshot(root, a.n, base)
         if now_tree != checked:
             ref = _keep(root, a.n, _snapshot_commit(root, a.n, base, now_tree, "edits after the check (not merged)"))
             print(f"mates: Qwen worktree {a.n} changed after the check; those edits are kept on {ref}", file=sys.stderr)
         _reset_worktree(root, a.n, q["branch"], commit)
     except GitError as e:
-        die(f"merge failed: {e}", 1)
-    task["summary"] = summary
-    log_attempt(root, q, "accepted")
-    q["task"] = None
-    save_state(root, state)
-    print(f"merged Qwen pane {a.n}: {commit[:12]} mates qwen-{a.n}: {summary}")
+        print(f"mates: merged, but resetting Qwen worktree {a.n} failed ({e}); mates discard {a.n} tidies it",
+              file=sys.stderr)
     return 0
 
 
@@ -917,7 +925,7 @@ def sync(args):
     try:
         snap = _snapshot_commit(root, a.n, base, snapshot(root, a.n, base), "snapshot for sync")
         r = git_lead(root, "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages",
-                     f"--merge-base={base}", lead, snap, check=False)
+                     f"--merge-base={base}", lead, snap, check=False, attrs=lead)
         if r.returncode == 1:
             paths = [x for x in r.stdout.split("\0")[1:] if x]
             print("conflict")
@@ -927,14 +935,17 @@ def sync(args):
         if r.returncode != 0:
             raise GitError(r.stderr.strip())
         merged = r.stdout.split("\0")[0].strip()
+    except GitError as e:
+        die(f"sync failed: {e}", 1)
+    try:
         _reset_worktree(root, a.n, q["branch"], lead)
         _, admin, _ = gitsafe.dirs(root, a.n)
         with tempfile.TemporaryDirectory(prefix="mates-sync-index-") as tmp:
             idx = Path(tmp) / "index"
             shutil.copyfile(admin / "index", idx)  # matches the worktree, which is at `lead` now
-            git_safe(root, a.n, "read-tree", "-m", "-u", lead, merged, index=idx)
-    except GitError as e:
-        die(f"sync failed: {e}", 1)
+            git_safe(root, a.n, "read-tree", "-m", "-u", lead, merged, index=idx, attrs=lead)
+    except GitError as e:  # the worktree may be half-written now: Qwen's work must survive on a ref
+        die(f"sync failed after the reset ({e}); Qwen's work is kept on {_keep(root, a.n, snap)}", 1)
     task["base"] = lead
     _clear_review(task)
     save_state(root, state)

@@ -1,11 +1,14 @@
 """Git on a Qwen worktree without trusting anything Qwen can write.
 
 A Qwen worktree's `.git` file, its admin folder's `commondir`, a `.git` folder
-planted under `.mates/`, or a tracked hooks folder could all steer a plain `git`
-run there into running a command as Wai. `git_safe` never lets git discover the
-repo: the git dirs come from the lead's checkout (trusted) and the read-only
+planted under `.mates/`, a tracked hooks folder or a `.gitattributes` could all
+steer a plain `git` run there into running a command as Wai, or into hiding a
+change from the lead. `git_safe` never lets git discover the repo: the git dirs
+come from the lead's checkout (trusted) and the read-only
 `<common>/worktrees/*/gitdir` files, the index is a temp file unless the caller
 names one, and hooks, fsmonitor, external diff and textconv are off.
+Attributes come from a lead commit (`--attr-source`), never from Qwen's files,
+and every filter driver is blanked, so no clean/smudge/process program runs.
 """
 import contextlib
 import os
@@ -16,6 +19,8 @@ from pathlib import Path
 SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 DIFF_SAFE = ("--no-ext-diff", "--no-textconv")
 DIFF_COMMANDS = {"diff", "log", "show"}
+FILTER_KEYS = ("clean", "smudge", "process")
+ALWAYS_BLANK = ("lfs",)  # blanked even when not configured (git lfs install adds it globally)
 
 
 class GitError(RuntimeError):
@@ -47,9 +52,14 @@ def _run(argv, cwd, env, check, input):
     return r
 
 
-def git_lead(root, *args, check=True, input=None):
-    """Git in the lead's own checkout `root` (normal discovery), with the same flags."""
-    return _run(_argv(args), root, _env(), check, input)
+def git_lead(root, *args, check=True, input=None, attrs=None):
+    """Git in the lead's own checkout `root` (normal discovery), with the same flags.
+    `attrs`: read attributes from that tree-ish, not the checkout (merge's fast-forward
+    uses the task base, so a merged `.gitattributes` picks no filter while it lands)."""
+    argv = _argv(args)
+    if attrs is not None:
+        argv[1:1] = [f"--attr-source={attrs}"]
+    return _run(argv, root, _env(), check, input)
 
 
 def dirs(root, n):
@@ -67,15 +77,38 @@ def dirs(root, n):
     raise GitError(f"no git worktree entry for {wt}")
 
 
-def git_safe(root, n, *args, index=None, check=True, input=None):
+def _filter_blanks(root):
+    """`-c` pairs that switch off every filter driver the lead's config (repo, global,
+    system) defines, plus lfs: empty commands, not required."""
+    out = git_lead(root, "config", "--name-only", "--get-regexp", r"^filter\.", check=False).stdout
+    names = set(ALWAYS_BLANK)
+    for key in out.splitlines():
+        name, _, var = key[len("filter."):].rpartition(".")
+        if name:
+            names.add(name)
+    flags = []
+    for name in sorted(names):
+        for var in FILTER_KEYS:
+            flags += ["-c", f"filter.{name}.{var}="]
+        flags += ["-c", f"filter.{name}.required=false"]
+    return flags
+
+
+def git_safe(root, n, *args, index=None, check=True, input=None, attrs=None):
     """Run git on Qwen worktree n. `index` is the index file to use (default: a fresh
-    temp file, deleted afterwards). Returns the CompletedProcess (text mode);
-    `check=True` raises GitError(stderr) on a non-zero exit."""
+    temp file, deleted afterwards). `attrs` is the trusted tree-ish attributes are read
+    from (default: the lead's HEAD); Qwen's `.gitattributes` files are never read.
+    Returns the CompletedProcess (text mode); `check=True` raises GitError(stderr) on
+    a non-zero exit."""
     common, admin, wt = dirs(root, n)
+    if attrs is None:
+        attrs = git_lead(root, "rev-parse", "HEAD").stdout.strip()
+    pre = [f"--attr-source={attrs}", *_filter_blanks(root)]
     with contextlib.ExitStack() as stack:
         if index is None:
             tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="mates-index-"))
             index = Path(tmp) / "index"
         env = dict(_env(), GIT_DIR=str(admin), GIT_COMMON_DIR=str(common), GIT_WORK_TREE=str(wt),
                    GIT_INDEX_FILE=str(index))
-        return _run(_argv(args), wt, env, check, input)
+        argv = _argv(args)
+        return _run(argv[:1] + pre + argv[1:], wt, env, check, input)

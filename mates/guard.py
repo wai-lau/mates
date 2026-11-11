@@ -31,6 +31,30 @@ def load_brief(path) -> dict:
     return b
 
 
+_ESC = {"a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+
+
+def _unquote(p: str) -> str:
+    """Undo git's C-style quoting of a path (`"b/caf\\303\\251"` -> `b/café`)."""
+    if len(p) < 2 or not (p.startswith('"') and p.endswith('"')):
+        return p
+    out, i, body = bytearray(), 0, p[1:-1]
+    while i < len(body):
+        c = body[i]
+        if c == "\\" and i + 1 < len(body):
+            nxt, oct3 = body[i + 1], body[i + 1:i + 4]
+            if len(oct3) == 3 and all(ch in "01234567" for ch in oct3):
+                out.append(int(oct3, 8) & 0xFF)
+                i += 4
+                continue
+            out += _ESC.get(nxt, nxt).encode()
+            i += 2
+            continue
+        out += c.encode()
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
 def _files(diff_text: str):
     """Yield (path, added_lines, removed_lines) per file in a unified diff. The path
     comes from the `diff --git` line (so a binary file counts too), then from the
@@ -42,13 +66,17 @@ def _files(diff_text: str):
             if path:
                 yield path, added, removed
             path, minus, added, removed, in_hunk = None, None, [], [], False
-            a, sep, b = line[len("diff --git "):].partition(" b/")
-            if sep:
-                path = b
+            rest = line[len("diff --git "):]
+            if rest.endswith('"'):  # git quotes a name with odd characters: "b/..."
+                start = rest.rfind(' "b/')
+                path = _unquote(rest[start + 1:])[2:] if start >= 0 else None
+            else:
+                a, sep, b = rest.partition(" b/")
+                path = b if sep else None
         elif not in_hunk and line.startswith("--- "):
-            minus = line[4:].removeprefix("a/")
+            minus = _unquote(line[4:]).removeprefix("a/")
         elif not in_hunk and line.startswith("+++ "):
-            p = line[4:]
+            p = _unquote(line[4:])
             path = minus if p == "/dev/null" else p.removeprefix("b/")
         elif line.startswith("@@"):
             in_hunk = True
@@ -83,7 +111,7 @@ def guard_flags(diff_text: str, brief_files: list[str], hooks_path=None, runtime
     for path, added, removed in _files(diff_text):
         if path.startswith(".mates/") or path == ".mates":
             flags.append(f"mates-dir:{path}")
-        if any(_under(path, d) for d in hook_dirs) or posixpath.basename(path).startswith(".git"):
+        if any(_under(path, d) for d in hook_dirs) or posixpath.basename(path).startswith((".git", ".lfsconfig")):
             flags.append(f"hook-path:{path}")
         if path in runtime or MANIFEST.match(posixpath.basename(path)):
             flags.append(f"runtime-input:{path}")
