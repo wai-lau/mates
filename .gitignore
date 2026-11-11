@@ -6,3 +6,6 @@
 # local Claude worktrees
 /.claude/
 __pycache__/
+
+# questions for Wai (the daily retro appends its proposals here)
+/OPEN-QUESTIONS.md

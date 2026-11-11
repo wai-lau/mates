@@ -1036,7 +1036,12 @@ def discard(args):
     return 0
 
 
-COMMANDS = {"launch": launch, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
+def retro(args):
+    import retro as r  # imported here: retro reads cli's constants at import
+    return r.main(args)
+
+
+COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
             "list": panes.list_, "log": panes.log, "log-route": panes.log_route}
 

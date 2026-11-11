@@ -1308,3 +1308,258 @@ def test_log_line_has_cost_fields(m):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# --- retro -----------------------------------------------------------------------------
+
+class Retro:
+    """`mates retro` with a stub claude (MATES_CLAUDE), a temp log and a temp mates source checkout."""
+
+    def __init__(self, tmp_path, monkeypatch, capsys):
+        import retro
+        self.t, self.capsys, self.retro = tmp_path, capsys, retro
+        monkeypatch.setattr(cli, "LOG", tmp_path / "mates" / "log.jsonl")
+        monkeypatch.setattr(retro, "NEUTRAL", tmp_path / "neutral")
+        self.src = tmp_path / "src"
+        (self.src / "mates").mkdir(parents=True)
+        self.lessons = self.src / "mates" / "lead-lessons.md"
+        self.lessons.write_text("## Lessons\n\nNone yet. The daily retro rewrites this section.\n")
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+        monkeypatch.setattr(retro, "SRC", self.src)
+        monkeypatch.setenv("GIT_AUTHOR_NAME", "t")
+        monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@t")
+        monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
+        monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@t")
+        stub = tmp_path / "claude-stub"
+        stub.write_text("#!/usr/bin/env python3\n"
+                        "import json, os, pathlib, sys\n"
+                        f"t = pathlib.Path({str(tmp_path)!r})\n"
+                        "n = len(list(t.glob('call-*.json')))\n"
+                        "(t / f'call-{n}.json').write_text(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd(),\n"
+                        "    'stdin': sys.stdin.read(), 'api_key': os.environ.get('ANTHROPIC_API_KEY')}))\n"
+                        "print(json.dumps([{'type': 'result', 'result': (t / 'reply.json').read_text()}]))\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("MATES_CLAUDE", str(stub))
+        self.reply()
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", str(self.src), *a], check=True, capture_output=True, text=True).stdout
+
+    def reply(self, findings="All fine.", lessons=(), proposals=()):
+        (self.t / "reply.json").write_text(json.dumps({"findings_md": findings, "lessons": list(lessons),
+                                                       "proposals": list(proposals)}))
+
+    def line(self, day, **kw):
+        import logrec
+        rec = {"repo": "/home/x/src/widget", "task_id": uuid.uuid4().hex[:12], "summary": "fix add()",
+               "route": "qwen", "reason": "clear check", "outcome": "accepted", "ts": f"{day}T10:00:00Z"}
+        rec.update(kw)
+        cli.LOG.parent.mkdir(parents=True, exist_ok=True)
+        logrec.append(cli.LOG, rec)
+
+    def run(self, *args):
+        try:
+            code = cli.main(["retro", *map(str, args)])
+        except SystemExit as e:
+            code = e.code
+        cap = self.capsys.readouterr()
+        return code, cap.out, cap.err
+
+    def calls(self):
+        return [json.loads((self.t / f"call-{i}.json").read_text())
+                for i in range(len(list(self.t.glob("call-*.json"))))]
+
+    def retro_file(self, day):
+        return cli.LOG.parent / "retros" / f"{day}.md"
+
+    def kept(self):
+        return [l[2:] for l in self.lessons.read_text().splitlines() if l.startswith("- ")]
+
+
+@pytest.fixture
+def rt(tmp_path, monkeypatch, capsys):
+    return Retro(tmp_path, monkeypatch, capsys)
+
+
+def test_retro_skips_empty_day(rt):
+    rt.line("2026-11-08")
+    code, out, err = rt.run("--date", "2026-11-09")
+    assert code == 0, err
+    assert rt.calls() == [] and not rt.retro_file("2026-11-09").exists()
+    assert "no log lines" in out
+
+
+def test_retro_runs_claude_with_no_tools(rt, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    rt.line("2026-11-09")
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    (c,) = rt.calls()
+    assert c["argv"] == ["-p", "--tools", "", "--strict-mcp-config", "--setting-sources", "project",
+                         "--output-format", "json"]
+    assert c["cwd"] == str(rt.t / "neutral") and c["api_key"] is None
+    assert "findings_md" in c["stdin"]
+
+
+def test_retro_input_has_no_question_text(rt):
+    rt.line("2026-11-09", summary="rename the parser", reason="clear check, one file",
+            questions=[{"q": "QWEN-SECRET which file?", "a": "use parse.py"}],
+            detail="QWEN-TAIL check output")
+    rt.line("2026-11-10", summary="tomorrow's task")
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    (c,) = rt.calls()
+    s = c["stdin"]
+    assert "QWEN-SECRET" not in s and "QWEN-TAIL" not in s and "tomorrow's task" not in s
+    assert "rename the parser" in s and "clear check, one file" in s and "use parse.py" in s
+    (rec,) = [json.loads(l) for l in s.split("## Log lines")[1].splitlines() if l.startswith("{")]
+    assert rec["questions"] == [{"a": "use parse.py"}]  # the count stays
+
+
+def test_retro_input_flags_have_no_paths(rt):
+    rt.line("2026-11-09", flags=["unnamed-file:src/evil_name_IGNORE_RULES.py", "test-skipped:tests/t.py", "hook-path:x"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    s = rt.calls()[0]["stdin"]
+    assert "evil_name" not in s and "tests/t.py" not in s
+    (rec,) = [json.loads(l) for l in s.split("## Log lines")[1].splitlines() if l.startswith("{")]
+    assert rec["flags"] == ["unnamed-file", "test-skipped", "hook-path"]
+
+
+def test_retro_rejects_lesson_with_repo_name(rt):
+    rt.line("2026-11-09", flags=["unnamed-file:src/gadget.py"])
+    rt.reply(lessons=["Widget tasks need the check named", "Never touch gadget.py", "Briefs name the check"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == ["Briefs name the check"]
+    f = rt.retro_file("2026-11-09").read_text()
+    assert "Widget tasks need the check named" in f and "Never touch gadget.py" in f
+
+
+def test_retro_allows_slash_words(rt):
+    rt.line("2026-11-09")
+    rt.reply(lessons=["Report pass/fail with the check tail", "Read and/or diff before merge",
+                      "Split work 1 / 2 between panes", "Look at ~/notes first", "Check /etc first", "Edit src/app.py carefully"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == ["Report pass/fail with the check tail", "Read and/or diff before merge",
+                         "Split work 1 / 2 between panes"]
+
+
+def test_retro_caps_lessons(rt):
+    rt.line("2026-11-09")
+    rt.reply(lessons=["x" * 201, "y" * 200] + [f"lesson number {i}" for i in range(25)])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    kept = rt.kept()
+    assert len(kept) == 20 and kept[0] == "y" * 200 and kept[-1] == "lesson number 18"
+    assert "x" * 201 in rt.retro_file("2026-11-09").read_text()
+
+
+def test_retro_writes_findings_and_rejects(rt):
+    rt.line("2026-11-09")
+    rt.reply(findings="## Misroutes\n\nOne task went to Qwen with no check.", lessons=["z" * 250])
+    code, out, err = rt.run("--date", "2026-11-09")
+    assert code == 0, err
+    f = rt.retro_file("2026-11-09").read_text()
+    assert "One task went to Qwen with no check." in f
+    assert "z" * 250 in f and "200" in f
+
+
+def test_retro_appends_proposals(rt):
+    rt.line("2026-11-09")
+    lead_before = (cli.HERE / "lead.md").read_text()
+    (rt.src / "OPEN-QUESTIONS.md").write_text("# Open questions\n\nUpdated 2026-11-01 10:00\n\n## Open\n\n"
+                                              "**1. Old question?**\n\n## Offers\n\nnone\n")
+    rt.reply(proposals=["Allow two Qwen tasks at once", "Route renames to Qwen"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    q = (rt.src / "OPEN-QUESTIONS.md").read_text()
+    open_part = q.split("## Open", 1)[1].split("## Offers", 1)[0]
+    assert "**1. Old question?**" in open_part
+    assert "Allow two Qwen tasks at once" in open_part and "Route renames to Qwen" in open_part
+    assert "**2." in open_part and "**3." in open_part
+    assert "## Offers\n\nnone" in q and "Updated 2026-11-01 10:00" not in q
+    assert (cli.HERE / "lead.md").read_text() == lead_before  # nothing applied
+    assert "Allow two Qwen tasks at once" in rt.retro_file("2026-11-09").read_text()
+
+
+def test_retro_appends_proposals_new_file(rt):
+    rt.line("2026-11-09")
+    rt.reply(proposals=["Try the bigger model"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    q = (rt.src / "OPEN-QUESTIONS.md").read_text()
+    assert "## Open" in q and "**1." in q and "Try the bigger model" in q
+
+
+def test_retro_lessons_replace_file(rt):
+    rt.lessons.write_text("## Lessons\n\n- old lesson one\n- old lesson two\n")
+    rt.git("commit", "-qam", "lessons")
+    rt.line("2026-11-09")
+    rt.reply(lessons=["merged lesson"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == ["merged lesson"]
+    assert "old lesson one" in rt.calls()[0]["stdin"]  # the retro saw the old list
+
+
+def test_retro_commits_only_lessons_on_main(rt):
+    (rt.src / "OPEN-QUESTIONS.md").write_text("x\n")
+    (rt.src / ".gitignore").write_text("OPEN-QUESTIONS.md\n")
+    rt.git("add", ".gitignore")
+    rt.git("commit", "-qm", "ignore")
+    rt.line("2026-11-09")
+    rt.reply(lessons=["Briefs name the check"], proposals=["p"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.git("log", "-1", "--format=%s").strip() == "mates: lessons from retro 2026-11-09"
+    assert rt.git("show", "--name-only", "--format=", "HEAD").split() == ["mates/lead-lessons.md"]
+    assert rt.git("status", "--porcelain") == ""
+    # another branch: written, not committed
+    rt.git("checkout", "-qb", "side")
+    rt.line("2026-11-10")
+    rt.reply(lessons=["Second lesson"])
+    assert rt.run("--date", "2026-11-10")[0] == 0
+    assert rt.kept() == ["Second lesson"]
+    assert rt.git("log", "-1", "--format=%s").strip() == "mates: lessons from retro 2026-11-09"
+    assert "not committed" in rt.retro_file("2026-11-10").read_text()
+    assert "side" in rt.retro_file("2026-11-10").read_text()
+
+
+def test_retro_no_commit_when_tree_dirty(rt):
+    (rt.src / "mates" / "cli.py").write_text("wip\n")
+    rt.line("2026-11-09")
+    rt.reply(lessons=["Briefs name the check"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == ["Briefs name the check"]
+    assert rt.git("log", "-1", "--format=%s").strip() == "init"
+    f = rt.retro_file("2026-11-09").read_text()
+    assert "not committed" in f and "mates/cli.py" in f
+
+
+def test_retro_catches_up_missed_days(rt, monkeypatch):
+    import datetime
+    monkeypatch.setattr(rt.retro, "_today", lambda: datetime.date(2026, 11, 10))
+    rd = cli.LOG.parent / "retros"
+    rd.mkdir(parents=True)
+    (rd / "2026-11-05.md").write_text("# Retro 2026-11-05\n\nPRIOR-RETRO-TEXT\n")
+    for day in ("2026-11-04", "2026-11-05", "2026-11-06", "2026-11-08", "2026-11-09", "2026-11-10"):
+        rt.line(day, summary=f"task on {day}")
+    code, out, err = rt.run()
+    assert code == 0, err
+    calls = rt.calls()
+    assert len(calls) == 3  # 06, 08, 09; 07 has no lines; 10 is today
+    assert ["task on 2026-11-06" in calls[0]["stdin"], "task on 2026-11-08" in calls[1]["stdin"],
+            "task on 2026-11-09" in calls[2]["stdin"]] == [True] * 3
+    assert "PRIOR-RETRO-TEXT" in calls[0]["stdin"]
+    assert "Retro 2026-11-06" in calls[1]["stdin"] and "PRIOR-RETRO-TEXT" in calls[1]["stdin"]  # last 7 retros
+    for day in ("2026-11-06", "2026-11-08", "2026-11-09"):
+        assert rt.retro_file(day).exists()
+    assert not rt.retro_file("2026-11-07").exists() and not rt.retro_file("2026-11-10").exists()
+    assert len(rt.git("log", "--format=%s").splitlines()) == 1  # lessons unchanged: no commits
+    assert rt.run()[0] == 0 and len(rt.calls()) == 3  # caught up: nothing to do
+
+
+def test_retro_bad_reply_writes_nothing(rt):
+    rt.line("2026-11-09")
+    (rt.t / "reply.json").write_text("not json at all")
+    code, _, err = rt.run("--date", "2026-11-09")
+    assert code != 0 and "retro" in err
+    assert not rt.retro_file("2026-11-09").exists()
+
+
+def test_retro_runs_without_lead(rt):
+    assert "retro" in cli.OPEN_COMMANDS and "retro" in cli.COMMANDS
