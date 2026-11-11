@@ -13,7 +13,9 @@
 #     elsewhere, e.g. a submodule or worktree), with .git/hooks and .git/config
 #     read-only so nothing written there can run later outside the sandbox;
 #   - sees /usr, the OpenCode binary and the aider venv read-only; your home folder is NOT there;
-#   - has no network: the only way out is a unix socket to the Ollama server;
+#   - has no network: the only ways out are a unix socket to the Ollama server and a
+#     write-only one to the clipboard (`xclip`/`clip.exe` inside run bin/qwen-clip,
+#     which hands the text to pbcopy outside; reading the clipboard is refused);
 #   - starts from an empty environment (no tokens);
 #   - gets copies of the files listed in ~/.config/qwen/copy-in (one per line,
 #     `<path>` or `<path>:<path in sandbox home>`). Add lines there when aider
@@ -153,7 +155,10 @@ run_sandboxed() {
   make_home "$run/home"
   stage_digests "$run/home"
   python3 "$HERE/qwen-relay" out --sock "$run/ollama.sock" --to "$host" & local relay=$!
-  trap "kill $relay 2>/dev/null; rm -rf '$run'" EXIT
+  local clip=""; if command -v pbcopy >/dev/null; then
+    python3 "$HERE/qwen-relay" clip --sock "$run/clip.sock" --run "$(command -v pbcopy)" & clip=$!
+  fi
+  trap "kill $relay $clip 2>/dev/null; rm -rf '$run'" EXIT
   for _ in $(seq 50); do [ -S "$run/ollama.sock" ] && break; sleep 0.1; done
   # --new-session would block terminal keystroke injection (TIOCSTI), but it also detaches the
   # terminal, so the agent never sees pane resizes (SIGWINCH). The kernel already blocks TIOCSTI
@@ -169,6 +174,7 @@ run_sandboxed() {
     --bind "$run/home" /home/qwen --bind "$STATE/aider" /home/qwen/.aider
     --bind "$STATE/opencode" /home/qwen/.local/share/opencode
     --ro-bind "$AIDER_VENV" "$AIDER_VENV" --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
+    --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/clip.exe
     --bind "$run" /run/qwen --bind "$top" "$top")
   case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
   [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
@@ -178,7 +184,7 @@ run_sandboxed() {
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
   done
   local e; for e in "${SANDBOX_ENV[@]}"; do A+=(--setenv "${e%%=*}" "${e#*=}"); done
-  A+=(--setenv HOME /home/qwen --setenv PATH "/opt/opencode:$AIDER_VENV/bin:/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
+  A+=(--setenv HOME /home/qwen --setenv PATH "/opt/opencode:/opt/qwen-clip:$AIDER_VENV/bin:/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
       --setenv LANG C.UTF-8 --setenv OLLAMA_API_BASE http://127.0.0.1:11434 --setenv LITELLM_LOCAL_MODEL_COST_MAP True
       --chdir "$PWD")
   bwrap "${A[@]}" -- /bin/bash -c '
@@ -196,7 +202,7 @@ case "${1:-}" in
   sandbox-test)
     host=$(start_server)
     run_sandboxed "$host" python3 -c '
-import os, socket, urllib.request
+import os, socket, subprocess, urllib.request
 def t(name, f):
     try: f(); print(f"{name}: REACHABLE")
     except Exception as e: print(f"{name}: blocked ({type(e).__name__})")
@@ -204,6 +210,8 @@ t("your home (~/.ssh)", lambda: os.listdir("/home/wai/.ssh"))
 t("claude login", lambda: open("/home/wai/.claude/.credentials.json").read(1))
 t("internet 1.1.1.1:443", lambda: socket.create_connection(("1.1.1.1", 443), 3))
 t("ollama via relay", lambda: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=5).read())
+t("clipboard write", lambda: subprocess.run(["xclip", "-selection", "clipboard"], input=b"qwen sandbox-test", check=True))
+t("clipboard read", lambda: subprocess.run(["xclip", "-o"], check=True))
 t("repo write", lambda: (open(".qwen-sandbox-probe", "w").write("x"), os.remove(".qwen-sandbox-probe")))
 gd = os.popen("git rev-parse --path-format=absolute --git-common-dir").read().strip()
 t("git hooks write", lambda: open(os.path.join(gd, "hooks", "qwen-probe"), "w"))
