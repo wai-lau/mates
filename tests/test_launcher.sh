@@ -74,6 +74,8 @@ check "lead env: MATES_LEAD=1, MATES_ROOT, no ANTHROPIC_API_KEY, new session id"
   'grep -q "^r1 lead=1 root=$T/r1 key=unset sid=[0-9a-f-]\{36\} resume=$" "$T/claude.log"'
 check "qwen pane: QWEN_ROOT is its worktree, git read-only, run there, new session" \
   'grep -qx "r1 root=$T/r1/.claude/worktrees/mates-qwen-1 ro=1 pwd=$T/r1/.claude/worktrees/mates-qwen-1 args=" "$T/qwen.log"'
+check "qwen pane: marked @mates-qwen-live while qwen runs (mates send needs it)" \
+  '[ "$(tx show-options -pqv -t "$(tagged "$K1:1")" @mates-qwen-live)" = 1 ]'
 check "state saved with the lead's session id" \
   'python3 -c "import json,sys; s=json.load(open(sys.argv[1])); sys.exit(not (s[\"claude_session\"] and [q[\"n\"] for q in s[\"qwens\"]] == [1]))" "$HOME/.claude/mates/sessions/$K1.json"'
 
@@ -150,6 +152,8 @@ check "failed qwen: the error and a shell are left" \
   'waitfor "tx capture-pane -p -t $Q6 | grep -q \"qwen exited 1\"" && [ "$(tx display -p -t "$Q6" "#{pane_current_command}")" = sh ]'
 check "failed qwen: the shell is in the lead repo, not the worktree, and says it is unsandboxed" \
   '[ "$(tx display -p -t "$Q6" "#{pane_current_path}")" = "$T/r6" ] && tx capture-pane -p -t "$Q6" | grep -q "OUTSIDE the sandbox"'
+check "failed qwen: not marked @mates-qwen-live (send refuses the shell)" \
+  '[ -z "$(tx show-options -pqv -t "$Q6" @mates-qwen-live)" ]'
 check "failed qwen: the entry is not closed" \
   'python3 -c "import json,sys; s=json.load(open(sys.argv[1])); sys.exit(not [q for q in s[\"qwens\"] if q[\"n\"] == 1 and not q[\"closed\"]])" "$HOME/.claude/mates/sessions/$K6.json"'
 

@@ -31,15 +31,26 @@ def _show(repo, base, path):
     return r.stdout if r.returncode == 0 else None
 
 
+def lockfiles(script: bytes) -> list[str]:
+    """The names on the script's `# lockfiles:` line."""
+    m = re.search(rb"^# lockfiles:(.*)$", script, re.M)
+    return [lf.decode() for lf in m.group(1).split()] if m else []
+
+
+def runtime_files(repo, base) -> list[str]:
+    """Every file `runtime_hash` covers at `base`: the script and its lockfiles ([] without a script)."""
+    script = _show(repo, base, SCRIPT)
+    return [] if script is None else [SCRIPT, *lockfiles(script)]
+
+
 def runtime_hash(repo, base, script: bytes | None = None) -> str | None:
     """`script` overrides the repo's committed one (pilot: generated scripts, injected as the repo's would be)."""
     script = script if script is not None else _show(repo, base, SCRIPT)
     if script is None:
         return None
     h = hashlib.sha256(script)
-    m = re.search(rb"^# lockfiles:(.*)$", script, re.M)
-    for lf in (m.group(1).split() if m else []):
-        h.update(b"\0" + lf + b"\0" + (_show(repo, base, lf.decode()) or b""))
+    for lf in lockfiles(script):
+        h.update(b"\0" + lf.encode() + b"\0" + (_show(repo, base, lf) or b""))
     return h.hexdigest()[:16]
 
 

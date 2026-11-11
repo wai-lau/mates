@@ -44,3 +44,29 @@ def test_load_brief_rejects_empty_files(tmp_path):
 def test_load_brief_ok(tmp_path):
     p = tmp_path / "b.json"; p.write_text(json.dumps({"goal": "g", "files": ["a"], "constraints": ""}))
     assert guard.load_brief(p)["files"] == ["a"]
+
+def test_guard_flags_hook_paths():
+    for path in (".githooks/pre-commit", ".husky/pre-push", "tools/hooks/post-merge", ".gitattributes",
+                 "sub/.gitignore", ".gitmodules"):
+        f = guard.guard_flags(d(path, ["x"]), [path], hooks_path="./tools/hooks/")
+        assert f"hook-path:{path}" in f, path
+    assert guard.guard_flags(d("src/hooks.py", ["x"]), ["src/hooks.py"], hooks_path="tools/hooks") == []
+    assert guard.guard_flags(d("tools/hooks/x", ["x"]), ["tools/hooks/x"]) == []  # no hooksPath given
+    assert guard.guard_flags(d("x", ["x"]), ["x"], hooks_path="/abs/hooks") == []  # outside the repo
+
+def test_guard_flags_manifests():
+    for path in ("pyproject.toml", "uv.lock", "requirements.txt", "requirements-dev.txt", "web/package.json",
+                 "package-lock.json", "Cargo.toml", "crates/a/Cargo.lock", "deps/locked.txt"):
+        f = guard.guard_flags(d(path, ["x"]), [path], runtime_files=[".mates/runtime.sh", "deps/locked.txt"])
+        assert f"runtime-input:{path}" in f, path
+    assert guard.guard_flags(d("src/package.py", ["x"]), ["src/package.py"]) == []
+
+def test_guard_flags_binary_file_counts():
+    diff = ("diff --git a/.githooks/pre-commit b/.githooks/pre-commit\nnew file mode 100755\n"
+            "index 0000000..1111111\nBinary files /dev/null and b/.githooks/pre-commit differ\n")
+    assert "hook-path:.githooks/pre-commit" in guard.guard_flags(diff, [".githooks/pre-commit"])
+
+def test_guard_hunk_line_cannot_rename_file():
+    diff = d(".githooks/pre-commit", ["+ b/innocent.py", "evil"])  # an added `++ b/innocent.py` line
+    f = guard.guard_flags(diff, ["innocent.py"])
+    assert "hook-path:.githooks/pre-commit" in f and not any("innocent.py" in x for x in f)

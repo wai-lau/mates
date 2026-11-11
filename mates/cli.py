@@ -5,25 +5,36 @@ that starts the Qwen panes, saves the state and prints the lead's `claude` argv
 NUL-separated, which `bin/mates` runs as its child. The other subcommands are
 the lead's tools and refuse unless MATES_LEAD=1 (except list, log and retro).
 """
+import argparse
+import contextlib
 import copy
+import hashlib
 import os
+import re
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
+import gitsafe
+import guard
 import layout
+import logrec
 import runtime
 import session
+from gitsafe import GitError, git_lead, git_safe
 
 ASK_SUFFIX = ("(If any name, file or expected result above is not stated exactly, write your question "
               "to .mates/question.md and stop before editing. Do not edit tests unless told.)")
 HERE = Path(__file__).resolve().parent
 LEAD_PROMPT = (HERE / "lead.md", HERE / "lead-lessons.md")
+QWEN_LIVE = "@mates-qwen-live"  # set on a Qwen pane while its qwen runs (qwen_cmd)
 OPEN_COMMANDS = {"launch", "list", "log", "retro"}  # the rest run only from the lead (MATES_LEAD=1)
-GIT_SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 
 
 def die(msg, code=2):
@@ -45,6 +56,8 @@ def _entry(root, n):
 def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     """The command a Qwen pane runs. It waits for `release_pane` (so the pane is
     tagged before qwen can fail), then runs qwen in the worktree with read-only git.
+    While qwen runs the pane has `@mates-qwen-live=1` (`send` and `answer` need it:
+    `#{pane_current_command}` would only ever show this wrapper's bash).
     Exit 0 closes the pane; any other exit marks it `@mates-failed=1` (the tag
     stays) and leaves a shell with the error. That shell runs as Wai, outside the
     sandbox, so it starts in the lead repo `root` (default: the worktree's repo),
@@ -57,7 +70,9 @@ def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     if opencode_session:
         run += ["-s", shlex.quote(opencode_session)]
     script = ('timeout 30 tmux wait-for "mates-go-$TMUX_PANE"; '
-              f'cd {shlex.quote(str(worktree))} && {" ".join(run)}; rc=$?; '
+              f'cd {shlex.quote(str(worktree))} && tmux set-option -p -t "$TMUX_PANE" {QWEN_LIVE} 1 && '
+              f'{" ".join(run)}; rc=$?; '
+              f'tmux set-option -p -u -t "$TMUX_PANE" {QWEN_LIVE}; '
               '[ "$rc" = 0 ] && exit 0; '
               'tmux set-option -p -t "$TMUX_PANE" @mates-failed 1; '
               'echo "mates: qwen exited $rc; this pane is marked failed (mates send refuses it), '
@@ -170,40 +185,33 @@ def save_state(root, state):
     session.save(root, state)
 
 
-def _admin_dir(root, worktree):
-    """The worktree's git admin folder, found from the lead's repo: the entry under
-    `<common>/worktrees/` whose `gitdir` file names `<worktree>/.git`."""
-    common = Path(subprocess.run(["git", *GIT_SAFE, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                                 cwd=root, check=True, capture_output=True, text=True).stdout.strip())
-    want = str(Path(worktree) / ".git")
-    for d in sorted((common / "worktrees").glob("*")):
-        try:
-            if (d / "gitdir").read_text().strip() == want:
-                return common, d
-        except OSError:
-            continue
-    raise RuntimeError(f"no git worktree entry for {worktree}")
+def snapshot(root, n, base):
+    """The tree of Qwen worktree n as it is now: a temp index seeded with `base`, then
+    every change outside `.mates/` added (untracked files too). Tracked `.mates/*`
+    keep their `base` version; Qwen's edits there and untracked `.mates/*` never
+    reach the tree."""
+    with tempfile.TemporaryDirectory(prefix="mates-snap-") as tmp:
+        idx = Path(tmp) / "index"
+        git_safe(root, n, "read-tree", base, index=idx)
+        # Not `add -A -- . ':!.mates'`: git exits 1 when an excluded path is also ignored
+        # (info/exclude lists .mates/). Add everything, then put .mates back as it was at base.
+        git_safe(root, n, "add", "-A", "--", ".", index=idx)
+        git_safe(root, n, "rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".mates", index=idx)
+        kept = git_safe(root, n, "ls-tree", "-r", "-z", "--full-tree", base, "--", ".mates", index=idx).stdout
+        if kept:
+            git_safe(root, n, "update-index", "-z", "--index-info", index=idx, input=kept)
+        return git_safe(root, n, "write-tree", index=idx).stdout.strip()
 
 
 def worktree_dirty(root, n):
-    """Paths in Qwen worktree n that differ from its HEAD (untracked included,
-    `.mates/` left out); empty means clean. Git never finds the repo from Qwen's
-    folder: GIT_DIR and GIT_COMMON_DIR come from the lead's repo, with a temporary
-    index and no hooks or fsmonitor. (Task 5's `snapshot`/`git_safe` take this over.)"""
-    worktree = Path(root) / ".claude" / "worktrees" / f"mates-qwen-{n}"
-    common, admin = _admin_dir(root, worktree)
-    with tempfile.TemporaryDirectory() as tmp:
-        env = {**os.environ, "GIT_DIR": str(admin), "GIT_COMMON_DIR": str(common),
-               "GIT_WORK_TREE": str(worktree), "GIT_INDEX_FILE": str(Path(tmp) / "index")}
-
-        def git(*args):
-            return subprocess.run(["git", *GIT_SAFE, "-c", "core.untrackedCache=false", "--no-optional-locks",
-                                   *args], cwd=worktree, env=env, check=True, capture_output=True,
-                                  text=True).stdout
-        git("read-tree", "HEAD")
-        out = git("status", "--porcelain", "-z", "-uall")
-    paths = [rec[3:] for rec in out.split("\0") if len(rec) > 3]
-    return [p for p in paths if not p.startswith(".mates/")]
+    """Paths where Qwen worktree n differs from its HEAD (untracked included, `.mates/`
+    left out); empty means clean."""
+    head = git_safe(root, n, "rev-parse", "HEAD^{tree}").stdout.strip()
+    tree = snapshot(root, n, "HEAD")
+    if tree == head:
+        return []
+    out = git_safe(root, n, "diff", "--name-only", "-z", "--no-renames", head, tree).stdout
+    return [p for p in out.split("\0") if p]
 
 
 # --- launch ------------------------------------------------------------------------------
@@ -308,7 +316,660 @@ def launch(args):
     return 0
 
 
-COMMANDS = {"launch": launch}
+# --- delegation: helpers ---------------------------------------------------------------
+
+LOG = Path.home() / ".claude" / "mates" / "log.jsonl"
+TEXT_MAX = 2000  # Qwen's done/question text is cut here
+WAIT_DEFAULT_S = 1800
+WAIT_POLL_S = 2.0
+SESSION_WAIT_S = 30  # send: how long to look for the OpenCode session row after the message
+SESSION_POLL_S = 0.5
+CHECK_TAIL = 20
+# Task 0's input-box rule, read from OpenCode 1.19.5's TUI: an empty prompt shows the
+# placeholder `Ask anything… "<example>"` (`Run a command… "…"` in shell mode, which is
+# not empty input); typed text replaces it. Looked for in the pane's last lines.
+INPUT_EMPTY = re.compile(r"Ask anything(…|\.\.\.)")
+INPUT_LINES = 15
+PROTOCOL = ("done.md", "question.md")
+
+
+class Unsafe(Exception):
+    """Qwen's .mates folder or a protocol file is not what it should be (a link, a fifo)."""
+
+
+def _lead_root():
+    root = os.environ.get("MATES_ROOT") or _root()
+    return str(Path(root).resolve())
+
+
+def _int(s, what="N"):
+    try:
+        return int(s)
+    except ValueError:
+        die(f"{what} must be a pane number, not {s!r}")
+
+
+def _load(root):
+    state = session.load(root)
+    if state is None:
+        die("no mates state for this repo (start it with mates)")
+    return state
+
+
+def _qentry(state, n):
+    for q in state["qwens"]:
+        if q["n"] == n:
+            return q
+    die(f"there is no Qwen pane {n}")
+
+
+def _tmux_out(*args):
+    r = subprocess.run([layout.TMUX, *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"tmux {args[0]} failed: {r.stderr.strip()}")
+    return r.stdout
+
+
+def _find(root, state, q):
+    """(pane_id, status) for entry q; a pane that is gone is marked closed and saved."""
+    hit = session.find_pane(root, q["n"])
+    if hit is None and session.mark_closed(state, q["n"]):
+        save_state(root, state)
+    return hit
+
+
+def _live_pane(root, state, q):
+    """The pane id of entry q, refusing unless OpenCode runs in it now."""
+    if q.get("closed"):
+        die(f"Qwen pane {q['n']} is closed (mates add opens one)")
+    hit = _find(root, state, q)
+    if hit is None:
+        die(f"Qwen pane {q['n']} is gone; marked it closed (mates add opens one)")
+    pane, status = hit
+    if status == "failed":
+        die(f"Qwen pane {q['n']} ({pane}) failed: qwen exited with an error; read the pane, then restart it")
+    if _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() != "1":
+        die(f"Qwen pane {q['n']} ({pane}) is not running qwen (no {QWEN_LIVE})")
+    return pane
+
+
+def _db(root):
+    try:
+        return session.opencode_db(root)
+    except (OSError, subprocess.CalledProcessError) as e:
+        die(f"cannot find the OpenCode sessions: {getattr(e, 'stderr', None) or e}")
+
+
+def _busy(q, db):
+    """Is OpenCode replying in pane q's newest session right now?"""
+    sid = session.opencode_session(q["worktree"], db)
+    return sid is not None and session.opencode_state(sid, db, 0) == "busy"
+
+
+def input_empty(pane):
+    """True when the OpenCode input box in `pane` holds no typed text."""
+    lines = _tmux_out("capture-pane", "-p", "-t", pane).rstrip("\n").splitlines()
+    return any(INPUT_EMPTY.search(line) for line in lines[-INPUT_LINES:])
+
+
+def paste(pane, text):
+    """Deliver `text` to `pane` as one message: load a buffer, paste it bracketed
+    (and delete it), then Enter (Task 0's measured recipe)."""
+    buf = f"mates-{pane.lstrip('%')}"
+    for args, inp in ((("load-buffer", "-b", buf, "-"), text),
+                      (("paste-buffer", "-p", "-d", "-b", buf, "-t", pane), None),
+                      (("send-keys", "-t", pane, "Enter"), None)):
+        r = subprocess.run([layout.TMUX, *args], input=inp, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"tmux {args[0]} failed: {r.stderr.strip()}")
+
+
+def _message(text):
+    return f"[from Claude] {text}\n{ASK_SUFFIX}"
+
+
+# Qwen's .mates folder is Qwen's: every read, delete or write there goes through a
+# folder fd opened without following links, so a planted link cannot point Wai's
+# process at other files (done.md -> ~/.ssh/id_ed25519 would print it to the lead).
+
+def _mates_fd(wt, create=False):
+    p = Path(wt) / ".mates"
+    if create:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(p, 0o755)
+    try:
+        return os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise Unsafe(f"{p} is not a plain folder ({e.strerror})") from e
+
+
+def read_protocol(wt, name):
+    """The text of `.mates/<name>` (cut at TEXT_MAX), or None if there is none."""
+    d = _mates_fd(wt)
+    if d is None:
+        return None
+    try:
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=d)
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            raise Unsafe(f".mates/{name} cannot be read safely ({e.strerror})") from e
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise Unsafe(f".mates/{name} is not a plain file")
+            data = os.read(fd, TEXT_MAX * 4)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(d)
+    return data.decode("utf-8", "replace").strip()[:TEXT_MAX]
+
+
+def clear_protocol(wt):
+    d = _mates_fd(wt)
+    if d is None:
+        return
+    try:
+        for name in PROTOCOL:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(name, dir_fd=d)  # a link itself is removed, never its target
+    finally:
+        os.close(d)
+
+
+def _unsafe(fn, *args):
+    try:
+        return fn(*args)
+    except Unsafe as e:
+        die(f"refusing: {e}")
+
+
+def _lead_head(root):
+    return git_lead(root, "rev-parse", "HEAD").stdout.strip()
+
+
+def _keep(root, n, commit):
+    """Point a new `refs/mates/discarded/<n>-<ts>` at `commit`; returns the ref."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for i in range(100):
+        ref = f"refs/mates/discarded/{n}-{stamp}" + (f"-{i}" if i else "")
+        if git_lead(root, "update-ref", ref, commit, "", check=False).returncode == 0:  # create only
+            return ref
+    raise GitError(f"cannot create a refs/mates/discarded/{n}-{stamp} ref")
+
+
+def _snapshot_commit(root, n, base, tree, why):
+    return git_lead(root, "commit-tree", tree, "-p", base, "-m", f"mates qwen-{n}: {why}").stdout.strip()
+
+
+def _reset_worktree(root, n, branch, commit):
+    """Put Qwen worktree n on `branch` at `commit`: tracked files as in `commit`, the
+    worktree's own index matching, and untracked files outside `.mates/` removed
+    (ignored ones stay). Callers keep a snapshot first if anything there matters."""
+    _, admin, _ = gitsafe.dirs(root, n)
+    idx = admin / "index"
+    git_safe(root, n, "read-tree", "HEAD", index=idx)  # so reset deletes only files HEAD tracks
+    git_safe(root, n, "symbolic-ref", "HEAD", f"refs/heads/{branch}", index=idx)
+    git_safe(root, n, "reset", "-q", "--hard", commit, index=idx)
+    git_safe(root, n, "clean", "-fdq", "--", ".", ":!.mates", index=idx)
+
+
+def _task(base, direct=False, summary=None, reason=None, files=()):
+    now = time.time()
+    return {"id": uuid.uuid4().hex[:12], "summary": summary, "reason": reason, "files": list(files),
+            "base": base, "direct": direct, "sent_ts": None if direct else now, "attempt_ts": now,
+            "paste_ts": None if direct else now, "attempts": 0 if direct else 1, "opencode_session": None,
+            "questions": [], "diffed_tree": None, "flags": [], "checked_tree": None, "check_cmd": None}
+
+
+def _clear_review(task):
+    task.update(checked_tree=None, check_cmd=None, diffed_tree=None, flags=[])
+
+
+def log_attempt(root, entry, outcome):
+    """Append the log line for the attempt on entry's task that just finished."""
+    t = entry["task"]
+    checked = t.get("checked_tree")
+    rec = {"repo": str(root), "task_id": t["id"], "summary": t.get("summary") or "", "route": "qwen",
+           "reason": t.get("reason"), "attempts": t.get("attempts", 0), "outcome": outcome, "pane": entry["n"],
+           "check": t.get("check_cmd"),
+           "check_sha": hashlib.sha256(t["check_cmd"].encode()).hexdigest() if t.get("check_cmd") else None,
+           "tree": checked, "flags": t.get("flags") or [],
+           "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
+           "questions": t.get("questions") or []}
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    logrec.append(LOG, rec)
+
+
+def _remind(n, task):
+    if task["attempts"] >= 2:
+        print(f"mates: this is attempt {task['attempts']} on this task; if it fails, "
+              f"mates discard {n} and do it yourself", file=sys.stderr)
+
+
+def _parser(name, usage):
+    return argparse.ArgumentParser(prog=f"mates {name}", usage=usage)
+
+
+# --- send, wait, answer ------------------------------------------------------------------
+
+def send(args):
+    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] "<text>"')
+    p.add_argument("n", type=int)
+    p.add_argument("--reason", required=True)
+    p.add_argument("--files", default="")
+    p.add_argument("--continue", dest="cont", action="store_true")
+    p.add_argument("text", nargs="+")
+    a = p.parse_args(args)
+    text = " ".join(a.text)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    pane = _live_pane(root, state, q)
+    db = _db(root)
+    if _busy(q, db):
+        die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
+    if not input_empty(pane):
+        die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
+    if not state.get("parallel"):
+        others = [o["n"] for o in state["qwens"] if o["n"] != a.n and o.get("task") and not o.get("closed")]
+        if others:
+            die(f"pane {others[0]} has an open task and parallel is off: merge or discard it first")
+    try:
+        dirty = worktree_dirty(root, a.n)
+    except GitError as e:
+        die(f"cannot read Qwen worktree {a.n}: {e}")
+    if dirty:
+        die(f"Qwen worktree {a.n} has work not merged ({', '.join(dirty[:10])}): "
+            f"mates merge {a.n} or mates discard {a.n} first")
+    lead = _lead_head(root)
+    # Qwen cannot commit, so mates/qwen-N holds no work of its own: moving it to the lead
+    # HEAD is the rebase. Anything on it the lead lacks is kept on a ref first.
+    head = git_safe(root, a.n, "rev-parse", "HEAD").stdout.strip()
+    if git_lead(root, "merge-base", "--is-ancestor", head, lead, check=False).returncode != 0:
+        print(f"mates: {q['branch']} had commits the lead lacks; kept on {_keep(root, a.n, head)}", file=sys.stderr)
+    _reset_worktree(root, a.n, q["branch"], lead)
+    _unsafe(clear_protocol, q["worktree"])
+    files = [f for f in a.files.split(",") if f]
+    summary = text.splitlines()[0][:120]
+    old = q.get("task")
+    if old and not old.get("direct"):  # the same task sent again: its last attempt is over
+        log_attempt(root, q, "sent-back")
+        now = time.time()
+        old.update(summary=summary, reason=a.reason, files=files, base=lead, attempts=old["attempts"] + 1,
+                   attempt_ts=now, paste_ts=now)
+        _clear_review(old)
+        task = old
+    else:
+        task = _task(lead, summary=summary, reason=a.reason, files=files)
+    q["task"] = task
+    before = session.opencode_session(q["worktree"], db)
+    if before:
+        q["opencode_session"] = before
+    if a.cont:
+        task["opencode_session"] = before
+    save_state(root, state)
+    if not a.cont:
+        paste(pane, "/new")  # a clean context per task (Task 0: works; the row comes with the message)
+    task["paste_ts"] = time.time()
+    paste(pane, _message(text))
+    if task["opencode_session"] is None:
+        deadline = time.time() + SESSION_WAIT_S
+        while True:
+            sid = session.opencode_session(q["worktree"], db)
+            if sid and sid != before:
+                task["opencode_session"] = q["opencode_session"] = sid
+                break
+            if time.time() >= deadline:
+                print(f"mates: no new OpenCode session for pane {a.n} yet; mates wait keeps looking", file=sys.stderr)
+                break
+            time.sleep(SESSION_POLL_S)
+    save_state(root, state)
+    print(f"sent to Qwen pane {a.n} (task {task['id']}, attempt {task['attempts']})")
+    _remind(a.n, task)
+    return 0
+
+
+def _patch_task(root, n, task_id, **fields):
+    """Set fields on pane n's task in the saved state, if it is still task_id."""
+    state = session.load(root)
+    q = next((x for x in state["qwens"] if x["n"] == n), None) if state else None
+    if q and q.get("task") and q["task"]["id"] == task_id:
+        q["task"].update(fields)
+        if "opencode_session" in fields:
+            q["opencode_session"] = fields["opencode_session"]
+        save_state(root, state)
+
+
+def wait(args):
+    p = _parser("wait", "mates wait N [--timeout S]")
+    p.add_argument("n", type=int)
+    p.add_argument("--timeout", type=float, default=WAIT_DEFAULT_S)
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    task = q.get("task")
+    since = (task.get("paste_ts") or task["attempt_ts"]) if task else time.time()
+    db = _db(root)
+    deadline = time.time() + a.timeout
+    while True:
+        hit = session.find_pane(root, a.n)
+        if hit is None:  # mark it closed in the state as it is now (wait may have run for a while)
+            now_state = session.load(root)
+            if now_state and session.mark_closed(now_state, a.n):
+                save_state(root, now_state)
+            print("dead")
+            return 0
+        if hit[1] == "failed":
+            print("failed")
+            return 0
+        for name, word in (("question.md", "question"), ("done.md", "done")):
+            text = _unsafe(read_protocol, q["worktree"], name)
+            if text is not None:
+                print(f"{word}: {text}")
+                return 0
+        sid = task.get("opencode_session") if task else session.opencode_session(q["worktree"], db)
+        if task and sid is None:  # the row appears only with the first message (Task 0)
+            new = session.opencode_session(q["worktree"], db)
+            if new and new != q.get("opencode_session"):
+                sid = task["opencode_session"] = q["opencode_session"] = new
+                _patch_task(root, a.n, task["id"], opencode_session=new)
+        if sid and session.opencode_state(sid, db, since) == "idle":
+            print("idle")
+            return 0
+        if time.time() >= deadline:
+            print("timeout")
+            return 1
+        time.sleep(min(WAIT_POLL_S, max(0.0, deadline - time.time())))
+
+
+def answer(args):
+    p = _parser("answer", 'mates answer N [--sendback] "<text>"')
+    p.add_argument("n", type=int)
+    p.add_argument("--sendback", action="store_true")
+    p.add_argument("text", nargs="+")
+    a = p.parse_args(args)
+    text = " ".join(a.text)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    task = q.get("task")
+    if not task:
+        die(f"Qwen pane {a.n} has no open task (mates send starts one)")
+    pane = _live_pane(root, state, q)
+    db = _db(root)
+    if _busy(q, db):
+        die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
+    if not input_empty(pane):
+        die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
+    question = _unsafe(read_protocol, q["worktree"], "question.md")
+    _unsafe(clear_protocol, q["worktree"])
+    if question is not None or not a.sendback:
+        task["questions"].append({"q": question, "a": text})
+    now = time.time()
+    if a.sendback:
+        log_attempt(root, q, "sent-back")
+        task["attempts"] += 1
+        task["attempt_ts"] = now
+        _clear_review(task)
+    task["paste_ts"] = now
+    save_state(root, state)
+    paste(pane, _message(text))
+    print(f"answered Qwen pane {a.n}" + (f" (sent back: attempt {task['attempts']})" if a.sendback else ""))
+    if a.sendback:
+        _remind(a.n, task)
+    return 0
+
+
+# --- check, diff ---------------------------------------------------------------------------
+
+def _unpack(root, n, wt, tree):
+    """Write `tree` to `<wt>/.mates/check/<tree>/`, replacing any older check folder.
+    Built in a lead-owned temp folder and renamed in through folder fds: nothing is
+    written through a link Qwen could have planted. `checkout-index`, not `git
+    archive`, so a Qwen-edited `.gitattributes` export-ignore drops nothing."""
+    stage = Path(tempfile.mkdtemp(prefix=".mates-check-", dir=Path(root) / ".claude" / "worktrees"))
+    try:
+        with tempfile.TemporaryDirectory(prefix="mates-check-index-") as tmp:
+            idx = Path(tmp) / "index"
+            git_safe(root, n, "read-tree", tree, index=idx)
+            git_safe(root, n, "checkout-index", "-a", "-f", f"--prefix={stage}/", index=idx)
+        d = _mates_fd(wt, create=True)
+        try:
+            try:
+                st = os.stat("check", dir_fd=d, follow_symlinks=False)
+            except FileNotFoundError:
+                st = None
+            if st is not None:
+                if not stat.S_ISDIR(st.st_mode):
+                    raise Unsafe(".mates/check is not a plain folder")
+                shutil.rmtree("check", dir_fd=d)
+            os.mkdir("check", 0o755, dir_fd=d)
+            c = os.open("check", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=d)
+            try:
+                os.rename(stage, tree, dst_dir_fd=c)
+            finally:
+                os.close(c)
+        finally:
+            os.close(d)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return Path(wt) / ".mates" / "check" / tree
+
+
+def _check_args(args):
+    if len(args) < 3 or args[1] != "--":
+        die("usage: mates check N -- <cmd>")
+    rest = args[2:]
+    return _int(args[0]), rest[0] if len(rest) == 1 else shlex.join(rest)
+
+
+def check(args):
+    n, cmd = _check_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, n)
+    db = _db(root)
+    if _busy(q, db):
+        die(f"Qwen pane {n} is busy (OpenCode is replying): Qwen could edit the files mid-check; wait for it")
+    task = q.get("task")
+    try:
+        if task is None:  # Wai's own work with Qwen
+            base = git_lead(root, "merge-base", "HEAD", f"refs/heads/{q['branch']}").stdout.strip()
+            task = q["task"] = _task(base, direct=True)
+        tree = snapshot(root, n, task["base"])
+        folder = _unsafe(_unpack, root, n, q["worktree"], tree)
+    except GitError as e:
+        die(f"git failed on Qwen worktree {n}: {e}")
+    env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME",)}
+    env.update(QWEN_ROOT=q["worktree"], QWEN_GIT_RO="1")
+    if state.get("runtime"):
+        env["QWEN_RUNTIME"] = state["runtime"]
+    r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd=folder, env=env,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out = r.stdout.decode("utf-8", "replace").splitlines()
+    print(f"check exit {r.returncode} on tree {tree[:12]}")
+    for line in out[-CHECK_TAIL:]:
+        print(line)
+    if r.returncode == 0:
+        task.update(checked_tree=tree, check_cmd=cmd)
+    else:
+        task.update(checked_tree=None)
+    save_state(root, state)
+    return r.returncode
+
+
+def diff(args):
+    p = _parser("diff", "mates diff N")
+    p.add_argument("n", type=int)
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    task = q.get("task")
+    if not task:
+        die(f"Qwen pane {a.n} has no open task (mates check N -- <cmd> opens one for Wai's own work)")
+    base = task["base"]
+    try:
+        tree = snapshot(root, a.n, base)
+        full = git_safe(root, a.n, "diff", "--no-color", "--no-renames", base, tree).stdout
+        stat_ = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--stat", base, tree).stdout
+    except GitError as e:
+        die(f"git failed on Qwen worktree {a.n}: {e}")
+    hooks = git_lead(root, "config", "core.hooksPath", check=False).stdout.strip() or None
+    flags = guard.guard_flags(full, task["files"], hooks_path=hooks,
+                              runtime_files=runtime.runtime_files(root, base))
+    sys.stdout.write(full)
+    print(stat_.rstrip("\n"))
+    print("flags: " + (", ".join(flags) if flags else "none"))
+    if task.get("checked_tree") and task["checked_tree"] != tree:
+        print(f"mates: this is not the checked snapshot ({task['checked_tree'][:12]}); run mates check {a.n} again",
+              file=sys.stderr)
+    task.update(diffed_tree=tree, flags=flags)
+    save_state(root, state)
+    return 0
+
+
+# --- merge, sync, discard ---------------------------------------------------------------------
+
+def _changed_paths(root, a, b):
+    out = git_lead(root, "diff", "--name-only", "-z", "--no-renames", a, b).stdout
+    return {p for p in out.split("\0") if p}
+
+
+def _lead_dirty(root):
+    """Paths with uncommitted changes in the lead checkout (untracked included)."""
+    recs = git_lead(root, "status", "--porcelain=v1", "-z", "-uall").stdout.split("\0")
+    paths, i = set(), 0
+    while i < len(recs):
+        rec = recs[i]
+        if len(rec) > 3:
+            paths.add(rec[3:])
+            if rec[0] in "RC":  # a rename's source path follows
+                i += 1
+                if i < len(recs):
+                    paths.add(recs[i])
+        i += 1
+    return paths
+
+
+def merge(args):
+    p = _parser("merge", 'mates merge N [-m "<summary>"]')
+    p.add_argument("n", type=int)
+    p.add_argument("-m", dest="summary")
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    task = q.get("task")
+    if not task or not task.get("checked_tree"):
+        die(f"nothing checked on Qwen pane {a.n}: run mates check {a.n} -- <cmd> first")
+    checked = task["checked_tree"]
+    if task.get("diffed_tree") != checked:
+        die(f"run mates diff {a.n} first: the lead must read the diff of exactly what merges")
+    summary = a.summary or task.get("summary")
+    if task.get("direct") and not a.summary:
+        die(f"this is Wai's own work with Qwen: mates merge {a.n} -m \"<summary>\"")
+    if git_lead(root, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:
+        die("the lead checkout is not on a branch (detached HEAD); check out a branch first")
+    base = task["base"]
+    if _lead_head(root) != base:
+        die(f"lead moved: run mates sync {a.n}, then check again")
+    clash = sorted(_changed_paths(root, base, checked) & _lead_dirty(root))
+    if clash:
+        die("the lead checkout has uncommitted changes in paths this merge touches: " + ", ".join(clash[:10]))
+    try:
+        commit = git_lead(root, "commit-tree", checked, "-p", base, "-m", f"mates qwen-{a.n}: {summary}").stdout.strip()
+        git_lead(root, "merge", "--ff-only", "-q", commit)
+        now_tree = snapshot(root, a.n, base)
+        if now_tree != checked:
+            ref = _keep(root, a.n, _snapshot_commit(root, a.n, base, now_tree, "edits after the check (not merged)"))
+            print(f"mates: Qwen worktree {a.n} changed after the check; those edits are kept on {ref}", file=sys.stderr)
+        _reset_worktree(root, a.n, q["branch"], commit)
+    except GitError as e:
+        die(f"merge failed: {e}", 1)
+    task["summary"] = summary
+    log_attempt(root, q, "accepted")
+    q["task"] = None
+    save_state(root, state)
+    print(f"merged Qwen pane {a.n}: {commit[:12]} mates qwen-{a.n}: {summary}")
+    return 0
+
+
+def sync(args):
+    p = _parser("sync", "mates sync N")
+    p.add_argument("n", type=int)
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    task = q.get("task")
+    if not task:
+        die(f"Qwen pane {a.n} has no open task")
+    base, lead = task["base"], _lead_head(root)
+    if lead == base:
+        print(f"nothing to sync: the lead is still at the task base {base[:12]}")
+        return 0
+    try:
+        snap = _snapshot_commit(root, a.n, base, snapshot(root, a.n, base), "snapshot for sync")
+        r = git_lead(root, "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages",
+                     f"--merge-base={base}", lead, snap, check=False)
+        if r.returncode == 1:
+            paths = [x for x in r.stdout.split("\0")[1:] if x]
+            print("conflict")
+            for x in paths:
+                print(x)
+            return 1
+        if r.returncode != 0:
+            raise GitError(r.stderr.strip())
+        merged = r.stdout.split("\0")[0].strip()
+        _reset_worktree(root, a.n, q["branch"], lead)
+        _, admin, _ = gitsafe.dirs(root, a.n)
+        with tempfile.TemporaryDirectory(prefix="mates-sync-index-") as tmp:
+            idx = Path(tmp) / "index"
+            shutil.copyfile(admin / "index", idx)  # matches the worktree, which is at `lead` now
+            git_safe(root, a.n, "read-tree", "-m", "-u", lead, merged, index=idx)
+    except GitError as e:
+        die(f"sync failed: {e}", 1)
+    task["base"] = lead
+    _clear_review(task)
+    save_state(root, state)
+    print(f"synced Qwen pane {a.n} onto {lead[:12]}; run mates check {a.n} -- <cmd> again")
+    return 0
+
+
+def discard(args):
+    p = _parser("discard", "mates discard N [--failed]")
+    p.add_argument("n", type=int)
+    p.add_argument("--failed", action="store_true")
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = _qentry(state, a.n)
+    task = q.get("task")
+    try:
+        base = task["base"] if task else git_safe(root, a.n, "rev-parse", "HEAD").stdout.strip()
+        tree = snapshot(root, a.n, base)
+        if tree != git_lead(root, "rev-parse", f"{base}^{{tree}}").stdout.strip():
+            ref = _keep(root, a.n, _snapshot_commit(root, a.n, base, tree, "discarded"))
+            print(f"kept Qwen worktree {a.n}'s work on {ref}")
+        _reset_worktree(root, a.n, q["branch"], _lead_head(root))
+    except GitError as e:
+        die(f"discard failed: {e}", 1)
+    if task:
+        log_attempt(root, q, "failed" if a.failed else "escalated")
+        q["task"] = None
+    save_state(root, state)
+    print(f"discarded Qwen pane {a.n}'s task; its worktree is at the lead HEAD")
+    return 0
+
+
+COMMANDS = {"launch": launch, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
+            "merge": merge, "sync": sync, "discard": discard}
 
 
 def main(argv=None):
@@ -320,7 +981,12 @@ def main(argv=None):
         die(f"`mates {cmd}` runs only from the mates lead (MATES_LEAD=1)")
     if cmd not in COMMANDS:
         die(f"unknown command {cmd!r}")
-    return COMMANDS[cmd](args)
+    try:
+        return COMMANDS[cmd](args)
+    except GitError as e:
+        die(f"git failed: {e}", 1)
+    except RuntimeError as e:  # tmux failures (paste, display, capture-pane)
+        die(str(e), 1)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ do it yourself.
 - Never run code from a Qwen worktree yourself: use `mates check`. A check
   must not depend on git state (git inside it sees the worktree).
 - Qwen's own "passed" is a claim; only `mates check` counts.
-- `mates merge N` needs `mates diff N` on the checked snapshot first.
+- `mates merge N` needs `mates check`, then `mates diff N` on that same snapshot.
 - One open task at a time, unless the state says `parallel`.
 
 ## The loop
@@ -34,12 +34,14 @@ do it yourself.
 1. `mates send N --reason "<why Qwen>" --files a,b "<task + files + how to check>"`
    (`--continue` keeps the OpenCode session, for a task that builds on what
    Wai and Qwen just discussed).
-2. A Monitor on `mates wait N`.
-3. `mates diff N`, then `mates check N -- <cmd>`.
+2. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `dead`
+   or `failed` and exits 0; `timeout` exits 1, so an until-loop keeps waiting).
+   On `question:`, `mates answer N "<answer>"`.
+3. `mates check N -- <cmd>`, then `mates diff N` (the diff of what was checked).
 4. `mates merge N`, or `mates answer N --sendback "<notes>"`. If `merge` says
    the lead moved, `mates sync N` and check again.
 
 - Wai's own work with Qwen merges when she asks: `mates check N -- <cmd>`,
-  then `mates merge N -m "<summary>"`.
+  `mates diff N`, then `mates merge N -m "<summary>"`.
 - Two failed tries: `mates discard N` and do the task yourself.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
