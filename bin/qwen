@@ -257,6 +257,7 @@ cfg='{
     }
   },
   "instructions": ["/home/qwen/.qwen/sandbox.md", "/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
+  "tools": { "webfetch": false, "websearch": false },
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
 }'
 cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}
