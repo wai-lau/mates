@@ -3,13 +3,17 @@
 
   qwen-relay out --sock S --to 127.0.0.1:PORT      (outside: unix socket -> Ollama)
   qwen-relay in  --sock S --listen 127.0.0.1:11434 (inside, no network: TCP -> unix socket)
+  qwen-relay clip --sock S --run PROG               (outside: each connection's bytes -> PROG's stdin)
 
-The sandbox has no network namespace route out; this socket is the only way
-to reach the model server.
+The sandbox has no network namespace route out; these sockets are the only
+ways to reach the model server and (write-only) the clipboard.
 """
 import argparse
 import asyncio
 import os
+import subprocess
+
+CLIP_MAX = 1 << 20  # a copy bigger than 1 MiB is cut off
 
 
 async def pipe(r, w):
@@ -25,12 +29,28 @@ async def pipe(r, w):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["in", "out"])
+    ap.add_argument("mode", choices=["in", "out", "clip"])
     ap.add_argument("--sock", required=True)
     ap.add_argument("--to")
     ap.add_argument("--listen")
+    ap.add_argument("--run", help="clip: program that takes the text on stdin")
     a = ap.parse_args()
-    if a.mode == "out":
+    if a.mode == "clip":
+        # Write-only: the sandbox can set the clipboard but never read it.
+        async def handle(r, w):
+            data = await r.read(CLIP_MAX)
+            while len(data) < CLIP_MAX and (more := await r.read(CLIP_MAX - len(data))):
+                data += more
+            w.close()
+            if data:
+                await asyncio.to_thread(subprocess.run, [a.run], input=data,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if os.path.exists(a.sock):
+            os.unlink(a.sock)
+        srv = await asyncio.start_unix_server(handle, path=a.sock)
+        os.chmod(a.sock, 0o600)
+    elif a.mode == "out":
         host, port = a.to.rsplit(":", 1)
 
         async def handle(r, w):

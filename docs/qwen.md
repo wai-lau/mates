@@ -40,6 +40,7 @@ flowchart TD
 | `.git/hooks`, `.git/config` | read-only, so nothing written can run later outside |
 | your home folder (`~/.ssh`, `~/.claude`, other repos) | not there |
 | the network | none; a unix socket to Ollama is the only way out |
+| the clipboard | write-only: `xclip` (OpenCode) and `clip.exe` (aider) inside hand the text over a socket to `pbcopy` outside; reading it is refused, so paste with the terminal (Ctrl+V) |
 | environment | empty plus basics (`HOME`, `PATH`, `TERM`, `LANG`, Ollama address); no tokens |
 | `/usr`, the OpenCode binary, the aider venv | read-only |
 | user | you (`wai`), so files it writes are yours |

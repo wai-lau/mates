@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Clipboard stand-in inside the qwen sandbox, installed as `xclip` and `clip.exe`.
+
+OpenCode copies with xclip; aider (pyperclip) sees WSL and copies with clip.exe.
+Both get this: stdin goes over /run/qwen/clip.sock to `qwen-relay clip` outside,
+which runs pbcopy. Reading the clipboard (xclip -o) is refused: paste with the
+terminal instead.
+"""
+import socket
+import sys
+
+if any(a in ("-o", "-out") for a in sys.argv[1:]):
+    sys.exit(1)
+data = sys.stdin.buffer.read()
+try:
+    s = socket.socket(socket.AF_UNIX)
+    s.connect("/run/qwen/clip.sock")
+    s.sendall(data)
+    s.close()
+except OSError:
+    sys.exit(1)
