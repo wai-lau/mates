@@ -376,16 +376,48 @@ both `wai` and `claude`.
   `node_modules`, and tools under `~/.local`. Nothing a check needs may
   depend on that folder. A check gets what it needs through one of two
   channels, and through no other:
-  1. **From the repo.** A tracked `.mates/runtime.sh` at the base commit.
-     `mates` runs it as `wai`, outside the sandbox, with network, and
-     points it at a runtime directory it should fill. Example:
-     `UV_PROJECT_ENVIRONMENT=$MATES_RUNTIME/venv uv sync --frozen`, with uv's
-     Python and cache also under `$MATES_RUNTIME`.
+  1. **From the repo.** A tracked `.mates/runtime.sh` at the base commit,
+     written and committed by the lead (Claude), never by Qwen. Only
+     `mates runtime --reason "<why>"` builds it; it then restarts the idle
+     Qwen panes on it with their OpenCode chat kept, rechecking each pane
+     just before (Wai, 2026-11-11: "allow the leader to install things to
+     that Qwen can run"). A launch only uses a runtime already built for
+     HEAD, so no install ever runs unlogged.
+     - The host reads one file of the result, `env`: it must be a plain
+       file (never a link, which could point at `~/.secrets`) of at most
+       64 KiB, or the build is refused. Build output shown to the lead is
+       cut to its last lines, stripped of terminal escapes, and labelled as
+       written by the packages.
+     - **The build runs in its own bwrap sandbox** (Wai, 2026-11-11, the
+       sandboxed-install option, then "PII and stuff must never enter the
+       sandbox"). Inside: `/usr`, uv, the script, and only the files named
+       on its `# lockfiles:` line, read from the base commit into a
+       throwaway folder. Never the checkout, so no uncommitted, untracked
+       or ignored file goes in. An empty home, no tokens, a passwd naming
+       only the build user, and the runtime folder at its final path.
+     - **Its one way out is `qwen-relay egress`**, an HTTP CONNECT proxy
+       outside the sandbox: port 443 of `pypi.org`,
+       `files.pythonhosted.org` or `registry.npmjs.org` only, at a public
+       address it resolved itself. No other host, so no URL or git link
+       from Qwen can be fetched and nothing can be sent to a host of the
+       package's choosing; loopback, the LAN and the WSL host are refused,
+       so local services (emet's MCP server on 127.0.0.1) are out of
+       reach. Each tunnel is a line in the build log. Adding a registry is
+       a code change.
+     - **Claude decides, not Qwen** (Wai, 2026-11-11: "Ensure that Claude
+       doesn't just install whatever Qwen tells it to"). A package Qwen asks
+       for is a claim: the lead installs only what the repo declares or a
+       well-known test runner the check needs, checks the exact name and
+       pins the version, and never takes a URL, index or version from Qwen
+       alone (`mates/lead.md`, Installs). Every build is a `runtime` line
+       in the audit log with its reason.
      - The script comes from the base commit, never from the worker's tree,
-       so a worker cannot change it.
-     - The result is cached in `/srv/mates/runtimes/<repo>/<hash>/`, where
-       the hash covers the script plus the lockfiles it names. It is built
-       once and reused by every later task until the lockfiles change.
+       so a worker cannot change it; a diff touching it or its lockfiles is
+       flagged.
+     - The result is cached in
+       `${XDG_STATE_HOME:-~/.local/state}/mates/runtimes/<repo>/<hash>/`
+       (folders only Wai can write), where the hash covers the script plus
+       the lockfiles it names. It is built once and reused until they change.
      - It is mounted read-only in the sandbox, at the same absolute path it
        was built at, so paths baked into a venv still resolve. The script's
        `PATH` and env additions come with it.
@@ -399,9 +431,9 @@ both `wai` and `claude`.
        finds.
      - Every injection is logged with its path and hash.
 
-  The runtime is built outside the sandbox, and is therefore trusted code.
-  That is why it may only come from the committed repo or from the lead's
-  launch, never from the worker. If a check still finds a tool missing,
+  The runtime is built outside Qwen's sandbox, and is therefore trusted
+  code. That is why it may only come from the committed repo or from the
+  lead's launch, never from the worker. If a check still finds a tool missing,
   red-on-base reports `runtime-missing` with the command that failed, so
   the lead can add the runtime script or an injection before spawning
   again.
