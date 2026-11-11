@@ -36,11 +36,19 @@ _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 HOST_RE = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
 
 
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
 def public_addr(ip):
-    """True only for a globally routed unicast address (an IPv4-mapped IPv6 one is judged as IPv4)."""
+    """True only for a globally routed unicast address. An IPv6 address that carries an IPv4
+    one (mapped, compatible ::/96, 6to4, NAT64) is judged by that IPv4 address."""
     a = ipaddress.ip_address(ip.split("%", 1)[0])
-    if a.version == 6 and a.ipv4_mapped:
-        a = a.ipv4_mapped
+    if a.version == 6:
+        inner = a.ipv4_mapped or a.sixtofour
+        if inner is None and (int(a) >> 32 == 0 or a in NAT64):
+            inner = ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
+        if inner is not None:
+            a = inner
     return a.is_global and not a.is_multicast
 
 

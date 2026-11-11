@@ -32,7 +32,8 @@ def test_public_addresses_allowed(ip):
 
 @pytest.mark.parametrize("ip", ["127.0.0.1", "127.0.0.53", "10.255.255.254", "192.168.1.5", "172.17.0.1",
                                 "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "::1",
-                                "fe80::1", "fd00::1", "::ffff:127.0.0.1", "::"])
+                                "fe80::1", "fd00::1", "::ffff:127.0.0.1", "::", "::127.0.0.1", "64:ff9b::7f00:1",
+                                "2002:7f00:1::1", "64:ff9b::a00:1"])
 def test_local_and_private_addresses_refused(ip):
     assert not relay.public_addr(ip)
 

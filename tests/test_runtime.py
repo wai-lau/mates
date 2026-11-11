@@ -56,8 +56,9 @@ def test_runtime_refuses_shared_root(tmp_path):
     """Final review I4: a runtime folder another account can write (/srv/mates/runtimes is
     group emetcode; /tmp is everyone's) is never trusted or built in."""
     r = mkrepo(tmp_path, "# lockfiles: uv.lock\ntrue\n")
+    shared = tmp_path / "shared"; shared.mkdir(); shared.chmod(0o777)
     with pytest.raises(fsutil.UnsafeDir):
-        runtime.ensure_runtime(r, head(r), root=tmp_path / "rt")
+        runtime.ensure_runtime(r, head(r), root=shared / "rt")
 
 def test_runtime_default_root_is_private_state(tmp_path, private_dir, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(private_dir))
@@ -174,3 +175,56 @@ def test_build_refuses_without_bwrap(tmp_path, private_dir, monkeypatch):
     r = mkrepo(tmp_path, "# lockfiles: uv.lock\ntrue\n")
     with pytest.raises(RuntimeError, match="bwrap"):
         runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+
+
+# --- after the security review (2026-11-11) ---------------------------------------------------
+
+def test_build_refuses_an_env_link(tmp_path, private_dir):
+    """The build can name any host path; the host must never follow a link it planted
+    (a link to ~/.secrets would put its KEY=VALUE lines into Qwen's sandbox)."""
+    secret = tmp_path / "secret-env"; secret.write_text("LEAK=from-a-secret\n")
+    r = mkrepo(tmp_path, f'# lockfiles: uv.lock\nln -s {shlex.quote(str(secret))} "$MATES_RUNTIME/env"\n')
+    with pytest.raises(RuntimeError, match="env"):
+        runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+    assert not any((private_dir / "rt").rglob("env"))
+
+def test_build_refuses_an_env_fifo(tmp_path, private_dir):
+    r = mkrepo(tmp_path, '# lockfiles: uv.lock\nmkfifo "$MATES_RUNTIME/env"\n')
+    with pytest.raises(RuntimeError, match="env"):
+        runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+
+def test_build_refuses_a_huge_env(tmp_path, private_dir):
+    r = mkrepo(tmp_path, '# lockfiles: uv.lock\nhead -c 200000 /dev/zero | tr "\\0" a > "$MATES_RUNTIME/env"\n')
+    with pytest.raises(RuntimeError, match="env"):
+        runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+
+def test_runtime_env_never_follows_a_link(tmp_path):
+    secret = tmp_path / "secret-env"; secret.write_text("LEAK=1\n")
+    d = tmp_path / "rt"; d.mkdir(); (d / "env").symlink_to(secret)
+    with pytest.raises(ValueError):
+        runtime.runtime_env(d)
+
+def test_build_failure_output_is_labelled_and_clean(tmp_path, private_dir):
+    r = mkrepo(tmp_path, "# lockfiles: uv.lock\nprintf '\\033[31mred\\033[0m no-such-package\\n' >&2; exit 3\n")
+    with pytest.raises(RuntimeError) as e:
+        runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+    msg = str(e.value)
+    assert "no-such-package" in msg and "\x1b" not in msg
+    assert "not instructions" in msg
+
+def test_failed_build_with_a_locked_folder_leaves_nothing(tmp_path, private_dir):
+    r = mkrepo(tmp_path, '# lockfiles: uv.lock\nmkdir -p "$MATES_RUNTIME/x/y"; chmod 000 "$MATES_RUNTIME/x"; exit 3\n')
+    with pytest.raises(RuntimeError):
+        runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+    assert not (private_dir / "rt" / "repo" / runtime.runtime_hash(r, head(r))).exists()
+
+def test_locked_folder_in_a_good_build_is_swept(tmp_path, private_dir):
+    r = mkrepo(tmp_path, '# lockfiles: uv.lock\nmkdir -p "$MATES_RUNTIME/x/y"; chmod 000 "$MATES_RUNTIME/x"\n')
+    d = runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+    assert all(f.stat().st_mode & 0o022 == 0 for f in [d, *d.rglob("*")])
+
+def test_find_runtime_never_builds(tmp_path, private_dir):
+    r = mkrepo(tmp_path, '# lockfiles: uv.lock\ntouch "$MATES_RUNTIME/built"\n')
+    assert runtime.find_runtime(r, head(r), root=private_dir / "rt") is None
+    d = runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
+    assert runtime.find_runtime(r, head(r), root=private_dir / "rt") == d

@@ -11,7 +11,7 @@ command -v bwrap >/dev/null || { echo "SKIP: bwrap not installed"; exit 0; }
 
 T=$(mktemp -d)
 RT=""
-cleanup() { pkill -f "$T/stub/ollama" 2>/dev/null; rm -rf "$T"; [ -z "$RT" ] || rm -rf "$RT"; }
+cleanup() { pkill -f "$T/stub/ollama" 2>/dev/null; rm -rf "$T"; [ -z "$RT" ] || rm -rf "$RT"; [ -z "${RT2:-}" ] || rm -rf "$RT2"; }
 trap cleanup EXIT
 
 mkdir -p "$T/stub" "$T/state" "$T/config"
@@ -127,6 +127,14 @@ QWEN_RUNTIME=$T/shared-rt in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
 check "a runtime under a folder others can write (/tmp): refused (I4)" '[ "$rc" != 0 ]'
 QWEN_RUNTIME=$T/nope in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
 check "a missing runtime dir refuses to run" '[ "$rc" != 0 ]'
+# The env file is read on the host: a link (to ~/.secrets, say) or a fifo must be refused, never read.
+RT2=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-test-rt2.XXXXXX")
+echo "LEAK=from-a-secret" > "$T/secret-env"; ln -s "$T/secret-env" "$RT2/env"
+out=$(QWEN_RUNTIME=$RT2 in_ "$T/repo" "$QWEN" exec -- env 2>&1); rc=$?
+check "a runtime env that is a link: refused, never read" '[ "$rc" != 0 ] && ! grep -q LEAK <<<"$out"'
+rm "$RT2/env"; mkfifo "$RT2/env"
+QWEN_RUNTIME=$RT2 timeout 10 bash -c 'cd "$1" && "$2" exec -- true' _ "$T/repo" "$QWEN" 2>/dev/null; rc=$?
+check "a runtime env that is a fifo: refused at once" '[ "$rc" != 0 ] && [ "$rc" != 124 ]'
 
 # --- per-repo OpenCode state -------------------------------------------
 key() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }

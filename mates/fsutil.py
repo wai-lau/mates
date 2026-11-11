@@ -48,6 +48,23 @@ def private_dir(path):
     return p
 
 
+def force_rmtree(path):
+    """rmtree that also removes what a check or a runtime build made unreadable. Only real
+    folders are chmodded (lstat, never through a link): a link left behind must not make
+    Wai's process change the mode of whatever it points at."""
+    def unlock(d):
+        with contextlib.suppress(OSError):
+            os.chmod(d, 0o700)
+        with contextlib.suppress(OSError), os.scandir(d) as it:
+            for e in it:
+                if e.is_dir(follow_symlinks=False):
+                    unlock(e.path)
+    with contextlib.suppress(OSError):
+        if stat.S_ISDIR(os.lstat(path).st_mode):
+            unlock(path)
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def state_dir(*parts):
     """A private folder under ${XDG_STATE_HOME:-~/.local/state}/mates/ (see private_dir)."""
     base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")

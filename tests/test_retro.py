@@ -36,7 +36,8 @@ def test_private_cwd_refuses_shared_folders(tmp_path):
     shared.mkdir()
     shared.chmod(0o770)
     assert not fsutil.safe_ancestry(shared)
-    assert not fsutil.safe_ancestry("/tmp")  # everyone's
+    if os.stat("/tmp").st_mode & 0o002:  # everyone's (in a sandbox /tmp can be a private tmpfs)
+        assert not fsutil.safe_ancestry("/tmp")
     if os.path.isdir("/srv/mates/neutral"):
         assert not fsutil.safe_ancestry("/srv/mates/neutral")  # group emetcode
     try:

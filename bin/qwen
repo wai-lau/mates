@@ -425,7 +425,10 @@ run_sandboxed() {
   # Runtime env: the line filter of mates/runtime.py runtime_env (tests/test_qwen_bin.sh feeds
   # both one file). PATH= goes in front of the default PATH; the rest is set after the defaults.
   local path=/opt/opencode:/opt/qwen-clip:/usr/bin:/bin renv=() l
-  if [ -n "$rt" ] && [ -f "$rt/env" ]; then
+  if [ -n "$rt" ] && { [ -e "$rt/env" ] || [ -L "$rt/env" ]; }; then
+    # Read on the host: a link (to ~/.secrets, say), a fifo or a huge file is refused, never read.
+    [ ! -L "$rt/env" ] && [ -f "$rt/env" ] || die "QWEN_RUNTIME refused: $rt/env is not a plain file"
+    [ "$(stat -c %s -- "$rt/env")" -le 65536 ] || die "QWEN_RUNTIME refused: $rt/env is over 65536 bytes"
     while IFS= read -r l || [ -n "$l" ]; do
       l=${l%$'\r'}
       [[ $l =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue

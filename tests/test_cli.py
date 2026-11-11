@@ -14,6 +14,7 @@ import pytest
 
 import cli
 import layout
+import runtime
 import session
 
 
@@ -786,7 +787,9 @@ def test_check_never_writes_through_a_qwen_link(m):
 
 
 def test_check_refuses_shared_state_folder(m, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(m.t / "shared"))  # under /tmp: others can write there
+    shared = m.t / "shared"  # others can write there (not just "under /tmp": a sandbox's /tmp is private)
+    shared.mkdir(); shared.chmod(0o777)
+    monkeypatch.setenv("XDG_STATE_HOME", str(shared))
     m.send()
     code, _, err = m.run("check", 1, "--", "true")
     assert code != 0 and "refusing to check" in err and not (m.t / "exec.log").exists()
@@ -1835,3 +1838,56 @@ def test_runtime_restarts_a_pane_left_on_an_old_runtime(m):
     code, out, _ = m.run("runtime", "--reason", "r")
     assert code == 0 and "restarted Qwen pane 1" in out
     assert m.state()["qwens"][0]["runtime"] == m.state()["runtime"]
+
+
+
+def test_runtime_skips_a_pane_that_got_busy_during_the_build(m, monkeypatch):
+    _rt_commit(m)
+    m.ses("ses_1")
+    build = runtime.ensure_runtime
+
+    def slow_build(*a, **k):  # Qwen starts a turn while the build runs
+        d = build(*a, **k)
+        m.msg("ses_1", "user", time.time())
+        return d
+    monkeypatch.setattr(runtime, "ensure_runtime", slow_build)
+    code, out, _ = m.run("runtime", "--reason", "r")
+    assert code == 0 and "pane 1" in out and "busy" in out
+    assert not any(c.startswith("respawn-pane") for c in m.tmux_calls())
+    st = m.state()
+    assert st["runtime"] and st["qwens"][0]["runtime"] != st["runtime"]  # a rerun restarts it
+
+
+def test_runtime_skips_a_pane_wai_typed_in_during_the_build(m, monkeypatch):
+    _rt_commit(m)
+    build = runtime.ensure_runtime
+
+    def slow_build(*a, **k):
+        d = build(*a, **k)
+        m.input("┃  half a sentence Wai is typ\n")
+        return d
+    monkeypatch.setattr(runtime, "ensure_runtime", slow_build)
+    code, out, _ = m.run("runtime", "--reason", "r")
+    assert code == 0 and "input box" in out
+    assert not any(c.startswith("respawn-pane") for c in m.tmux_calls())
+
+
+def test_launch_never_builds_a_runtime(m):
+    _rt_commit(m)
+    warnings = []
+    assert cli._runtime(str(m.root), warnings) is None
+    assert any("mates runtime" in w for w in warnings)
+    assert not (m.private / "mates" / "runtimes").exists() or not any((m.private / "mates" / "runtimes").rglob("*.ok"))
+
+
+def test_launch_uses_a_built_runtime(m):
+    _rt_commit(m)
+    assert m.run("runtime", "--reason", "r")[0] == 0
+    warnings = []
+    assert cli._runtime(str(m.root), warnings) == m.state()["runtime"] and warnings == []
+
+
+def test_runtime_shows_what_it_builds(m):
+    _rt_commit(m)
+    code, out, _ = m.run("runtime", "--reason", "r")
+    assert code == 0 and ".mates/runtime.sh" in out and "a.txt" in out

@@ -245,11 +245,20 @@ def _warm(root):
 
 
 def _runtime(root, warnings):
+    """The runtime already built for HEAD's .mates/runtime.sh, or None. A launch never builds
+    one: only `mates runtime --reason` runs an install (deliberate, and logged)."""
     try:
-        return runtime.ensure_runtime(root, "HEAD")
+        if runtime.runtime_hash(root, "HEAD") is None:
+            return None
+        found = runtime.find_runtime(root, "HEAD")
     except (RuntimeError, OSError, fsutil.UnsafeDir) as e:
-        warnings.append(f"mates: .mates/runtime.sh failed, panes start without it: {e}")
+        warnings.append(f"mates: cannot read the runtime, panes start without it: {e}")
         return None
+    if found is None:
+        warnings.append("mates: .mates/runtime.sh is not built for HEAD; panes start without it "
+                        "(the lead runs mates runtime --reason ...)")
+        return None
+    return str(found)
 
 
 def _parse_launch(args):
@@ -785,20 +794,7 @@ def answer(args):
 # --- check, diff ---------------------------------------------------------------------------
 
 def _rmtree(path):
-    """rmtree that also removes what a check made read-only. Only real folders are
-    chmodded (lstat, never through a link): a link the check left must not make Wai's
-    process change the mode of whatever it points at."""
-    def unlock(d):
-        with contextlib.suppress(OSError):
-            os.chmod(d, 0o700)
-        with contextlib.suppress(OSError), os.scandir(d) as it:
-            for e in it:
-                if e.is_dir(follow_symlinks=False):
-                    unlock(e.path)
-    with contextlib.suppress(OSError):
-        if stat.S_ISDIR(os.lstat(path).st_mode):
-            unlock(path)
-    shutil.rmtree(path, ignore_errors=True)
+    fsutil.force_rmtree(path)
 
 
 @contextlib.contextmanager
@@ -1079,11 +1075,21 @@ def _restart_pane(root, pane, q, sid, dest):
     release_pane(pane)
 
 
-def _log_runtime(root, reason, h, outcome, restarted):
+def _log_runtime(root, base, reason, h, outcome, restarted):
     LOG.parent.mkdir(parents=True, exist_ok=True)
     logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12], "route": "runtime",
-                        "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, 'HEAD'))}",
+                        "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, base))}",
                         "reason": reason, "outcome": outcome, "runtime": h, "restarted": restarted})
+
+
+def _not_restartable(q, pane, db):
+    """Why Qwen pane q must not be restarted now, or None."""
+    if _busy(q, db):
+        return "busy (OpenCode is replying)"
+    live = _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() == "1"
+    if live and not input_empty(pane):
+        return "holding text in its input box (Wai may be typing)"
+    return None
 
 
 def runtime_cmd(args):
@@ -1092,7 +1098,8 @@ def runtime_cmd(args):
     a = p.parse_args(args)
     root = _lead_root()
     state = _load(root)
-    h = runtime.runtime_hash(root, "HEAD")
+    base = git_lead(root, "rev-parse", "HEAD").stdout.strip()  # one commit for every read below
+    h = runtime.runtime_hash(root, base)
     if h is None:
         die(f"no {runtime.SCRIPT} committed at HEAD: write it, `git add -f {runtime.SCRIPT}` "
             "(.mates/ is excluded), commit, then run mates runtime again")
@@ -1103,18 +1110,16 @@ def runtime_cmd(args):
         hit = None if q.get("closed") else _find(root, state, q)
         if hit is None:
             continue
-        pane, _ = hit
-        if _busy(q, db):
-            die(f"Qwen pane {q['n']} is busy (OpenCode is replying); wait for it, then run mates runtime again")
-        live = _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() == "1"
-        if live and not input_empty(pane):
-            die(f"Qwen pane {q['n']} has text in its input box (Wai may be typing); not restarting it")
+        why = _not_restartable(q, hit[0], db)
+        if why:
+            die(f"Qwen pane {q['n']} is {why}; wait, then run mates runtime again")
         q.setdefault("runtime", old)
-        open_.append((q, pane))
+        open_.append((q, hit[0]))
+    print(f"runtime {h} from {base[:12]}: {', '.join(runtime.runtime_files(root, base))}")
     try:
-        dest = str(runtime.ensure_runtime(root, "HEAD"))
+        dest = str(runtime.ensure_runtime(root, base))
     except (RuntimeError, OSError, fsutil.UnsafeDir) as e:
-        _log_runtime(root, a.reason, h, "failed", [])
+        _log_runtime(root, base, a.reason, h, "failed", [])
         die(f"runtime build failed, panes left as they were: {e}", 1)
     state["runtime"] = dest
     save_state(root, state)
@@ -1122,16 +1127,20 @@ def runtime_cmd(args):
     for q, pane in open_:
         if q.get("runtime") == dest:
             continue
+        why = _not_restartable(q, pane, db)  # again: the build can take minutes
+        if why:
+            print(f"skipped Qwen pane {q['n']} ({pane}): {why}; run mates runtime again when it is idle")
+            continue
         sid = session.opencode_session(q["worktree"], db)
         _restart_pane(root, pane, q, sid, dest)
         q["runtime"] = dest
         save_state(root, state)
         restarted.append(q["n"])
         print(f"restarted Qwen pane {q['n']} ({pane}) on runtime {h}" + (" with its chat" if sid else ", new chat"))
-    if not restarted and dest == old:
+    if not restarted and dest == old and all(q.get("runtime") == dest for q, _ in open_):
         print(f"runtime {h} unchanged; no pane restarted")
         return 0
-    _log_runtime(root, a.reason, h, "accepted", restarted)
+    _log_runtime(root, base, a.reason, h, "accepted", restarted)
     print(f"runtime {h} ready at {dest}: checks and new panes use it")
     return 0
 
