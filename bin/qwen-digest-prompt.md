@@ -17,5 +17,5 @@ MCP, skills, memory, sessions, tmux, worktrees, question documents, status
 reports, commit or push policy, permissions), communication style, people,
 and anything that is not about the code itself.
 
-Output: at most 300 words, plain markdown bullets under short headings, no
+Output: at most 150 words, terse markdown bullets under short headings, no
 preamble, no closing line. If nothing applies, output exactly: (no code rules)
