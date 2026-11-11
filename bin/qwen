@@ -54,8 +54,14 @@ CTX=${QWEN_CTX:-65536}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
 OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)}
-HERE=$(dirname "$(readlink -f "$0")")
+SELF=$(readlink -f "$0"); HERE=$(dirname "$SELF")
 mkdir -p "$STATE/opencode" "$CONF"
+# The folder qwen starts in is the repo Qwen writes: hostile to every host-side helper. Keep
+# its path, then leave it, so no host interpreter or tool started below can load a file
+# planted there (python3 -c puts the cwd first on its module path). The sandbox gets the
+# folder back with --chdir. Host Python also always runs -I (no cwd, no PYTHON* env, no user site).
+CWD=$(pwd -P) || { echo "qwen: cannot read the current folder" >&2; exit 1; }
+cd /
 
 # The one cleanup, on the one EXIT trap, set before anything it cleans exists: the relays
 # that were started, this run's sandbox dir, and this run's GPU lock.
@@ -82,7 +88,7 @@ find_server() {
   return 1
 }
 
-free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
 start_server() {
   local host
@@ -121,6 +127,8 @@ opencode_dir() {
 }
 
 # --- Finding the repo, without trusting anything Qwen can write -------------------------
+# The rule: on the host, the folder qwen mounts is hostile. No interpreter is started from
+# it (see CWD above) and no path inside it is followed (see digest: a CLAUDE.md link).
 # Host git is never run to discover the repo: a .git file or config planted in a folder
 # Qwen writes (for example <worktree>/.mates/, which `mates check` runs from) would steer
 # it to another checkout or to $HOME. Instead:
@@ -150,8 +158,7 @@ check_git_config() { # <config file> <git dir its relative paths start from> <to
 }
 TOP="" GITADMIN="" GITDIR=""
 resolve_repo() { # sets TOP, GITADMIN (this checkout's git dir), GITDIR (the shared git dir)
-  local cwd root d adm common line
-  cwd=$(pwd -P)
+  local cwd=$CWD root d adm common line
   if [ -n "${QWEN_ROOT:-}" ]; then
     root=$(rp "$QWEN_ROOT") && [ -d "$root" ] || die "QWEN_ROOT is not a folder: $QWEN_ROOT"
     case "$cwd/" in "$root"/*) ;; *) die "refusing: $cwd is not inside QWEN_ROOT ($root)" ;; esac
@@ -266,7 +273,7 @@ run_sandboxed() {
   local host=$1; shift
   command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
   local top gitdir ocdir cwd rt=""
-  resolve_repo; top=$TOP gitdir=$GITDIR; cwd=$(pwd -P)
+  resolve_repo; top=$TOP gitdir=$GITDIR; cwd=$CWD
   ocdir=$(opencode_dir)
   if [ -n "${QWEN_RUNTIME:-}" ]; then
     rt=$(readlink -f -- "$QWEN_RUNTIME" 2>/dev/null) && [ -d "$rt" ] || die "QWEN_RUNTIME is not a folder: $QWEN_RUNTIME"
@@ -279,9 +286,9 @@ run_sandboxed() {
   make_home "$RUN/home"
   [ "$host" = - ] || stage_digests "$RUN/home" "$top"  # a check reads no digests: no Claude call
   if [ "$host" != - ]; then
-    python3 "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" & RELAY=$!
+    python3 -I "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" & RELAY=$!
     if command -v pbcopy >/dev/null; then
-      python3 "$HERE/qwen-relay" clip --sock "$RUN/clip.sock" --run "$(command -v pbcopy)" & CLIP=$!
+      python3 -I "$HERE/qwen-relay" clip --sock "$RUN/clip.sock" --run "$(command -v pbcopy)" & CLIP=$!
     fi
     for _ in $(seq 50); do [ -S "$RUN/ollama.sock" ] && break; sleep 0.1; done
   fi
@@ -355,7 +362,7 @@ case "${1:-}" in
     exit ;;
   stop) stop_server; exit ;;
   opencode-dir) opencode_dir; exit ;;
-  -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit ;;
+  -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"; exit ;;
   aider) die "aider is no longer supported; plain 'qwen' runs OpenCode" ;;
   exec)
     shift; [ "${1:-}" = -- ] && shift

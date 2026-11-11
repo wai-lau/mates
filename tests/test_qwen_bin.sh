@@ -194,6 +194,17 @@ check "QWEN_ROOT=\$HOME: refused" '[ "$rc" != 0 ]'
 mkdir -p "$T/rtwrap"; ( cd "$T/repo" && QWEN_RUNTIME=$T "$QWEN" exec -- true ) 2>/dev/null; rc=$?
 check "a runtime dir that holds the repo: refused" '[ "$rc" != 0 ]'
 
+# --- host-side Python never imports from the repo (C1) -------------------
+P=$T/plant; mkrepo "$P"
+for m in socket subprocess json; do printf 'open(%s, "a").write("%s\\n")\n' "'$T/planted-ran'" "$m" > "$P/$m.py"; done
+in_ "$P" "$QWEN" server >/dev/null 2>&1
+check "qwen server: a socket.py/subprocess.py/json.py in the cwd does not run on the host" '[ ! -e "$T/planted-ran" ]'
+pkill -f "$T/stub/ollama"; sleep 0.2
+(cd "$P" && exec "$QWEN" >/dev/null 2>&1); rc=$?
+check "qwen (TUI start): planted modules in the repo do not run on the host" '[ ! -e "$T/planted-ran" ]'
+pkill -f "$T/stub/ollama"; sleep 0.2
+rm -rf "$P" "$T/planted-ran"
+
 # --- GPU lock -----------------------------------------------------------
 rm -f "$T/ollama-started"
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1) & q=$!  # exec: $q is the qwen pid

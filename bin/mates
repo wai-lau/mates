@@ -40,7 +40,7 @@ ARGS=("$@") fresh=""
 for a in "$@"; do
   case $a in --) break ;; --fresh) fresh=1 ;; *) die "unknown argument '$a' (try --help)" ;; esac
 done
-KEY=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import session; print(session.repo_key(sys.argv[2]))' \
+KEY=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import session; print(session.repo_key(sys.argv[2]))' \
   "$MATES_DIR" "$ROOT") || die "cannot work out the repo key"
 
 tm() { tmux "$@" 2>/dev/null; }
