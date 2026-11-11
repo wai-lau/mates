@@ -111,7 +111,7 @@ from the model's Modelfile.
 
 ```
 qwen stop
-ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates qwen3.8:27b
+ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates
 rm -rf ~/.local/opt/opencode-* ~/.config/qwen ~/.local/state/qwen
 rm ~/bin/qwen
 ```

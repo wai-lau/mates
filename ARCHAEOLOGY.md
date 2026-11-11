@@ -28,12 +28,13 @@ Kept here in case aider comes back:
 - Its clipboard (pyperclip) sees WSL and copies with `clip.exe`. The sandbox
   had a `clip.exe` stand-in for that, next to the `xclip` one OpenCode uses.
 
-## Deleted 2026-11-10 (19 GB freed)
+## Deleted 2026-11-10 (35 GB freed)
 
 | What | Size | To get it back |
 |---|---|---|
 | `~/.cache/mates-models/turbo-mtp-iq4xs.gguf` | 16 GB | re-download with the `curl` line at the top of `ollama/qwen3.8-27b-turbo-heretic-mtp-iq4xs.Modelfile` (only needed to rebuild that model) |
 | `~/.local/opt/llama.cpp-b12257/` | 1.8 GB | the official llama.cpp CUDA release b12257 |
+| Ollama model `qwen3.8:27b` (library Q4, too slow: `docs/models.md`) | 16 GB | `ollama pull qwen3.8:27b` |
 | Ollama models `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS`, `qwen3.8-iq4-text` | ~1 GB on disk (their weights are shared with `qwen3.8-mates`, which stays) | `ollama create` from `qwen3.8-mates`'s blob |
 
 ## Still on disk, waiting
@@ -41,4 +42,3 @@ Kept here in case aider comes back:
 | What | Size | Why it stays for now |
 |---|---|---|
 | `~/aider-venv/`, `~/.local/state/qwen/aider/` | 666 MB | `bin/qwen` on main still mounts the venv, so `qwen` won't start without it; delete after branch `mates-phase1` merges |
-| Ollama model `qwen3.8:27b` | 17 GB | still the default model in `mates/ctx.py` on branch `mates-phase1` |
