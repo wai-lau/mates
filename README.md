@@ -1,13 +1,15 @@
 # Local LLM Learning
 
 Local LLM inference on this machine: what runs, how to use it, and what was
-tried. Updated 2026-11-10.
+tried. Updated 2026-11-11.
 
 - Daily use of the local coding model: [`docs/qwen.md`](docs/qwen.md)
 - Every model tried, with measurements: [`docs/models.md`](docs/models.md)
-- The Claude-led crew with local Qwen workers ("mates"): spec in
-  [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md),
-  build on branch `mates-phase1` (Phase 1 of 2, gate still open)
+- `mates` (`bin/mates`): Claude Code as the lead in the left tmux pane, sandboxed
+  Qwen (OpenCode) panes on the right, each in its own worktree; the lead sends,
+  checks, diffs and merges their work. Spec:
+  [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md)
+  (the two-pane revision)
 - The TTS server (hosaka): [`docs/superpowers/specs/2026-06-22-local-tts-server-design.md`](docs/superpowers/specs/2026-06-22-local-tts-server-design.md)
 
 ## Hardware
@@ -108,8 +110,9 @@ from the model's Modelfile.
 | `~/.local/state/qwen/` | server log, OpenCode sessions (one folder per repo), GPU locks |
 | `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
 | `~/.cache/mates-models/turbo-mtp-iq4xs.gguf` | downloaded GGUF (Ollama keeps its own copy; this one can be deleted) |
-| `~/.claude/mates/` | mates pilot state (log, measurements, transcripts; local only) |
-| `/srv/mates/` | mates worker sandbox area (shared with user `claude`) |
+| `~/.claude/mates/` | mates state per repo and the task log (local only) |
+| `~/.local/state/mates/` | mates runtimes and check snapshots (only Wai can write there) |
+| `/srv/mates/` | the old pilot's shared area; no longer used, can be deleted |
 | `~/aider-venv/` | aider (retired, no longer used by `qwen`; can be deleted) |
 
 ## Cleanup if abandoning
@@ -118,6 +121,7 @@ from the model's Modelfile.
 qwen stop
 ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs qwen3.6:35b-a3b qwen3.8-mates qwen3.8-iq4-text \
   hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ4_XS qwen3.8:27b
-rm -rf ~/.local/opt/opencode-* ~/.local/opt/llama.cpp-* ~/.cache/mates-models ~/.config/qwen ~/.local/state/qwen
+rm -rf ~/.local/opt/opencode-* ~/.local/opt/llama.cpp-* ~/.cache/mates-models ~/.config/qwen ~/.local/state/qwen \
+  ~/.local/state/mates
 rm ~/bin/qwen
 ```
