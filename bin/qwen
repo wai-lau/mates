@@ -173,7 +173,7 @@ run_sandboxed() {
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home
     --bind "$run/home" /home/qwen --bind "$STATE/aider" /home/qwen/.aider
     --bind "$STATE/opencode" /home/qwen/.local/share/opencode
-    --ro-bind "$AIDER_VENV" "$AIDER_VENV" --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
+    --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
     --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/clip.exe
     --bind "$run" /run/qwen --bind "$top" "$top")
   case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
@@ -184,7 +184,9 @@ run_sandboxed() {
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
   done
   local e; for e in "${SANDBOX_ENV[@]}"; do A+=(--setenv "${e%%=*}" "${e#*=}"); done
-  A+=(--setenv HOME /home/qwen --setenv PATH "/opt/opencode:/opt/qwen-clip:$AIDER_VENV/bin:/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
+  local aider_path=""  # aider is retired; mount its venv only while it still exists
+  [ -d "$AIDER_VENV" ] && { A+=(--ro-bind "$AIDER_VENV" "$AIDER_VENV"); aider_path="$AIDER_VENV/bin:"; }
+  A+=(--setenv HOME /home/qwen --setenv PATH "/opt/opencode:/opt/qwen-clip:${aider_path}/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
       --setenv LANG C.UTF-8 --setenv OLLAMA_API_BASE http://127.0.0.1:11434 --setenv LITELLM_LOCAL_MODEL_COST_MAP True
       --chdir "$PWD")
   bwrap "${A[@]}" -- /bin/bash -c '
