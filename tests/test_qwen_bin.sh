@@ -266,6 +266,20 @@ check "warm starts the (stub) server" '[ -e "$T/ollama-started" ]'
 for _ in $(seq 20); do grep -q api/generate "$T/curl.log" 2>/dev/null && break; sleep 0.1; done
 check "warm asks the server to load the model" 'grep -q api/generate "$T/curl.log"'
 
+# --- one server, however many start at once (I2) ------------------------
+pkill -f "$T/stub/ollama"; sleep 0.2
+S2=$T/i2; mkdir -p "$S2/stub"; cp "$T/stub/curl" "$S2/stub/"
+printf '#!/bin/sh\ncat "%s/pids" 2>/dev/null\n' "$S2" > "$S2/stub/pgrep"
+printf '#!/bin/sh\necho $$ >> "%s/pids"; echo started >> "%s/starts"; sleep 4\n' "$S2" "$S2" > "$S2/stub/ollama"
+printf '#!/bin/sh\nsleep 1\n' > "$S2/stub/systemctl"  # hosaka's stop is slow: the race window
+chmod +x "$S2/stub/"*
+PATH="$S2/stub:$PATH" "$QWEN" server > "$S2/a" 2>/dev/null & pa=$!
+PATH="$S2/stub:$PATH" "$QWEN" server > "$S2/b" 2>/dev/null & pb=$!
+wait $pa $pb
+check "two qwen server calls at once start one ollama serve" '[ "$(wc -l < "$S2/starts")" = 1 ]'
+check "both callers get the same server" '[ -s "$S2/a" ] && [ "$(cat "$S2/a")" = "$(cat "$S2/b")" ]'
+pkill -f "$S2/stub/ollama"; sleep 0.2
+
 # --- sandbox-test lines -------------------------------------------------
 st=$(QWEN_GIT_RO=1 in_ "$T/wt" "$QWEN" sandbox-test 2>/dev/null)
 for l in "git ref write: blocked" "git object write: blocked" "worktree .git file edit: blocked" \

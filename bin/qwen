@@ -57,7 +57,7 @@ STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
 OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)}
 SELF=$(readlink -f "$0"); HERE=$(dirname "$SELF")
-mkdir -p "$STATE/opencode" "$CONF"
+mkdir -p "$STATE/opencode" "$CONF"; chmod 700 "$STATE"  # the server lock and run dirs are ours only
 # The folder qwen starts in is the repo Qwen writes: hostile to every host-side helper. Keep
 # its path, then leave it, so no host interpreter or tool started below can load a file
 # planted there (python3 -c puts the cwd first on its module path). The sandbox gets the
@@ -93,17 +93,21 @@ find_server() {
 
 free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
+# Find-or-start runs under flock on $STATE/server.lock, so `qwen warm` and a pane's qwen
+# starting together wait for one server instead of each starting their own.
 start_server() {
-  local host
-  if host=$(find_server); then echo "$host"; return; fi
+  local host lk
+  exec {lk}>> "$STATE/server.lock"
+  flock -w 120 "$lk" || die "another qwen held the server lock for 2 minutes ($STATE/server.lock)"
+  if host=$(find_server); then exec {lk}>&-; echo "$host"; return; fi
   systemctl --user stop hosaka-server 2>/dev/null && echo "qwen: stopped hosaka TTS (GPU goes to Qwen; 'qwen stop' gives it back)" >&2 || true
   host=127.0.0.1:$(free_port)
   OLLAMA_HOST=$host OLLAMA_MODELS=/usr/share/ollama/.ollama/models OLLAMA_NOPRUNE=1 \
   OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_SCHED_SPREAD=1 \
   OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=60m \
-    setsid nohup ollama serve >> "$STATE/serve.log" 2>&1 < /dev/null &
+    setsid nohup ollama serve >> "$STATE/serve.log" 2>&1 < /dev/null {lk}>&- &  # the server must not hold the lock
   for _ in $(seq 60); do
-    curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { echo "$host"; return; }
+    curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { exec {lk}>&-; echo "$host"; return; }
     sleep 0.5
   done
   die "server did not start (log: $STATE/serve.log)"
