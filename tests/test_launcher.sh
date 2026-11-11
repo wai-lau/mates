@@ -11,7 +11,14 @@ T=$(mktemp -d) || exit 1
 T=$(cd "$T" && pwd -P) || exit 1  # the real path: git and tmux report it
 SOCK=mates-test-$$
 tx() { tmux -L "$SOCK" -f /dev/null "$@"; }
-cleanup() { tx kill-server 2>/dev/null; rm -rf "$T"; }
+SOCK_PATH=${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCK
+# kill-server leaves the socket file behind: remove it once nothing listens on it.
+cleanup() {
+  tx kill-server 2>/dev/null
+  for _ in $(seq 50); do tx list-sessions >/dev/null 2>&1 || break; sleep 0.05; done
+  tx list-sessions >/dev/null 2>&1 || rm -f "$SOCK_PATH"
+  rm -rf "$T"
+}
 trap cleanup EXIT
 unset TMUX TMUX_PANE MATES_LEAD
 mkdir -p "$T/home" "$T/ctl" "$T/oc"
@@ -170,5 +177,7 @@ out=$(cd "$T/moved/mates-qwen-9" && "$MATES" 2>&1); rc=$?
 check "qwen worktree: refused by its git admin dir name" '[ "$rc" != 0 ] && grep -q "Qwen worktree" <<<"$out"'
 check "qwen worktree: nothing started" '[ "$(count r1 claude)" = 1 ] && [ "$(count r1 qwen)" = 1 ]'
 
+cleanup; trap - EXIT
+check "the private tmux server and its socket are gone" '[ ! -e "$SOCK_PATH" ]'
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit "$fail"

@@ -1563,3 +1563,34 @@ def test_retro_bad_reply_writes_nothing(rt):
 
 def test_retro_runs_without_lead(rt):
     assert "retro" in cli.OPEN_COMMANDS and "retro" in cli.COMMANDS
+
+
+def _capture(m, text):
+    (m.t / "capture").write_text(text)
+
+
+def test_input_empty_box_mid_screen(m):
+    """A fresh session draws the input box under the logo, mid-pane (Wai's first real run)."""
+    box = ['┃  Ask anything… "Fix broken tests"',
+           "┃  Build·qwen3.8-27b-turbo-heretic:mtp-iq4xsOllama (local, sandboxed)",
+           "   tab agentsctrl+p commands",
+           "   ● Tip Configure steps to limit agentic iterations per request"]
+    lines = ["  logo"] * 24 + box + [""] * 22
+    assert len(lines) == 50 and lines[24].startswith("┃  Ask anything")
+    _capture(m, "\n".join(lines) + "\n")
+    assert cli.input_empty("%1") is True
+    _capture(m, "\n".join(lines).replace('Ask anything… "Fix broken tests"', "half a sentence Wai is typ") + "\n")
+    assert cli.input_empty("%1") is False
+
+
+def test_input_empty_ignores_chat_text(m):
+    _capture(m, "assistant: the placeholder says Ask anything... until you type\n┃  some typed text\n")
+    assert cli.input_empty("%1") is False
+    _capture(m, '┃  Ask anything... "Fix a TODO in the codebase"\n')  # ASCII dots, as some terminals draw
+    assert cli.input_empty("%1") is True
+
+
+def test_send_accepts_fresh_pane_box_mid_screen(m):
+    _capture(m, "  logo\n" * 24 + '┃  Ask anything… "Fix broken tests"\n' + "\n" * 25)
+    m.send()
+    assert m.buffers()[-1].startswith("[from Claude] ")

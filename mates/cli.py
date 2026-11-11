@@ -336,9 +336,11 @@ SESSION_POLL_S = 0.5
 CHECK_TAIL = 20
 # Task 0's input-box rule, read from OpenCode 1.19.5's TUI: an empty prompt shows the
 # placeholder `Ask anything… "<example>"` (`Run a command… "…"` in shell mode, which is
-# not empty input); typed text replaces it. Looked for in the pane's last lines.
-INPUT_EMPTY = re.compile(r"Ask anything(…|\.\.\.)")
-INPUT_LINES = 15
+# not empty input); typed text replaces it. Looked for on every visible line: a fresh
+# session draws the box mid-pane, under the logo (seen in Wai's first real run). The
+# opening quote of the example is part of the rule, so chat text that merely says
+# "Ask anything..." does not count as an empty box.
+INPUT_EMPTY = re.compile(r'Ask anything(…|\.\.\.) "')
 PROTOCOL = ("done.md", "question.md")
 
 
@@ -417,8 +419,7 @@ def _busy(q, db):
 
 def input_empty(pane):
     """True when the OpenCode input box in `pane` holds no typed text."""
-    lines = _tmux_out("capture-pane", "-p", "-t", pane).rstrip("\n").splitlines()
-    return any(INPUT_EMPTY.search(line) for line in lines[-INPUT_LINES:])
+    return any(INPUT_EMPTY.search(line) for line in _tmux_out("capture-pane", "-p", "-t", pane).splitlines())
 
 
 def paste(pane, text):

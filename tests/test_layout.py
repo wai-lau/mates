@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-import uuid
 
 import pytest
 
@@ -69,9 +68,9 @@ def test_split_returns_pane_id(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux absent")
-def test_real_tmux_side_by_side(tmp_path):
-    name = "mates-t2-" + uuid.uuid4().hex[:8]
-    sock = ["tmux", "-L", name]
+def test_real_tmux_side_by_side(tmp_path, private_tmux):
+    name = private_tmux
+    sock = ["tmux", "-L", name, "-f", "/dev/null"]
 
     def run(*a):
         return subprocess.run([*sock, *a], capture_output=True, text=True, check=True).stdout.strip()
@@ -91,4 +90,4 @@ def test_real_tmux_side_by_side(tmp_path):
         assert [p for p, _ in sorted(info.items(), key=lambda kv: kv[1][1])] == [lead, *qwens]
         assert 110 <= info[lead][2] <= 125
     finally:
-        subprocess.run([*sock, "kill-server"], capture_output=True)
+        subprocess.run([*sock, "kill-server"], capture_output=True)  # the fixture removes the socket

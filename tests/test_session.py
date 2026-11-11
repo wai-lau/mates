@@ -1,4 +1,3 @@
-import contextlib
 import json
 import os
 import shutil
@@ -174,8 +173,8 @@ def test_tag_pane_raises_when_set_option_fails(tmp_path, monkeypatch, fail_on):
 
 
 @pytest.mark.skipif(not shutil.which("tmux"), reason="needs tmux")
-def test_tag_and_find_real_tmux(tmp_path, monkeypatch):
-    sock = f"mates-test-{uuid.uuid4().hex[:8]}"
+def test_tag_and_find_real_tmux(tmp_path, monkeypatch, private_tmux):
+    sock = private_tmux
     wrap = tmp_path / "tmux"
     wrap.write_text(f'#!/bin/sh\nexec tmux -L {sock} -f /dev/null "$@"\n')
     wrap.chmod(0o755)
@@ -191,12 +190,7 @@ def test_tag_and_find_real_tmux(tmp_path, monkeypatch):
         assert session.find_pane("/r", 1) == (pane, "ok")
         assert session.find_pane("/r", 2) is None
     finally:
-        sock_path = subprocess.run([str(wrap), "display-message", "-p", "#{socket_path}"],
-                                   capture_output=True, text=True).stdout.strip()
-        subprocess.run([str(wrap), "kill-server"], capture_output=True)
-        if sock_path:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(sock_path)
+        subprocess.run([str(wrap), "kill-server"], capture_output=True)  # the fixture removes the socket
 
 
 # --- worktrees ----------------------------------------------------------------------
