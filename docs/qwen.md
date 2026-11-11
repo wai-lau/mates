@@ -47,6 +47,10 @@ flowchart TD
 
 OpenCode runs with every tool allowed (no approval prompts). Web fetch is
 denied, and there is no network anyway. The sandbox is the guard.
+When Qwen needs a web page or docs it asks (in chat, or in
+`.mates/question.md` for a task from the Claude lead), and the lead fetches
+and answers. Every URL goes past a reviewer, so nothing in the repo can leak
+out through a request.
 
 Limits worth knowing:
 - **The repo itself is writable.** Bad code planted in a test or script runs as
