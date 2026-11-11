@@ -295,6 +295,35 @@ printf '#!/bin/sh\nprintf %%s "$OPENCODE_CONFIG_CONTENT" > ./oc-config.json\n' >
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1)
 ht=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provider"]["ollama"]["options"].get("headerTimeout"))' "$T/repo/oc-config.json" 2>/dev/null)
 check "OpenCode waits up to an hour for a queued reply (headerTimeout 3600000)" '[ "$ht" = 3600000 ]'
+# No OpenCode prompt may wait on Wai (2026-11-11: "should ask claude instead of me"): every "ask"
+# becomes "deny", and Qwen asks the lead. The real OpenCode resolves the rules (last match wins).
+REAL_OC=$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)
+if [ -n "$REAL_OC" ] && [ -s "$T/repo/oc-config.json" ]; then
+  mkdir -p "$T/ochome"
+  rules=$(cd "$T/repo" && timeout 60 env -i HOME="$T/ochome" PATH=/usr/bin:/bin TERM=xterm \
+    OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
+    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 \
+    OPENCODE_CONFIG_CONTENT="$(cat "$T/repo/oc-config.json")" "$REAL_OC" debug agent build 2>/dev/null)
+  verdicts=$(python3 -c '
+import fnmatch, json, sys
+t = sys.stdin.read(); rules = json.loads(t[t.find("{"):])["permission"]
+def act(perm, res):
+    hit = [r for r in rules if fnmatch.fnmatchcase(perm, r["permission"]) and fnmatch.fnmatchcase(res, r["pattern"])]
+    return hit[-1]["action"] if hit else "ask"
+for perm, res in [("external_directory", "/home/qwen/.config/opencode/skills"), ("doom_loop", "*"),
+                  ("read", "/w/.env"), ("read", "/w/.env.local"), ("question", "*"), ("plan_enter", "*"),
+                  ("external_directory", "/tmp/x"), ("read", "/w/.env.example"), ("bash", "ls"), ("edit", "/w/a")]:
+    print(perm, res, act(perm, res))
+print("asks:", sum(r["action"] == "ask" and act(r["permission"], r["pattern"]) == "ask" for r in rules))
+' <<<"$rules" 2>&1)
+  for v in "external_directory /home/qwen/.config/opencode/skills deny" "doom_loop * deny" "read /w/.env deny" \
+           "read /w/.env.local deny" "question * deny" "plan_enter * deny" "external_directory /tmp/x allow" \
+           "read /w/.env.example allow" "bash ls allow" "edit /w/a allow" "asks: 0"; do
+    check "OpenCode permission: $v" 'grep -qxF "$v" <<<"$verdicts"'
+  done
+else
+  echo "SKIP OpenCode permission rules: no real OpenCode in ~/.local/opt"
+fi
 rm -f "$T/repo/oc-config.json"
 printf '#!/bin/sh\nsleep 2\n' > "$T/opencode"
 

@@ -75,8 +75,13 @@ worktree folder (whose `gitdir` file must point back) or a submodule git dir;
 `core.worktree` anywhere names a folder other than the top; a git config uses
 `include`; or the top or a git dir is `/`, your home or above it, or a secret path.
 
-OpenCode runs with every tool allowed (no approval prompts). Web fetch is
-denied, and there is no network anyway. The sandbox is the guard.
+OpenCode never stops for an approval prompt: no prompt may wait on Wai. Edits
+and shell are allowed. Everything OpenCode would otherwise ask about is denied:
+paths outside the repo and `/tmp`, reading `.env` files, a repeated identical
+call, its question tool and plan mode. Web fetch is denied, and there is no
+network anyway. A refused call tells Qwen to ask instead (the lead, in
+`.mates/question.md`, for a mates task). The sandbox is the guard; these rules
+only keep Qwen from waiting on a human.
 When Qwen needs a web page or docs it asks (in chat, or in
 `.mates/question.md` for a task from the Claude lead), and the lead fetches
 and answers. Every URL goes past a reviewer, so nothing in the repo can leak

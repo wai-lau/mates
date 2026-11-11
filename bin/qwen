@@ -512,6 +512,9 @@ host=$(start_server)
 # LSP downloads, no Claude Code auto-discovery (the two CLAUDE.md files are listed explicitly).
 # headerTimeout: every pane shares one server slot, so a request can wait behind another pane's
 # reply (6-11 minutes at ~5 tokens/s); OpenCode's default of 5 minutes dropped those requests.
+# permission: no prompt may wait on Wai ("should ask claude instead of me"), so every rule OpenCode
+# would "ask" (paths outside the repo and /tmp, .env reads, repeated calls, its question and
+# plan-mode tools) is "deny"; qwen-sandbox.md tells Qwen to ask the lead instead.
 cfg='{
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
@@ -529,7 +532,10 @@ cfg='{
   },
   "instructions": ["/home/qwen/.qwen/sandbox.md", "/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
   "tools": { "webfetch": false, "websearch": false },
-  "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
+  "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny",
+                  "question": "deny", "plan_enter": "deny", "doom_loop": "deny",
+                  "external_directory": { "*": "deny", "/tmp/*": "allow" },
+                  "read": { "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" } }
 }'
 cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}
 SANDBOX_ENV=(OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1

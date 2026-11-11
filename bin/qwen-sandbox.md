@@ -1,6 +1,6 @@
 # Environment
 - No internet: installs, git fetch/pull/push, curl and web fetch all fail. Don't try.
-- Never install anything. Need a tool, package, web page or docs: ask for it by name (in `.mates/question.md` if the task is `[from Claude]`), then stop. Run the tests before saying done.
+- Never install anything. Need a tool, package, web page or docs, or a tool call was refused: don't work around it; ask for it by name (in `.mates/question.md` if the task is `[from Claude]`), then stop. Run the tests before saying done.
 - Only this repo is visible. Shell and edits inside it are allowed.
 - Instructions: `~/.qwen/global.md` (user rules, digest), `~/.qwen/repo.md` (digest of the repo's `CLAUDE.md`; the full file is in the repo root).
 
