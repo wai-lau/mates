@@ -6,7 +6,6 @@ inside a bubblewrap sandbox. Source: `bin/qwen` (and `bin/qwen-relay`,
 
 ```
 qwen                 # OpenCode
-qwen aider           # aider instead
 qwen server          # start or find the private Ollama server, print its address
 qwen stop            # stop it, restart hosaka TTS
 qwen sandbox-test    # show what the sandbox can and cannot reach
@@ -28,7 +27,7 @@ flowchart TD
   D --> E[build a throwaway sandbox home: copy-in files + digests]
   E --> F[relay: unix socket to the Ollama port]
   F --> G[bwrap: repo rw, no home, no network, empty env]
-  G --> H[OpenCode or aider, talking to 127.0.0.1:11434 inside]
+  G --> H[OpenCode, talking to 127.0.0.1:11434 inside]
 ```
 
 ## The sandbox
@@ -40,9 +39,9 @@ flowchart TD
 | `.git/hooks`, `.git/config` | read-only, so nothing written can run later outside |
 | your home folder (`~/.ssh`, `~/.claude`, other repos) | not there |
 | the network | none; a unix socket to Ollama is the only way out |
-| the clipboard | write-only: `xclip` (OpenCode) and `clip.exe` (aider) inside hand the text over a socket to `pbcopy` outside; reading it is refused, so paste with the terminal (Ctrl+V) |
+| the clipboard | write-only: `xclip` inside (what OpenCode copies with) hands the text over a socket to `pbcopy` outside; reading it is refused, so paste with the terminal (Ctrl+V) |
 | environment | empty plus basics (`HOME`, `PATH`, `TERM`, `LANG`, Ollama address); no tokens |
-| `/usr`, the OpenCode binary, the aider venv | read-only |
+| `/usr`, the OpenCode binary | read-only |
 | user | you (`wai`), so files it writes are yours |
 | your terminal | kept attached, so resizing the pane resizes the agent; safe because this kernel blocks terminal keystroke injection (`dev.tty.legacy_tiocsti = 0`). If that setting is ever on, `qwen` detaches the terminal and warns |
 
@@ -97,7 +96,6 @@ lapsed, the digest is skipped with a warning and `qwen` runs without it.
 |---|---|
 | `~/.local/state/qwen/serve.log` | private Ollama server log |
 | `~/.local/state/qwen/opencode/` | OpenCode sessions (persist between runs) |
-| `~/.local/state/qwen/aider/` | aider history, cache and model settings |
 | `~/.config/qwen/copy-in` | files copied in |
 | `~/.config/qwen/digests/` | CLAUDE.md digests |
 

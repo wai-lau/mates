@@ -8,6 +8,7 @@ tried. Updated 2026-11-10.
 - The Claude-led crew with local Qwen workers ("mates"): spec in
   [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md),
   build on branch `mates-phase1` (Phase 1 of 2, gate still open)
+- Retired tools and finished plans: [`ARCHAEOLOGY.md`](ARCHAEOLOGY.md)
 - The TTS server (hosaka): [`docs/superpowers/specs/2026-06-22-local-tts-server-design.md`](docs/superpowers/specs/2026-06-22-local-tts-server-design.md)
 
 ## Hardware
@@ -30,7 +31,6 @@ that spills to CPU no longer risks an OOM kill; it only gets slower (see
 | Runtime | Ollama 0.40.16, system service on `127.0.0.1:11434` (settings in `/etc/systemd/system/ollama.service.d/override.conf`) |
 | Coding model | `qwen3.8-27b-turbo-heretic:mtp-iq4xs`, 64K context (why: `docs/models.md`) |
 | Coding agent | OpenCode 1.19.5 (`~/.local/opt/opencode-1.19.5/`), run through `qwen` inside a bubblewrap sandbox |
-| Fallback agent | aider 0.86.2 (`~/aider-venv/`), `qwen aider` |
 | Old default | `gpt-oss:20b` (still installed, fits the 5070 Ti alone at ~143 tok/s) |
 | Model definitions | `ollama/*.Modelfile` in this repo |
 
@@ -43,7 +43,6 @@ left alone. Qwen uses both GPUs, so starting it stops hosaka TTS, and
 
 ```
 qwen                 # OpenCode on the local model, sandboxed, in the current git repo
-qwen aider           # the same with aider
 qwen server          # start or find the private server, print its address
 qwen stop            # stop the private server, restart hosaka TTS
 qwen sandbox-test    # print what the sandbox can and cannot reach
@@ -90,8 +89,6 @@ from the model's Modelfile.
 - **Long Hugging Face repo names**: Ollama rejects them ("invalid model name").
   Download the GGUF with `curl` and `ollama create` from the file.
 - **Two workers at once on one 27B model**: 0.4-0.5 tok/s each. One at a time.
-- **aider's default for unknown models** appends its edit rules to your
-  message, so the model thinks you pasted them. `qwen aider` sets `reminder: sys`.
 - **Older attempts (gpt-oss era)**: the `gpt_oss.chat` reference
   implementation needs unpublished `triton_kernels`; Homebrew's llama.cpp is
   CPU-only (the official llama.cpp CUDA build works, in
@@ -105,12 +102,11 @@ from the model's Modelfile.
 | `~/bin/qwen` | symlink to `bin/qwen` here |
 | `~/.config/qwen/copy-in` | files copied into the sandbox at each launch |
 | `~/.config/qwen/digests/` | short digests of CLAUDE.md files, by hash |
-| `~/.local/state/qwen/` | server log, OpenCode sessions, aider state |
+| `~/.local/state/qwen/` | server log, OpenCode sessions |
 | `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
 | `~/.cache/mates-models/turbo-mtp-iq4xs.gguf` | downloaded GGUF (Ollama keeps its own copy; this one can be deleted) |
 | `~/.claude/mates/` | mates pilot state (log, measurements, transcripts; local only) |
 | `/srv/mates/` | mates worker sandbox area (shared with user `claude`) |
-| `~/aider-venv/` | aider |
 
 ## Cleanup if abandoning
 
