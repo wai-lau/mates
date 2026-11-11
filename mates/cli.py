@@ -42,11 +42,14 @@ def _entry(root, n):
 
 # --- the Qwen pane wrapper ----------------------------------------------------------
 
-def qwen_cmd(worktree, opencode_session=None, runtime_dir=None):
+def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     """The command a Qwen pane runs. It waits for `release_pane` (so the pane is
     tagged before qwen can fail), then runs qwen in the worktree with read-only git.
     Exit 0 closes the pane; any other exit marks it `@mates-failed=1` (the tag
-    stays) and leaves a shell with the error."""
+    stays) and leaves a shell with the error. That shell runs as Wai, outside the
+    sandbox, so it starts in the lead repo `root` (default: the worktree's repo),
+    never among Qwen's files."""
+    root = root or Path(worktree).parents[2]
     env = [f"QWEN_ROOT={shlex.quote(str(worktree))}", "QWEN_GIT_RO=1"]
     if runtime_dir:
         env.append(f"QWEN_RUNTIME={shlex.quote(str(runtime_dir))}")
@@ -59,6 +62,8 @@ def qwen_cmd(worktree, opencode_session=None, runtime_dir=None):
               'tmux set-option -p -t "$TMUX_PANE" @mates-failed 1; '
               'echo "mates: qwen exited $rc; this pane is marked failed (mates send refuses it), '
               'a shell instead" >&2; '
+              f'cd {shlex.quote(str(root))} || cd /; '
+              'echo "mates: this shell is OUTSIDE the sandbox, in the lead repo $PWD (not the Qwen worktree)" >&2; '
               'exec "${SHELL:-bash}"')
     return "exec bash -c " + shlex.quote(script)
 
@@ -136,7 +141,7 @@ def launch_plan(state, root, fresh, claude_args, runtime_dir=None):
     st["runtime"] = str(runtime_dir) if runtime_dir else None
     session_args = _claude_plan(st, root, restore, warnings)
     qwens = [{"n": q["n"], "worktree": q["worktree"],
-              "cmd": qwen_cmd(q["worktree"], q["opencode_session"], runtime_dir)}
+              "cmd": qwen_cmd(q["worktree"], q["opencode_session"], runtime_dir, root)}
              for q in _qwen_entries(st, root, restore, warnings)]
     return {"claude_argv": _claude_argv(root, session_args, claude_args), "qwens": qwens,
             "warnings": warnings, "state": st}

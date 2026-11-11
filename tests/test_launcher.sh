@@ -148,8 +148,23 @@ check "failed qwen: the pane stays, tagged and marked failed" \
   '[ -n "$Q6" ] && [ "$(tx show-options -pqv -t "$Q6" @mates-failed)" = 1 ]'
 check "failed qwen: the error and a shell are left" \
   'waitfor "tx capture-pane -p -t $Q6 | grep -q \"qwen exited 1\"" && [ "$(tx display -p -t "$Q6" "#{pane_current_command}")" = sh ]'
+check "failed qwen: the shell is in the lead repo, not the worktree, and says it is unsandboxed" \
+  '[ "$(tx display -p -t "$Q6" "#{pane_current_path}")" = "$T/r6" ] && tx capture-pane -p -t "$Q6" | grep -q "OUTSIDE the sandbox"'
 check "failed qwen: the entry is not closed" \
   'python3 -c "import json,sys; s=json.load(open(sys.argv[1])); sys.exit(not [q for q in s[\"qwens\"] if q[\"n\"] == 1 and not q[\"closed\"]])" "$HOME/.claude/mates/sessions/$K6.json"'
+
+# --- bin/mates refuses inside a Qwen worktree ------------------------------------------
+QWT=$T/r1/.claude/worktrees/mates-qwen-1
+out=$(cd "$QWT" && "$MATES" 2>&1); rc=$?
+check "qwen worktree: launch refused" '[ "$rc" != 0 ] && grep -q "Qwen worktree" <<<"$out"'
+out=$(cd "$QWT" && MATES_LEAD=1 "$MATES" list 2>&1); rc=$?
+check "qwen worktree: subcommands refused" '[ "$rc" != 0 ] && grep -q "Qwen worktree" <<<"$out"'
+mkdir -p "$QWT/sub"; out=$(cd "$QWT/sub" && "$MATES" 2>&1); rc=$?
+check "qwen worktree: refused from a subfolder" '[ "$rc" != 0 ] && grep -q "Qwen worktree" <<<"$out"'
+git -C "$T/r1" worktree add -q -b elsewhere "$T/moved/mates-qwen-9"  # admin dir named mates-qwen-9, path elsewhere
+out=$(cd "$T/moved/mates-qwen-9" && "$MATES" 2>&1); rc=$?
+check "qwen worktree: refused by its git admin dir name" '[ "$rc" != 0 ] && grep -q "Qwen worktree" <<<"$out"'
+check "qwen worktree: nothing started" '[ "$(count r1 claude)" = 1 ] && [ "$(count r1 qwen)" = 1 ]'
 
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit "$fail"

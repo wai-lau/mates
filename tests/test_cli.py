@@ -142,7 +142,7 @@ def test_restore_missing_session_fresh(tmp_path):
     assert " -s " not in cmds[1] and "-s ses_2" in cmds[2]
     assert len(plan["warnings"]) == 2
     assert any("gone-sid" in w for w in plan["warnings"])
-    assert any("ses_gone" in w and "1" in w for w in plan["warnings"])
+    assert any("ses_gone" in w and "pane 1" in w for w in plan["warnings"])
     assert {q["n"]: q["opencode_session"] for q in plan["state"]["qwens"]} == {1: None, 2: "ses_2"}
 
 

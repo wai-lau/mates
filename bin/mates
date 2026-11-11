@@ -17,17 +17,26 @@ MATES_DIR=$(dirname "$(dirname "$SELF")")/mates
 CLI=$MATES_DIR/cli.py
 die() { echo "mates: $*" >&2; exit 1; }
 
+case "${1:-}" in -h|--help) sed -n '2,13p' "$SELF"; exit 0 ;; esac
+
+# Never from a Qwen worktree: its files (CLAUDE.md, .claude/settings.json hooks) are Qwen's,
+# and mates or claude started there would run them as Wai. Checked on the path before git runs.
+not_qwen() { case "$1/" in */.claude/worktrees/mates-qwen-*/*) return 1 ;; esac; }
+QWEN_REFUSAL="refusing to run inside a Qwen worktree (Qwen wrote these files); cd to the lead repo first"
+not_qwen "$(pwd -P)" || die "$QWEN_REFUSAL"
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
+GITDIR=$(git rev-parse --absolute-git-dir 2>/dev/null) || die "not in a git repo"
+not_qwen "$ROOT" || die "$QWEN_REFUSAL"
+case "$GITDIR/" in */worktrees/mates-qwen-*/*) die "$QWEN_REFUSAL" ;; esac
+
 case "${1:-}" in
-  -h|--help) sed -n '2,13p' "$SELF"; exit 0 ;;
   ""|-*) ;;
   *) exec python3 "$CLI" "$@" ;;
 esac
 ARGS=("$@") fresh=""
 for a in "$@"; do
-  case $a in --) break ;; --fresh) fresh=1 ;; --lead-only) ;; *) die "unknown argument '$a' (try --help)" ;; esac
+  case $a in --) break ;; --fresh) fresh=1 ;; *) die "unknown argument '$a' (try --help)" ;; esac
 done
-
-ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
 KEY=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import session; print(session.repo_key(sys.argv[2]))' \
   "$MATES_DIR" "$ROOT") || die "cannot work out the repo key"
 
@@ -40,10 +49,10 @@ self_cmd() { # this script again as a tmux pane command (a new pane gets the ser
 tagged_window() { tm list-windows -a -F $'#{window_id}\t#{@mates-window}' | awk -F'\t' -v k="$KEY" '$2 == k { print $1; exit }'; }
 lead_pane() { tm list-panes -a -F $'#{pane_id}\t#{@mates}' | awk -F'\t' -v k="$KEY:lead" '$2 == k { print $1; exit }'; }
 lead_live() { [ -n "$1" ] && [ "$(tm display -p -t "$1" '#{pane_dead}#{@mates-lead-live}')" = 01 ]; }
-go_to() { # show window $1 and stop
+go_to() { # show window $1 and stop; $2 says why
   local s; s=$(tm display -p -t "$1" '#{session_name}')
   tm select-window -t "$1"
-  echo "mates: already running for this repo, in tmux session $s" >&2
+  echo "mates: ${2:-already running for this repo}, in tmux session $s" >&2
   [ -n "${TMUX:-}" ] && { tm switch-client -t "$s"; exit 0; }
   exec tmux attach -t "$s"
 }
@@ -74,7 +83,7 @@ if [ -n "$WIN" ]; then
     go_to "$WIN"
   fi
   if [ -n "${TMUX_PANE:-}" ]; then
-    if [ "$TMUX_PANE" = "$LEAD" ] || { [ -z "$LEAD" ] && [ "$(tm display -p -t "$TMUX_PANE" '#{window_id}')" = "$WIN" ]; }; then
+    if [ "$TMUX_PANE" = "$LEAD" ] || { [ -z "$LEAD" ] && [ "$(tm display -p -t "$TMUX_PANE" '#{window_id}	#{@mates}')" = "$WIN"$'\t' ]; }; then # an untagged pane only: never a Qwen pane
       run_lead --lead-only "${ARGS[@]}"
     fi
   fi
@@ -84,7 +93,7 @@ if [ -n "$WIN" ]; then
     first=$(tm list-panes -t "$WIN" -F '#{pane_left} #{pane_id}' | sort -n | head -1 | cut -d' ' -f2)
     tmux split-window -hb -l 50% -t "$first" -c "$ROOT" "$(self_cmd "${ARGS[@]}")" || die "cannot open a lead pane"
   fi
-  go_to "$WIN"
+  go_to "$WIN" "restarted the lead"
 fi
 
 # Window choice.
