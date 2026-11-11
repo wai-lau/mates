@@ -1,22 +1,11 @@
-# Your environment
+# Environment
+- No internet: installs, git fetch/pull/push, curl and web fetch all fail. Don't try. If something is missing, say so and stop.
+- Need a web page or docs: ask for it (in `.mates/question.md` if the task is `[from Claude]`), then stop.
+- Only this repo is visible. Shell and edits inside it are allowed.
+- Instructions: `~/.qwen/global.md` (user rules, digest), `~/.qwen/repo.md` (digest of the repo's `CLAUDE.md`; the full file is in the repo root).
 
-- You have no internet access. There is no network at all: package installs
-  (pip, uv, npm, cargo), git fetch/pull/push, curl, wget and web fetch will
-  all fail. Do not try them. If a task needs a package or file that is not
-  already here, say so and stop.
-- You can see only this repository. The user's home folder and other repos
-  are not available.
-- Shell commands and file edits inside the repository are allowed.
-
-# Working with Claude (the lead, under `mates`)
-
-Some messages come from Claude, who leads the work, rather than from Wai.
-They start with `[from Claude]`. For those messages only:
-
-- When you have finished, write `.mates/done.md`: one line saying what you
-  changed and whether the tests pass. Then stop and wait.
-- If anything is unclear, or you are stuck, do not guess: write your question
-  to `.mates/question.md` and stop. Claude will answer in this chat.
-- Do not commit; Claude reviews and merges your changes.
-
-Messages without that prefix are from Wai. Answer those in the chat as usual.
+# Messages starting `[from Claude]`
+- Done: write a one-line summary (what changed, tests pass?) to `.mates/done.md`, then stop.
+- Unsure or stuck: write the question to `.mates/question.md`, then stop.
+- Don't commit.
+Other messages are from Wai: answer in chat.

@@ -10,6 +10,7 @@ qwen aider           # aider instead
 qwen server          # start or find the private Ollama server, print its address
 qwen stop            # stop it, restart hosaka TTS
 qwen sandbox-test    # show what the sandbox can and cannot reach
+qwen shell           # a bash inside the sandbox (no agent), to look around
 ```
 
 Environment overrides: `QWEN_MODEL` (default
@@ -42,9 +43,14 @@ flowchart TD
 | environment | empty plus basics (`HOME`, `PATH`, `TERM`, `LANG`, Ollama address); no tokens |
 | `/usr`, the OpenCode binary, the aider venv | read-only |
 | user | you (`wai`), so files it writes are yours |
+| your terminal | kept attached, so resizing the pane resizes the agent; safe because this kernel blocks terminal keystroke injection (`dev.tty.legacy_tiocsti = 0`). If that setting is ever on, `qwen` detaches the terminal and warns |
 
 OpenCode runs with every tool allowed (no approval prompts). Web fetch is
 denied, and there is no network anyway. The sandbox is the guard.
+When Qwen needs a web page or docs it asks (in chat, or in
+`.mates/question.md` for a task from the Claude lead), and the lead fetches
+and answers. Every URL goes past a reviewer, so nothing in the repo can leak
+out through a request.
 
 Limits worth knowing:
 - **The repo itself is writable.** Bad code planted in a test or script runs as
