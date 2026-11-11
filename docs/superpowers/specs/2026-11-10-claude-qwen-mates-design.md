@@ -51,8 +51,14 @@ What `mates` is now:
   - Qwen-written code never runs as Wai before it is merged. The lead's
     check runs inside the same sandbox (`mates check`), and every git step on
     a Qwen worktree runs with hooks off.
-  - In mates panes Qwen's git metadata is read-only, apart from its own
-    worktree index, so it cannot move the lead's branch.
+  - In mates panes all of git is read-only for Qwen, so it cannot move the
+    lead's branch or point its worktree at another git folder. The lead's
+    git commands name the repo explicitly and never find it through Qwen's
+    folder.
+  - The check runs on a snapshot of Qwen's work, and the merge commits that
+    same snapshot.
+  - Each repo has its own OpenCode history; a Qwen pane cannot read another
+    repo's sessions.
   - Checks get their tools from a tracked `.mates/runtime.sh`, built outside
     the sandbox and mounted read-only (the Runtimes channel 1 below).
   - What merges is the tree that passed the check.
