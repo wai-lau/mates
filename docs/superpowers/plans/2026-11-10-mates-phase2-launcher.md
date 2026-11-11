@@ -204,12 +204,23 @@ side, which is `tmux split-window -h`. There is no grid, no re-tiling and no
   - the first Qwen pane: `split-window -h -t <lead> -l 50%`, so Claude keeps
     the left half;
   - later panes: `split-window -h -t <rightmost Qwen pane>`, side by side.
-  - It never moves or resizes existing panes.
+  - It never moves or resizes existing panes while you work.
+- **Widths survive restore (as spire-trio does):** `save()` records each pane's
+  width as a percent of the window (`#{pane_width}` / `#{window_width}`). After
+  restore has made all the splits, `restore_widths(panes, pcts)` resizes each
+  pane except the last (`resize-pane -x <pct>%`), which takes the rest. That
+  puts back what Wai set by hand; it is not re-tiling.
+- **A split that doesn't fit** (`split-window` fails: "no space for new pane")
+  makes `add` print "no room for another Qwen pane: widen the window or close
+  a pane". It changes nothing.
 
 - [ ] **Step 1: Failing tests:**
   - `test_first_qwen_splits_lead_half`: argv contains `-h`, `-t %lead`, `-l 50%`.
   - `test_next_qwen_splits_rightmost`: with Qwen panes `%2,%3`, the argv has
     `-h -t %3` and no `-l`.
+  - `test_restore_widths_reapplied` (stub tmux records `resize-pane -x 50%`,
+    `-x 20%` for 3 panes saved at 50/20/30, and nothing for the last).
+  - `test_add_no_room_message` (stub tmux exits 1 with "no space for new pane").
   - `test_real_tmux_side_by_side` (skipped without tmux): in a detached
     `new-session -x 240 -y 60`, one lead plus 2 Qwen panes all have the same
     top (side by side), and the lead is about 120 wide.
