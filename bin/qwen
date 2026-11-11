@@ -65,10 +65,11 @@ cd /
 
 # The one cleanup, on the one EXIT trap, set before anything it cleans exists: the relays
 # that were started, this run's sandbox dir, and this run's GPU lock.
-RUN="" RELAY="" CLIP="" LOCK=""
+RUN="" RELAY="" CLIP="" LOCK="" DTMP=""
 cleanup() {
   local p; for p in $RELAY $CLIP; do kill "$p" 2>/dev/null || true; done
   [ -z "$RUN" ] || rm -rf -- "$RUN"
+  [ -z "$DTMP" ] || rm -rf -- "$DTMP"
   [ -z "$LOCK" ] || rm -f -- "$LOCK"
   return 0
 }
@@ -223,32 +224,82 @@ refuse_secret() { # path -> status 0 if it must not go in
 EOF
 sed -i '\#^~/.claude/CLAUDE.md#d' "$CONF/copy-in"  # replaced by digests (it was refused as a secret path anyway)
 
-# digest <source file>: print the path of its cached short version, writing it with Claude if missing.
+# safe_ancestry <path>: status 0 if it and every folder above it is owned by us or root and
+# writable by no one else (mates/fsutil.py safe_ancestry, the same rule).
+safe_ancestry() {
+  local p u m me; me=$(id -u)
+  p=$(realpath -e -- "$1" 2>/dev/null) || return 1
+  while :; do
+    read -r u m < <(stat -c '%u %a' -- "$p" 2>/dev/null) || return 1
+    { [ "$u" = 0 ] || [ "$u" = "$me" ]; } && (( (8#$m & 8#022) == 0 )) || return 1
+    [ "$p" = / ] && return 0
+    p=$(dirname "$p")
+  done
+}
+
+# private_dir: print a fresh mode-700 folder under the user runtime folder (mates/fsutil.py
+# private_cwd's rule): not /tmp, where another account could plant files the call reads.
+private_dir() {
+  local b
+  for b in "${XDG_RUNTIME_DIR:-}" "/run/user/$(id -u)"; do
+    [ -n "$b" ] && [ -d "$b" ] && safe_ancestry "$b" && { mktemp -d "${b%/}/qwen-digest.XXXXXX"; return; }
+  done
+  return 1
+}
+
+# repo_claude_md <out>: copy the repo's CLAUDE.md to <out> without following any path Qwen
+# can write. In a worktree (every mates pane) it is the main checkout's committed file, read
+# from git objects; elsewhere $TOP/CLAUDE.md, only if it is a plain file (no link, no fifo).
+repo_claude_md() {
+  if [ "$GITADMIN" != "$GITDIR" ] && [ "$(dirname "$GITADMIN")" = "$GITDIR/worktrees" ]; then
+    [ "$(git --git-dir="$GITDIR" cat-file -t HEAD:CLAUDE.md 2>/dev/null)" = blob ] || return 1
+    git --git-dir="$GITDIR" cat-file blob HEAD:CLAUDE.md > "$1" 2>/dev/null
+  else
+    python3 -I -c '
+import os, stat, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+    sys.exit(1)
+with os.fdopen(fd, "rb") as f, open(sys.argv[2], "wb") as out:
+    out.write(f.read(1 << 20))' "$TOP/CLAUDE.md" "$1" 2>/dev/null
+  fi
+}
+
+# digest <private dir> <label> <source copy>: print the path of its cached short version,
+# writing it with Claude if missing. The source is already a private copy.
 digest() {
-  local src=$1 sum out tmp
+  local dir=$1 label=$2 src=$3 sum out
   [ -s "$src" ] || return 1
   mkdir -p "$CONF/digests"
   sum=$(sha256sum "$src" | cut -c1-16); out=$CONF/digests/$sum.md
   if [ ! -s "$out" ]; then
-    echo "qwen: writing a short digest of $src (one small Claude call; cached until it changes)" >&2
-    tmp=$(mktemp -d)  # outside $HOME: no CLAUDE.md gets auto-loaded into the digest call
-    if ! (cd "$tmp" && env -u ANTHROPIC_API_KEY claude -p --output-format text --tools "" --strict-mcp-config \
+    echo "qwen: writing a short digest of $label (one small Claude call; cached until it changes)" >&2
+    mkdir -p "$dir/cwd"  # empty and private: no CLAUDE.md or settings get auto-loaded into the call
+    if ! (cd "$dir/cwd" && env -u ANTHROPIC_API_KEY claude -p --output-format text --tools "" --strict-mcp-config \
           --setting-sources project --system-prompt-file "$HERE/qwen-digest-prompt.md" < "$src" > "$out.tmp" 2>/dev/null) \
        || [ ! -s "$out.tmp" ]; then
-      rm -rf "$tmp" "$out.tmp"; echo "qwen: digest failed for $src, continuing without it" >&2; return 1
+      rm -f "$out.tmp"; echo "qwen: digest failed for $label, continuing without it" >&2; return 1
     fi
-    rm -rf "$tmp"; mv "$out.tmp" "$out"
+    mv "$out.tmp" "$out"
   fi
   echo "$out"
 }
 
 # Put the global and repo digests in the sandbox home as ~/.qwen/{global,repo}.md.
 stage_digests() {
-  local home=$1 top=$2 d
+  local home=$1 d
   mkdir -p "$home/.qwen"
   cp "$HERE/qwen-sandbox.md" "$home/.qwen/sandbox.md"  # no internet, repo-only: so it doesn't try
-  d=$(digest "$HOME/.claude/CLAUDE.md") && cp "$d" "$home/.qwen/global.md"
-  d=$(digest "$top/CLAUDE.md") && cp "$d" "$home/.qwen/repo.md"
+  DTMP=$(private_dir) || { DTMP=""; echo "qwen: no private runtime folder (XDG_RUNTIME_DIR); no digests" >&2; return 0; }
+  cat -- "$HOME/.claude/CLAUDE.md" > "$DTMP/global.src" 2>/dev/null || true  # Wai's own file
+  d=$(digest "$DTMP" "~/.claude/CLAUDE.md" "$DTMP/global.src") && cp "$d" "$home/.qwen/global.md"
+  if repo_claude_md "$DTMP/repo.src"; then
+    d=$(digest "$DTMP" "the repo's CLAUDE.md" "$DTMP/repo.src") && cp "$d" "$home/.qwen/repo.md"
+  elif [ -e "$TOP/CLAUDE.md" ] || [ -L "$TOP/CLAUDE.md" ]; then
+    echo "qwen: $TOP/CLAUDE.md is not a plain committed file; no repo digest" >&2
+  fi
+  rm -rf -- "$DTMP"; DTMP=""
   return 0
 }
 
@@ -284,7 +335,7 @@ run_sandboxed() {
   fi
   RUN=$(mktemp -d "$STATE/run.XXXXXX")
   make_home "$RUN/home"
-  [ "$host" = - ] || stage_digests "$RUN/home" "$top"  # a check reads no digests: no Claude call
+  [ "$host" = - ] || stage_digests "$RUN/home"  # a check reads no digests: no Claude call
   if [ "$host" != - ]; then
     python3 -I "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" & RELAY=$!
     if command -v pbcopy >/dev/null; then

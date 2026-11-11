@@ -205,6 +205,30 @@ check "qwen (TUI start): planted modules in the repo do not run on the host" '[ 
 pkill -f "$T/stub/ollama"; sleep 0.2
 rm -rf "$P" "$T/planted-ran"
 
+# --- digests never follow a CLAUDE.md link (C2) --------------------------
+absent() { ! grep -rq "$1" "$2" 2>/dev/null; }
+echo "SECRET-LINE-42" > "$T/secret"
+stub claude "cat >> '$T/claude-in'; echo a-digest"
+DL=$T/dlead; mkrepo "$DL"; echo "lead rules: be careful" > "$DL/CLAUDE.md"
+git -C "$DL" add CLAUDE.md && git -C "$DL" commit -qm claude
+DW=$DL/.claude/worktrees/mates-qwen-1; git -C "$DL" worktree add -q -b mates/qwen-1 "$DW"
+ln -sf "$T/secret" "$DW/CLAUDE.md"
+rm -rf "$T/claude-in" "$T/config/qwen/digests"
+(cd "$DW" && QWEN_ROOT=$DW QWEN_GIT_RO=1 exec "$QWEN" >/dev/null 2>&1)
+check "worktree CLAUDE.md -> secret: the secret never reaches claude -p" 'absent SECRET-LINE-42 "$T/claude-in"'
+check "worktree CLAUDE.md -> secret: no cached digest holds it" 'absent SECRET-LINE-42 "$T/config/qwen/digests"'
+check "worktree: the repo digest comes from the lead's committed CLAUDE.md" 'grep -q "lead rules: be careful" "$T/claude-in"'
+PR=$T/plainrepo; mkrepo "$PR"; ln -s "$T/secret" "$PR/CLAUDE.md"
+rm -rf "$T/claude-in" "$T/config/qwen/digests"
+(cd "$PR" && exec "$QWEN" >/dev/null 2>&1)
+check "plain repo CLAUDE.md -> secret: refused, the secret never reaches claude -p" 'absent SECRET-LINE-42 "$T/claude-in"'
+rm -f "$PR/CLAUDE.md"; echo "plain rules" > "$PR/CLAUDE.md"; rm -rf "$T/claude-in" "$T/config/qwen/digests"
+(cd "$PR" && exec "$QWEN" >/dev/null 2>&1)
+check "plain repo with a regular CLAUDE.md: it is digested" 'grep -q "plain rules" "$T/claude-in"'
+stub claude 'exit 1'
+pkill -f "$T/stub/ollama"; sleep 0.2
+rm -rf "$DL" "$PR" "$T/claude-in"
+
 # --- GPU lock -----------------------------------------------------------
 rm -f "$T/ollama-started"
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1) & q=$!  # exec: $q is the qwen pid
