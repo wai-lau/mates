@@ -620,7 +620,12 @@ side, which is `tmux split-window -h`. There is no grid, no re-tiling and no
   7. `proposals` (routing rule, concurrency, model) are appended to that
      checkout's gitignored `OPEN-QUESTIONS.md` under `## Open`, never
      applied.
-- The timer runs daily at 23:30 with `Persistent=true` (user lingering is on).
+- The timer: `OnCalendar=*-*-* 04:30:00` with `Persistent=true` (user lingering is on).
+  Wai: "daily retro should run at 4:30 AM if the computer is on, if not it should run
+  as soon as it can". `Persistent=true` makes a missed 4:30 run fire at the next
+  start of the user systemd (WSL started, or the machine booted). With no `--date`,
+  the retro covers every day since the last retro file, up to yesterday, so a
+  late or skipped run loses nothing.
 
 - [ ] **Step 1: Failing tests** (stub claude):
   - `test_retro_skips_empty_day`
