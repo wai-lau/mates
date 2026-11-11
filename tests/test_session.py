@@ -165,6 +165,14 @@ def test_tag_pane_sets_and_clears_failed(tmp_path, monkeypatch):
         f"set-option -p -t %1 @mates {key}:lead", "set-option -p -u -t %1 @mates-failed"]
 
 
+@pytest.mark.parametrize("fail_on", ["@mates", "@mates-failed"])
+def test_tag_pane_raises_when_set_option_fails(tmp_path, monkeypatch, fail_on):
+    _stub_tmux(tmp_path, monkeypatch,
+               f'for a in "$@"; do [ "$a" = "{fail_on}" ] && {{ echo "no such pane" >&2; exit 1; }}; done\nexit 0\n')
+    with pytest.raises(RuntimeError, match="no such pane"):
+        session.tag_pane("%7", "/r", 3)
+
+
 @pytest.mark.skipif(not shutil.which("tmux"), reason="needs tmux")
 def test_tag_and_find_real_tmux(tmp_path, monkeypatch):
     sock = f"mates-test-{uuid.uuid4().hex[:8]}"

@@ -114,8 +114,10 @@ def find_lead(root):
 
 def tag_pane(pane_id, root, n):
     """Tag a pane as this repo's pane `n` ("lead" for Claude) and clear any failed mark."""
-    _tmux("set-option", "-p", "-t", pane_id, "@mates", f"{repo_key(root)}:{n}")
-    _tmux("set-option", "-p", "-u", "-t", pane_id, "@mates-failed")
+    for args in (("-t", pane_id, "@mates", f"{repo_key(root)}:{n}"), ("-u", "-t", pane_id, "@mates-failed")):
+        r = _tmux("set-option", "-p", *args)
+        if r.returncode != 0:  # an untagged live pane would later be marked closed
+            raise RuntimeError(f"tmux set-option {' '.join(args)} failed: {r.stderr.strip()}")
 
 
 def mark_closed(state, n):
