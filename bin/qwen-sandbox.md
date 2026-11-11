@@ -7,6 +7,14 @@
 - You can see only this repository. The user's home folder and other repos
   are not available.
 - Shell commands and file edits inside the repository are allowed.
+- Your standing instructions are copies in `~/.qwen/`, refreshed at every
+  start (editing them changes nothing):
+  - `~/.qwen/sandbox.md`: this file.
+  - `~/.qwen/global.md`: a short digest of the user's own rules for every repo.
+    The full file is not available here.
+  - `~/.qwen/repo.md`: a short digest of this repo's `CLAUDE.md` (absent if the
+    repo has none). The full `CLAUDE.md` is in the repository root; read it
+    when you need more detail than the digest gives.
 
 # Working with Claude (the lead, under `mates`)
 
