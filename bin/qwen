@@ -121,6 +121,7 @@ digest() {
 stage_digests() {
   local home=$1 top d
   mkdir -p "$home/.qwen"
+  cp "$HERE/qwen-sandbox.md" "$home/.qwen/sandbox.md"  # no internet, repo-only: so it doesn't try
   d=$(digest "$HOME/.claude/CLAUDE.md") && cp "$d" "$home/.qwen/global.md"
   top=$(git rev-parse --show-toplevel 2>/dev/null) && d=$(digest "$top/CLAUDE.md") && cp "$d" "$home/.qwen/repo.md"
   return 0
@@ -220,7 +221,7 @@ if [ "${1:-}" = aider ]; then
     num_ctx: $CTX
 EOF
   echo "qwen: $MODEL on http://$host, sandboxed (first reply is slow while the model loads)" >&2
-  run_sandboxed "$host" bash -c 'r=(); for f in ~/.qwen/global.md ~/.qwen/repo.md; do [ -f "$f" ] && r+=(--read "$f"); done
+  run_sandboxed "$host" bash -c 'r=(); for f in ~/.qwen/sandbox.md ~/.qwen/global.md ~/.qwen/repo.md; do [ -f "$f" ] && r+=(--read "$f"); done
     exec aider "${r[@]}" "$@"' aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
     --model-settings-file /home/qwen/.aider/qwen-model-settings.yml --no-check-update --analytics-disable "$@"
   exit
@@ -245,7 +246,7 @@ cfg='{
                               "limit": { "context": CTX_, "output": 16384 } } }
     }
   },
-  "instructions": ["/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
+  "instructions": ["/home/qwen/.qwen/sandbox.md", "/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny" }
 }'
 cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}
