@@ -3,6 +3,20 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-11, from the YTM mates lead
+
+### A pane with an open task comes back idle after a WSL restart
+
+After the 11:36 WSL crash, the pane holding YTM's open task came back (pane %7
+became %4) showing the old transcript and generating nothing. The reply in
+flight died with the server. mates still listed the task as open, under a new
+OpenCode session id, and has no resend or resume. With the input-box bug
+blocking `answer`, the only way out was discard, `/new`, then send again.
+
+- **Wanted:** on launch, find tasks whose pane has no reply running and no
+  finished reply, and say so. Offer a logged resend (same family as the
+  dirty-worktree re-brief below).
+
 ## 2026-11-11, from the spire mates lead
 
 ### send/answer refuse a used OpenCode pane
@@ -19,6 +33,8 @@ has already been used, even when the box is empty.
   the input box empty.
 - **Workaround:** paste `/new` by hand. That brings the placeholder back but
   throws away the chat.
+- **Also hit by YTM** twice: `mates answer 1` after the WSL restart, with the
+  box empty. `/new` lost the brief, so it took discard + resend.
 
 ### `mates wait` reads idle mid-task
 
@@ -34,8 +50,12 @@ several times.
 - **Made more likely by f31922e:** OpenCode used to drop a request after 5
   minutes without reply headers; it now waits up to an hour, and the wait writes
   nothing.
-- **Two possible fixes:** ask the private server whether a request for this
-  pane is queued or running, or raise STALE_S to match.
+- **Also hit by YTM** twice: `mates wait 1` printed `idle` while the pane showed
+  OpenCode's "esc interrupt" spinner. At about 5 tokens/s, one think or reply
+  runs past 300 s.
+- **Possible fixes:** treat the "esc interrupt" spinner in the pane as busy (the
+  YTM lead's monitor already re-waits on it); ask the private server whether a
+  request for this pane is queued or running; or raise STALE_S to match.
 
 ### A restart drops a runtime set by hand
 
