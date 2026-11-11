@@ -48,6 +48,27 @@ def safe_ancestry(path) -> bool:
         p = os.path.dirname(p)
 
 
+def private_dir(path):
+    """`path` as a mode-700 folder only we can write, up to `/` (made if missing). Raises
+    UnsafeDir when it, or a folder above it, is writable by another account or not ours:
+    then a file in it (a runtime, a check snapshot) could be another account's."""
+    p = os.path.abspath(path)
+    os.makedirs(p, mode=0o700, exist_ok=True)
+    st = os.stat(p, follow_symlinks=False)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise UnsafeDir(f"{p} is not a folder of ours")
+    os.chmod(p, 0o700)
+    if not safe_ancestry(p):
+        raise UnsafeDir(f"{p} or a folder above it is writable by another account")
+    return p
+
+
+def state_dir(*parts):
+    """A private folder under ${XDG_STATE_HOME:-~/.local/state}/mates/ (see private_dir)."""
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return private_dir(os.path.join(base, "mates", *parts))
+
+
 @contextlib.contextmanager
 def private_cwd():
     """A fresh, empty mode-700 folder for one automated `claude -p` call, removed after."""

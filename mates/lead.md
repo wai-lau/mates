@@ -24,7 +24,7 @@ do it yourself.
 ## Rules
 
 - Never run code from a Qwen worktree yourself: use `mates check`. A check
-  must not depend on git state (git inside it sees the worktree).
+  runs on a copy of the snapshot with no git repo around it: it must not use git.
 - Qwen's own "passed" is a claim; only `mates check` counts.
 - `mates merge N` needs `mates check`, then `mates diff N` on that same snapshot.
 - One open task at a time, unless the state says `parallel`.

@@ -5,6 +5,7 @@ import pwd
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -294,8 +295,10 @@ def test_qwen_cmd_marks_live_while_qwen_runs():
 # OpenCode DB with the session/message/part columns Task 0 recorded.
 
 class Mates:
-    def __init__(self, tmp_path, monkeypatch, capsys):
+    def __init__(self, tmp_path, monkeypatch, capsys, private):
         self.t, self.capsys = tmp_path, capsys
+        self.private = private  # XDG_STATE_HOME: check snapshots go to <it>/mates/checks
+        monkeypatch.setenv("XDG_STATE_HOME", str(private))
         self.root = _repo(tmp_path / "repo")
         self.key = session.repo_key(str(self.root))
         self.oc = tmp_path / "oc"
@@ -335,8 +338,8 @@ case $1 in
   opencode-dir) echo '{self.oc}' ;;
   host) [ -f '{tmp_path}/host' ] || exit 1; cat '{tmp_path}/host' ;;
   exec) shift; [ "$1" = -- ] && shift
-        printf '%s|%s|%s|%s|%s\\n' "$PWD" "$QWEN_ROOT" "$QWEN_GIT_RO" "${{QWEN_RUNTIME:-}}" "$*" >> '{tmp_path}/exec.log'
-        exec "$@" ;;
+        printf '%s|%s|%s|%s|%s|%s\\n' "$PWD" "${{QWEN_ROOT:-}}" "${{QWEN_GIT_RO:-}}" "${{QWEN_RUNTIME:-}}" "${{QWEN_CHECK_DIR:-}}" "$*" >> '{tmp_path}/exec.log'
+        cd "${{QWEN_CHECK_DIR:?}}" && exec "$@" ;;
 esac
 """)
         q.chmod(0o755)
@@ -451,8 +454,8 @@ if "[from Claude]" in open('{self.t}/buffers').read():
 
 
 @pytest.fixture
-def m(tmp_path, monkeypatch, capsys):
-    return Mates(tmp_path, monkeypatch, capsys)
+def m(tmp_path, monkeypatch, capsys, private_dir):
+    return Mates(tmp_path, monkeypatch, capsys, private_dir)
 
 
 def test_send_pastes_prefixed_message(m):
@@ -689,9 +692,11 @@ def test_check_records_tree_and_runs_sandboxed(m):
     tree = cli.snapshot(str(m.root), 1, t["base"])
     assert (t["checked_tree"], t["check_cmd"]) == (tree, "cat a.txt; echo ok")
     (line,) = (m.t / "exec.log").read_text().splitlines()
-    cwd, qroot, ro, rt, argv = line.split("|")
-    assert cwd == str(m.wt / ".mates" / "check" / tree)
-    assert (qroot, ro, rt, argv) == (str(m.wt), "1", "", "sh -c cat a.txt; echo ok")
+    cwd, qroot, ro, rt, chk, argv = line.split("|")
+    checks = m.private / "mates" / "checks"
+    assert cwd == "/" and Path(chk).parent == checks  # outside every worktree
+    assert (qroot, ro, rt, argv) == ("", "", "", "sh -c cat a.txt; echo ok")
+    assert list(checks.iterdir()) == []  # removed after the check
 
 
 def test_check_failure_records_nothing(m):
@@ -718,35 +723,59 @@ def test_check_ignores_export_ignore(m):
 def test_check_runs_on_snapshot(m):
     m.send()
     (m.wt / "a.txt").write_text("b\n")
-    old = m.wt / ".mates" / "check" / ("0" * 40)
-    old.mkdir(parents=True)  # an older check folder goes
-    assert m.run("check", 1, "--", "echo made > made.txt; mkdir -p d && echo x > d/f")[0] == 0
+    assert m.run("check", 1, "--", "grep -qx b a.txt && echo made > made.txt && mkdir -p d && echo x > d/f "
+                 "&& chmod a-w d")[0] == 0
     tree = m.task()["checked_tree"]
-    assert (m.wt / ".mates" / "check" / tree / "made.txt").exists()
-    assert not old.exists()
     assert not (m.wt / "made.txt").exists() and not (m.wt / "d").exists()
+    assert not (m.wt / ".mates" / "check").exists()
+    assert list((m.private / "mates" / "checks").iterdir()) == []  # a read-only folder is removed too
     assert cli.worktree_dirty(str(m.root), 1) == ["a.txt"]
     assert cli.snapshot(str(m.root), 1, m.task()["base"]) == tree
 
 
-def test_check_refuses_linked_check_folder(m):
+def test_check_ignores_qwen_config_in_parent_folders(m):
+    """Final review I1: a Qwen-written .mates/pytest.ini + conftest.py (never in the
+    snapshot or the diff) must not turn a failing check into a pass."""
+    m.send()
+    (m.wt / "test_x.py").write_text("def test_x():\n    assert False\n")
+    mates = m.wt / ".mates"
+    mates.mkdir(exist_ok=True)
+    (mates / "pytest.ini").write_text("[pytest]\n")
+    (mates / "conftest.py").write_text(
+        "import pytest\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    for i in items:\n"
+        "        i.add_marker(pytest.mark.skip)\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    session.exitstatus = 0\n")
+    code, out, _ = m.run("check", 1, "--", f"{sys.executable} -m pytest -q -p no:cacheprovider test_x.py")
+    assert code != 0, out
+    assert m.task()["checked_tree"] is None
+
+
+def test_check_never_writes_through_a_qwen_link(m):
     m.send()
     target = m.t / "elsewhere"
     target.mkdir()
     (target / "keep").write_text("keep\n")
     (m.wt / ".mates").mkdir(exist_ok=True)
     (m.wt / ".mates" / "check").symlink_to(target)
-    code, _, err = m.run("check", 1, "--", "true")
-    assert code != 0 and "refusing" in err
+    assert m.run("check", 1, "--", "true")[0] == 0
     assert sorted(p.name for p in target.iterdir()) == ["keep"]
+
+
+def test_check_refuses_shared_state_folder(m, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(m.t / "shared"))  # under /tmp: others can write there
+    m.send()
+    code, _, err = m.run("check", 1, "--", "true")
+    assert code != 0 and "refusing to check" in err and not (m.t / "exec.log").exists()
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
 def test_check_cannot_reach_home(m, monkeypatch):
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     monkeypatch.setenv("MATES_QWEN", str(Path(cli.__file__).resolve().parent.parent / "bin" / "qwen"))
-    monkeypatch.setenv("XDG_STATE_HOME", str(m.t / "state"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(m.t / "config"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(m.t / "config"))  # XDG_STATE_HOME stays m.private
     monkeypatch.setenv("QWEN_OPENCODE", "/bin/false")  # bin/qwen exits at start without one; exec never runs it
     m.send()
     outside = m.t / "outside"
@@ -754,7 +783,8 @@ def test_check_cannot_reach_home(m, monkeypatch):
     home = Path(os.environ["HOME"])
     home.mkdir(parents=True, exist_ok=True)
     for cmd in (f'echo x > "$HOME/canary" && echo x > {home}/canary', f"echo x > {outside}/canary",
-                f"ls {real_home}/.ssh", f"cat {real_home}/.claude/.credentials.json"):
+                f"ls {real_home}/.ssh", f"cat {real_home}/.claude/.credentials.json",
+                f"ls {m.wt}", f"ls {m.root}", '[ "$PWD" != /work/check ]'):
         code, out, _ = m.run("check", 1, "--", cmd)
         assert code != 0, (cmd, out)
     assert not (home / "canary").exists() and not (outside / "canary").exists()

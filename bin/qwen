@@ -45,6 +45,8 @@
 # env: QWEN_MODEL (default qwen3.8-27b-turbo-heretic:mtp-iq4xs), QWEN_CTX (default 65536),
 #      QWEN_OPENCODE (OpenCode binary), QWEN_GIT_RO=1 (read-only git),
 #      QWEN_ROOT=<dir> (the repo top to mount; the cwd must be inside it; mates sets it),
+#      QWEN_CHECK_DIR=<dir> (exec only: mount just <dir>, at /work/check, and no repo; it and
+#      every folder above it must be writable by no other account; `mates check` sets it),
 #      QWEN_RUNTIME=<dir> (bound read-only; KEY=VALUE lines of <dir>/env are set inside,
 #      a PATH= line goes in front of the sandbox PATH)
 set -euo pipefail
@@ -323,13 +325,24 @@ make_home() {
 run_sandboxed() {
   local host=$1; shift
   command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
-  local top gitdir ocdir cwd rt=""
-  resolve_repo; top=$TOP gitdir=$GITDIR; cwd=$CWD
-  ocdir=$(opencode_dir)
+  local top="" gitdir="" ocdir="" cwd rt="" chk="" mnt
+  if [ -n "${QWEN_CHECK_DIR:-}" ]; then
+    # A check (mates check): only this snapshot folder is mounted, at a neutral path, and
+    # no repo at all. Its parents in the sandbox are /work and /, so no file Qwen wrote
+    # (a pytest.ini or conftest.py above the snapshot) can change what the check does.
+    [ "$host" = - ] || die "QWEN_CHECK_DIR is for qwen exec only"
+    chk=$(rp "$QWEN_CHECK_DIR") && [ -d "$chk" ] || die "QWEN_CHECK_DIR is not a folder: $QWEN_CHECK_DIR"
+    forbidden_dir "$chk" && die "refusing to mount $chk (/, your home or above it, or a secret path)"
+    safe_ancestry "$chk" || die "QWEN_CHECK_DIR refused (it or a folder above it is writable by another account): $chk"
+    cwd=/work/check mnt=$chk
+  else
+    resolve_repo; top=$TOP gitdir=$GITDIR; cwd=$CWD mnt=$top
+    ocdir=$(opencode_dir)
+  fi
   if [ -n "${QWEN_RUNTIME:-}" ]; then
     rt=$(readlink -f -- "$QWEN_RUNTIME" 2>/dev/null) && [ -d "$rt" ] || die "QWEN_RUNTIME is not a folder: $QWEN_RUNTIME"
     case "$HOME/" in "$rt"/*) die "QWEN_RUNTIME refused (it holds your home folder): $rt" ;; esac
-    case "$top/" in "$rt"/*) die "QWEN_RUNTIME refused (it holds the repo, which would turn read-only): $rt" ;; esac
+    case "$mnt/" in "$rt"/*) die "QWEN_RUNTIME refused (it holds the repo, which would turn read-only): $rt" ;; esac
     [ "$rt" != / ] || die "QWEN_RUNTIME refused: /"
     refuse_secret "$rt" && die "QWEN_RUNTIME refused (secret path): $rt"
   fi
@@ -357,21 +370,24 @@ run_sandboxed() {
     --bind "$RUN/home" /home/qwen
     --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
     --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip
-    --bind "$RUN" /run/qwen --bind "$top" "$top")
+    --bind "$RUN" /run/qwen)
+  if [ -n "$chk" ]; then A+=(--bind "$chk" /work/check); else A+=(--bind "$top" "$top"); fi
   # OpenCode sessions: this repo's folder for agent runs; a check (host -) gets an empty one,
   # so check code cannot touch the session database mates reads.
   if [ "$host" = - ]; then A+=(--tmpfs /home/qwen/.local/share/opencode)
   else mkdir -p "$ocdir"; A+=(--bind "$ocdir" /home/qwen/.local/share/opencode); fi
-  case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
-  [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
-  [ -f "$gitdir/config" ] && A+=(--ro-bind "$gitdir/config" "$gitdir/config")
-  # Read-only git: bwrap's later bind wins, so these come after the $top and $gitdir binds.
-  # Any value but empty or 0 turns it on (fail closed).
-  case ${QWEN_GIT_RO:-0} in
-    0) ;;
-    *) A+=(--ro-bind "$gitdir" "$gitdir")
-       [ -f "$top/.git" ] && A+=(--ro-bind "$top/.git" "$top/.git") ;;
-  esac
+  if [ -n "$gitdir" ]; then
+    case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
+    [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
+    [ -f "$gitdir/config" ] && A+=(--ro-bind "$gitdir/config" "$gitdir/config")
+    # Read-only git: bwrap's later bind wins, so these come after the $top and $gitdir binds.
+    # Any value but empty or 0 turns it on (fail closed).
+    case ${QWEN_GIT_RO:-0} in
+      0) ;;
+      *) A+=(--ro-bind "$gitdir" "$gitdir")
+         [ -f "$top/.git" ] && A+=(--ro-bind "$top/.git" "$top/.git") ;;
+    esac
+  fi
   [ -n "$rt" ] && A+=(--ro-bind "$rt" "$rt")
   [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] && A+=(--ro-bind "$OPENCODE" /opt/opencode/opencode)
   local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do

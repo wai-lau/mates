@@ -26,3 +26,14 @@ def private_tmux():
     if sock.exists() and not _listening(name):
         sock.unlink()
     assert not sock.exists(), f"tmux socket left behind: {sock}"
+
+
+@pytest.fixture
+def private_dir():
+    """A fresh mode-700 folder that passes fsutil.safe_ancestry (under the user runtime
+    folder: tmp_path sits under /tmp, which others can write). Removed after."""
+    import shutil, tempfile
+    import fsutil
+    d = pathlib.Path(tempfile.mkdtemp(prefix="mates-test-", dir=fsutil._private_base()))
+    yield d
+    shutil.rmtree(d, ignore_errors=True)

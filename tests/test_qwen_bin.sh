@@ -194,6 +194,15 @@ check "QWEN_ROOT=\$HOME: refused" '[ "$rc" != 0 ]'
 mkdir -p "$T/rtwrap"; ( cd "$T/repo" && QWEN_RUNTIME=$T "$QWEN" exec -- true ) 2>/dev/null; rc=$?
 check "a runtime dir that holds the repo: refused" '[ "$rc" != 0 ]'
 
+# --- check mode: only the snapshot folder, at /work/check (I1) ----------
+CK=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-test-check.XXXXXX")
+echo snap > "$CK/s.txt"
+out=$(cd / && QWEN_CHECK_DIR=$CK "$QWEN" exec -- sh -c 'pwd; cat s.txt; echo w > made; test ! -e "$1" && test ! -e "$2" && echo nothing-else' sh "$T/repo" "$CK" 2>&1); rc=$?
+check "QWEN_CHECK_DIR: runs in /work/check on the snapshot, repo and host path not mounted" '[ "$rc" = 0 ] && [ "$out" = "$(printf "/work/check\nsnap\nnothing-else")" ] && [ -f "$CK/made" ]'
+(cd / && QWEN_CHECK_DIR=$T/repo "$QWEN" exec -- true) 2>/dev/null; rc=$?
+check "QWEN_CHECK_DIR under a folder others can write (/tmp): refused" '[ "$rc" != 0 ]'
+rm -rf "$CK"
+
 # --- host-side Python never imports from the repo (C1) -------------------
 P=$T/plant; mkrepo "$P"
 for m in socket subprocess json; do printf 'open(%s, "a").write("%s\\n")\n' "'$T/planted-ran'" "$m" > "$P/$m.py"; done

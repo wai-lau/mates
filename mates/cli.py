@@ -28,6 +28,7 @@ from pathlib import Path
 if __name__ == "__main__":  # panes.py imports cli: let it get this module, not a second copy
     sys.modules.setdefault("cli", sys.modules[__name__])
 
+import fsutil
 import gitsafe
 import guard
 import layout
@@ -780,38 +781,32 @@ def answer(args):
 
 # --- check, diff ---------------------------------------------------------------------------
 
-def _unpack(root, n, wt, tree, base):
-    """Write `tree` to `<wt>/.mates/check/<tree>/`, replacing any older check folder.
-    Built in a lead-owned temp folder and renamed in through folder fds: nothing is
-    written through a link Qwen could have planted. `checkout-index`, not `git
-    archive`, so a Qwen-edited `.gitattributes` export-ignore drops nothing."""
-    stage = Path(tempfile.mkdtemp(prefix=".mates-check-", dir=Path(root) / ".claude" / "worktrees"))
+def _rmtree(path):
+    """rmtree that also removes what a check made read-only."""
+    def again(fn, p, _exc):
+        with contextlib.suppress(OSError):
+            os.chmod(os.path.dirname(p), 0o700)
+            os.chmod(p, 0o700)
+            fn(p)
+    shutil.rmtree(path, onexc=again)
+
+
+@contextlib.contextmanager
+def _unpacked(root, n, tree, base):
+    """`tree` written to a fresh Wai-private folder under the mates state folder, outside
+    every worktree; removed after. No folder above it is Qwen's, so no file Qwen wrote
+    (a `.mates/pytest.ini`, a conftest.py in a parent) can change the check; `qwen exec`
+    mounts only this folder. `checkout-index`, not `git archive`, so a Qwen-edited
+    `.gitattributes` export-ignore drops nothing."""
+    stage = Path(tempfile.mkdtemp(prefix=f"{n}-", dir=fsutil.state_dir("checks")))
     try:
         with tempfile.TemporaryDirectory(prefix="mates-check-index-") as tmp:
             idx = Path(tmp) / "index"
             git_safe(root, n, "read-tree", tree, index=idx, attrs=base)
             git_safe(root, n, "checkout-index", "-a", "-f", f"--prefix={stage}/", index=idx, attrs=base)
-        d = _mates_fd(wt, create=True)
-        try:
-            try:
-                st = os.stat("check", dir_fd=d, follow_symlinks=False)
-            except FileNotFoundError:
-                st = None
-            if st is not None:
-                if not stat.S_ISDIR(st.st_mode):
-                    raise Unsafe(".mates/check is not a plain folder")
-                shutil.rmtree("check", dir_fd=d)
-            os.mkdir("check", 0o755, dir_fd=d)
-            c = os.open("check", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=d)
-            try:
-                os.rename(stage, tree, dst_dir_fd=c)
-            finally:
-                os.close(c)
-        finally:
-            os.close(d)
+        yield stage
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
-    return Path(wt) / ".mates" / "check" / tree
+        _rmtree(stage)
 
 
 def _check_args(args):
@@ -835,15 +830,17 @@ def check(args):
             base = git_lead(root, "merge-base", "HEAD", f"refs/heads/{q['branch']}").stdout.strip()
             task = q["task"] = _task(base, direct=True)
         tree = snapshot(root, n, task["base"])
-        folder = _unsafe(_unpack, root, n, q["worktree"], tree, task["base"])
+        env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO")}
+        if state.get("runtime"):
+            env["QWEN_RUNTIME"] = state["runtime"]
+        with _unpacked(root, n, tree, task["base"]) as folder:
+            env["QWEN_CHECK_DIR"] = str(folder)
+            r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd="/", env=env,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except GitError as e:
         die(f"git failed on Qwen worktree {n}: {e}")
-    env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME",)}
-    env.update(QWEN_ROOT=q["worktree"], QWEN_GIT_RO="1")
-    if state.get("runtime"):
-        env["QWEN_RUNTIME"] = state["runtime"]
-    r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd=folder, env=env,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except fsutil.UnsafeDir as e:
+        die(f"refusing to check: {e}")
     out = r.stdout.decode("utf-8", "replace").splitlines()
     print(f"check exit {r.returncode} on tree {tree[:12]}")
     for line in out[-CHECK_TAIL:]:
