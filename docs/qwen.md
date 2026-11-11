@@ -82,6 +82,11 @@ When Qwen needs a web page or docs it asks (in chat, or in
 and answers. Every URL goes past a reviewer, so nothing in the repo can leak
 out through a request.
 
+All panes share the private server's one slot, so a request can wait behind
+another pane's reply, which takes 6 to 11 minutes at about 5 tokens/s. OpenCode
+waits up to an hour for the reply to start (`headerTimeout`). Its default of
+5 minutes dropped queued requests (2026-11-11).
+
 Limits worth knowing:
 - **The repo itself is writable.** Bad code planted in a test or script runs as
   you the next time you run it outside the sandbox. Review diffs before running

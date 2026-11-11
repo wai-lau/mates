@@ -510,6 +510,8 @@ take_lock  # before the server starts, so hosaka cannot come back in between
 host=$(start_server)
 # Offline OpenCode: no update check, no model-catalog fetch (it ships a bundled copy), no plugin or
 # LSP downloads, no Claude Code auto-discovery (the two CLAUDE.md files are listed explicitly).
+# headerTimeout: every pane shares one server slot, so a request can wait behind another pane's
+# reply (6-11 minutes at ~5 tokens/s); OpenCode's default of 5 minutes dropped those requests.
 cfg='{
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
@@ -520,7 +522,7 @@ cfg='{
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "local",
-      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
+      "options": { "baseURL": "http://127.0.0.1:11434/v1", "headerTimeout": 3600000 },
       "models": { "MODEL_": { "name": "LABEL_", "tool_call": true, "reasoning": true,
                               "limit": { "context": CTX_, "output": 16384 } } }
     }
