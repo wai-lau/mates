@@ -24,21 +24,29 @@ What `mates` is now:
 - **Worktrees.** Each Qwen pane works in its own worktree of the repo, on
   branch `mates/qwen-<n>`, made from the lead's committed HEAD. The two never
   edit the same files.
-- **Delegating.** Claude types the request into a Qwen pane as Wai (tmux
-  send-keys), prefixed `[from Claude]`. Qwen's standing instructions
+- **Delegating.** Claude pastes the request into a Qwen pane as Wai (tmux
+  `load-buffer` + `paste-buffer -p`, then Enter; measured 2026-11-10 to arrive
+  as one message), prefixed `[from Claude]`. Qwen's standing instructions
   (`bin/qwen-sandbox.md`) tell it that, for such messages, it writes
   `.mates/done.md` when finished or `.mates/question.md` when unsure, and does
   not commit. Claude waits on either file. It answers a question in the pane,
-  or asks Wai when it is really Wai's call.
-- **Merging.** Claude reads the diff in Qwen's worktree and runs the checks
-  there. If they pass, it commits there and rebases onto its branch, then
+  or asks Wai when it is really Wai's call. (Measured 2026-11-10: on an
+  ambiguous task Qwen guessed instead of asking, and edited a test to match.
+  So nothing relies on Qwen asking: every brief names the exact symbols,
+  files and check, and any test-file change is flagged in the diff the lead
+  must read before merging.)
+- **Merging.** Claude reads the diff of Qwen's worktree and runs the check
+  inside the sandbox on a snapshot of it (`mates check`). If it passes, Claude
+  commits that snapshot on its branch's HEAD (Qwen cannot commit), then
   fast-forwards its branch and resets Qwen's worktree to the new HEAD.
   Otherwise it types notes back. After two failed tries, Claude does the task
   itself. Work Wai did with Qwen directly is merged the same way, on request.
 - **Save and restore, as spire-trio does.** The first `mates` in a repo
   starts 1 Claude and 1 Qwen. Later runs restore the same Claude conversation
   and every Qwen pane that was open, each resuming its OpenCode session. The
-  state is saved on every change, in `~/.claude/mates/sessions/<repo>.json`.
+  state is saved on every change, in `~/.claude/mates/sessions/<repo-key>.json`
+  (`<repo-key>` is the repo root path with every character outside
+  `[A-Za-z0-9]` replaced by `-`, as `~/.claude/projects` does).
   `mates --fresh` starts over.
 - **Routing, audit log, retro: unchanged.** Every routed task gets a log line,
   Claude-only tasks too, with questions and answers. The retro reads the log.
