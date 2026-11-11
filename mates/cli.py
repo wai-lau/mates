@@ -718,18 +718,20 @@ def wait(args):
         if hit[1] == "failed":
             print("failed")
             return 0
-        for name, word in (("question.md", "question"), ("done.md", "done")):
-            text = _unsafe(read_protocol, q["worktree"], name)
-            if text is not None:
-                print(f"{word}: {text}")
-                return 0
         sid = task.get("opencode_session") if task else session.opencode_session(q["worktree"], db)
         if task and sid is None:  # the row appears only with the first message (Task 0)
             new = session.opencode_session(q["worktree"], db)
             if new and new != q.get("opencode_session"):
                 sid = task["opencode_session"] = q["opencode_session"] = new
                 _patch_task(root, a.n, task["id"], opencode_session=new)
-        if sid and session.opencode_state(sid, db, since) == "idle":
+        # A protocol file counts only once OpenCode has stopped (check's busy rule): Qwen
+        # writes done.md and then keeps replying for a while, and check refuses meanwhile.
+        found = [(word, text) for name, word in (("question.md", "question"), ("done.md", "done"))
+                 if (text := _unsafe(read_protocol, q["worktree"], name)) is not None]
+        if found and not _busy(q, db):
+            print(f"{found[0][0]}: {found[0][1]}")
+            return 0
+        if not found and sid and session.opencode_state(sid, db, since) == "idle":
             print("idle")
             return 0
         if time.time() >= deadline:
@@ -911,8 +913,26 @@ def _lead_dirty(root):
     return paths
 
 
+SUBJECT_MAX = 72
+
+
+def commit_subject(n, summary):
+    """`mates qwen-N: <first sentence of summary>`, cut at a word boundary to at most
+    SUBJECT_MAX characters in all, with `…` when cut."""
+    prefix = f"mates qwen-{n}: "
+    text = " ".join((summary or "").split())
+    text = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+    room = SUBJECT_MAX - len(prefix)
+    if len(text) > room:
+        cut = text[:room - 1]
+        if " " in cut and not text[room - 1].isspace():
+            cut = cut.rsplit(" ", 1)[0]
+        text = cut.rstrip(" ,;:-") + "…"
+    return prefix + text
+
+
 def merge(args):
-    p = _parser("merge", 'mates merge N [-m "<summary>"]')
+    p = _parser("merge", 'mates merge N [-m "<commit message>"]')
     p.add_argument("n", type=int)
     p.add_argument("-m", dest="summary")
     a = p.parse_args(args)
@@ -925,7 +945,7 @@ def merge(args):
     checked = task["checked_tree"]
     if task.get("diffed_tree") != checked:
         die(f"run mates diff {a.n} first: the lead must read the diff of exactly what merges")
-    summary = a.summary or task.get("summary")
+    summary = a.summary.splitlines()[0] if a.summary else task.get("summary")
     if task.get("direct") and not a.summary:
         die(f"this is Wai's own work with Qwen: mates merge {a.n} -m \"<summary>\"")
     if git_lead(root, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:
@@ -937,7 +957,8 @@ def merge(args):
     if clash:
         die("the lead checkout has uncommitted changes in paths this merge touches: " + ", ".join(clash[:10]))
     try:
-        commit = git_lead(root, "commit-tree", checked, "-p", base, "-m", f"mates qwen-{a.n}: {summary}").stdout.strip()
+        message = a.summary or commit_subject(a.n, summary)
+        commit = git_lead(root, "commit-tree", checked, "-p", base, "-m", message).stdout.strip()
         git_lead(root, "merge", "--ff-only", "-q", commit, attrs=base)
     except GitError as e:
         die(f"merge failed: {e}", 1)
@@ -945,7 +966,7 @@ def merge(args):
     log_attempt(root, q, "accepted")
     q["task"] = None
     save_state(root, state)
-    print(f"merged Qwen pane {a.n}: {commit[:12]} mates qwen-{a.n}: {summary}")
+    print(f"merged Qwen pane {a.n}: {commit[:12]} {message.splitlines()[0]}")
     try:
         now_tree = snapshot(root, a.n, base)
         if now_tree != checked:

@@ -902,7 +902,7 @@ def test_merge_without_task_uses_merge_base(m):
     assert code != 0 and "-m" in err
     code, _, err = m.run("merge", 1, "-m", "rename the helper")
     assert code == 0, err
-    assert m.git("log", "-1", "--format=%s") == "mates qwen-1: rename the helper"
+    assert m.git("log", "-1", "--format=%s") == "rename the helper"
     assert m.log()[0]["summary"] == "rename the helper"
 
 
@@ -1599,3 +1599,46 @@ def test_send_accepts_fresh_pane_box_mid_screen(m):
     _capture(m, "  logo\n" * 24 + '┃  Ask anything… "Fix broken tests"\n' + "\n" * 25)
     m.send()
     assert m.buffers()[-1].startswith("[from Claude] ")
+
+
+def test_commit_subject_cut_at_word_boundary():
+    brief = ("Add a line to README.md saying exactly one line: `OPEN-QUESTIONS.md is gitignored` "
+             "and nothing else. Then stop.")
+    subj = cli.commit_subject(1, brief)
+    assert len(subj) <= 72 and subj.startswith("mates qwen-1: Add a line") and subj.endswith("…")
+    body = subj[len("mates qwen-1: "):-1]
+    assert brief.startswith(body) and brief[len(body)] in " :,;"  # ends where a word ends
+    assert cli.commit_subject(2, "Fix add(). Then run the tests.") == "mates qwen-2: Fix add()."
+    assert cli.commit_subject(1, "short") == "mates qwen-1: short"
+
+
+def test_merge_message_from_brief_or_m(m):
+    long = "Make a.txt say b and then explain in great detail why every single word of it matters so much"
+    m.send(long)
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0
+    subj = m.git("log", "-1", "--format=%s")
+    assert subj == cli.commit_subject(1, long) and len(subj) <= 72 and subj.endswith("…")
+    m.send("next")
+    _checked_and_diffed(m, "c\n")
+    assert m.run("merge", 1, "-m", "fix(a): a.txt says c\n\nwhy: the check wanted c")[0] == 0
+    assert m.git("log", "-1", "--format=%B") == "fix(a): a.txt says c\n\nwhy: the check wanted c"
+    assert m.log()[-1]["summary"] == "fix(a): a.txt says c"
+
+
+def test_wait_done_only_when_idle(m):
+    """Qwen writes done.md and keeps replying a while: wait holds until OpenCode stops,
+    so the check right after is not refused as busy."""
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    t = m.task()["paste_ts"]
+    m.msg("ses_1", "user", t + 0.1)
+    m.msg("ses_1", "assistant", t + 0.2, completed_s=t + 0.3, finish="tool-calls")  # still mid-reply
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "done.md").write_text("a.txt: fixed\ntest status: passed\n")
+    code, out, _ = m.run("wait", 1, "--timeout", "0.3")
+    assert (code, out) == (1, "timeout\n")
+    m.msg("ses_1", "assistant", t + 0.4, completed_s=t + 0.5, finish="stop")
+    code, out, _ = m.run("wait", 1, "--timeout", "1")
+    assert code == 0 and out.startswith("done: a.txt: fixed")
+    assert m.run("check", 1, "--", "true")[0] == 0

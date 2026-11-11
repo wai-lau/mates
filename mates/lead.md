@@ -38,11 +38,12 @@ do it yourself.
    or `failed` and exits 0; `timeout` exits 1, so an until-loop keeps waiting).
    On `question:`, `mates answer N "<answer>"`.
 3. `mates check N -- <cmd>`, then `mates diff N` (the diff of what was checked).
-4. `mates merge N`, or `mates answer N --sendback "<notes>"`. If `merge` says
+4. `mates merge N -m "<commit message>"` (write the message; without `-m` it is
+   the brief's first sentence, cut), or `mates answer N --sendback "<notes>"`. If `merge` says
    the lead moved, `mates sync N` and check again.
 
 - Wai's own work with Qwen merges when she asks: `mates check N -- <cmd>`,
-  `mates diff N`, then `mates merge N -m "<summary>"`.
+  `mates diff N`, then `mates merge N -m "<commit message>"`.
 - Two failed tries: `mates discard N` and do the task yourself.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
 - `mates list` shows the panes; `mates log` the audit log. `mates add` opens
