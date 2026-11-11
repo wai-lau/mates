@@ -108,8 +108,12 @@ nothing to guess.
   `PARALLEL_DEFAULT = False` in `session.py`; the builder sets it to `True`
   only if `docs/mates-probe.md` records the two-pane test as passed. Wai
   can talk to any pane at any time; this limits only Claude's `send`.
-- **Messages:** Claude's messages to Qwen start with `[from Claude]`. The
-  protocol lives in `bin/qwen-sandbox.md`.
+- **Messages:** Claude's messages to Qwen start with `[from Claude]` and end
+  with this exact suffix, on its own line (`ASK_SUFFIX` in `cli.py`):
+  `(If any name, file or expected result above is not stated exactly, write your question to .mates/question.md and stop before editing. Do not edit tests unless told.)`
+  Measured: without it Qwen guessed on an ambiguous task; with it Qwen wrote
+  `.mates/question.md` and edited nothing. The rest of the protocol lives in
+  `bin/qwen-sandbox.md`.
 - **Two failed tries on a task:** Claude does it itself, and logs it
   `escalated`.
 - **Audit log:** `~/.claude/mates/log.jsonl` via `logrec`, one line per
@@ -201,7 +205,9 @@ Every later task leans on these. Run them in a scratch repo with plain
   first request is about 8K tokens.
 - [x] **Question channel** (measured 2026-11-10, `docs/mates-probe.md`): on
   an ambiguous `[from Claude]` task Qwen did **not** write
-  `.mates/question.md`; it guessed and also edited a test to match. Nothing
+  `.mates/question.md`; it guessed and also edited a test to match. Re-measured with the `ASK_SUFFIX` at the end of the message: Qwen wrote
+  `.mates/question.md` ("What is the intended name...") and edited nothing.
+  The suffix stays; the exact-brief rule and the test-file flag stay too. Nothing
   relies on Qwen asking: `lead.md` makes every brief name the exact symbols,
   files and check, and `mates diff` flags any test-file change
   (`guard_flags` already has `test-file`, `test-skipped`,
@@ -587,7 +593,7 @@ side, which is `tmux split-window -h`. There is no grid, no re-tiling and no
      pane with the Task 4 wrapper and plain `qwen` instead), so the task
      gets a clean context. `--continue` skips this, for a task that builds
      on what Wai and Qwen just discussed.
-  6. `paste(pane, "[from Claude] <text>")`.
+  6. `paste(pane, "[from Claude] <text>\n" + ASK_SUFFIX)`.
   7. Only now look the session up (its row appears with the first message,
      Task 0): poll `opencode_session(worktree, db)` for up to 30 s until it
      differs from the stored one, and store the new id in the entry and the
@@ -603,7 +609,7 @@ side, which is `tmux split-window -h`. There is no grid, no re-tiling and no
   It's built for a Monitor until-loop.
 - `mates answer N [--sendback] "<text>"` (`--sendback` is a plain flag;
   the text is the positional) deletes **both** files,
-  `paste(pane, "[from Claude] <text>")` into the same OpenCode session, and
+  `paste(pane, "[from Claude] <text>\n" + ASK_SUFFIX)` into the same OpenCode session, and
   records the Q&A in the task. With `--sendback` it counts an attempt,
   `log_attempt(..., "sent-back")`, sets `attempt_ts`, and clears
   `checked_tree` and `diffed_tree`.
