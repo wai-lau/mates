@@ -2,6 +2,79 @@
 
 Date: 2026-11-10. Status: draft for Wai's review.
 
+## Revision 2026-11-10 (evening): two-pane mates — this section wins
+
+Wai, verbatim:
+- "mates opens two panes (at first) / claude code left / qwen opencode right /
+  I want to be able to talk to qwen myself if I want to, otherwise claude
+  messages opencode as me"
+- "qwen own worktree, claude merges"
+- "take a look at spire-trio / if I haven't run `mates` before, run it with
+  1 qwen and 1 claude / if I have, restore the claude with N agents that were
+  previously running"
+- the Qwen-to-Claude question channel, plus "make sure qwen knows this"
+- "add in the conventions that qwen has no internet, just so that it doesn't try"
+- the 20-task pilot was skipped ("c")
+
+What `mates` is now:
+
+- **Panes.** Claude Code (the lead, a normal Claude session) on the left half.
+  One or more `qwen` panes on the right: OpenCode on the local model, in the
+  same bwrap sandbox as the `qwen` command. Wai can type into any pane.
+- **Worktrees.** Each Qwen pane works in its own worktree of the repo, on
+  branch `mates/qwen-<n>`, made from the lead's committed HEAD. The two never
+  edit the same files.
+- **Delegating.** Claude pastes the request into a Qwen pane as Wai (tmux
+  `load-buffer` + `paste-buffer -p`, then Enter; measured 2026-11-10 to arrive
+  as one message), prefixed `[from Claude]`. Qwen's standing instructions
+  (`bin/qwen-sandbox.md`) tell it that, for such messages, it writes
+  `.mates/done.md` when finished or `.mates/question.md` when unsure, and does
+  not commit. Claude waits on either file. It answers a question in the pane,
+  or asks Wai when it is really Wai's call. (Measured 2026-11-10: on an
+  ambiguous task Qwen guessed instead of asking, and edited a test to match.
+  So nothing relies on Qwen asking: every brief names the exact symbols,
+  files and check, and any test-file change is flagged in the diff the lead
+  must read before merging.)
+- **Merging.** Claude reads the diff of Qwen's worktree and runs the check
+  inside the sandbox on a snapshot of it (`mates check`). If it passes, Claude
+  commits that snapshot on its branch's HEAD (Qwen cannot commit), then
+  fast-forwards its branch and resets Qwen's worktree to the new HEAD.
+  Otherwise it types notes back. After two failed tries, Claude does the task
+  itself. Work Wai did with Qwen directly is merged the same way, on request.
+- **Save and restore, as spire-trio does.** The first `mates` in a repo
+  starts 1 Claude and 1 Qwen. Later runs restore the same Claude conversation
+  and every Qwen pane that was open, each resuming its OpenCode session. The
+  state is saved on every change, in `~/.claude/mates/sessions/<repo-key>.json`
+  (`<repo-key>` is the repo root path with every character outside
+  `[A-Za-z0-9]` replaced by `-`, as `~/.claude/projects` does).
+  `mates --fresh` starts over.
+- **Routing, audit log, retro: unchanged.** Every routed task gets a log line,
+  Claude-only tasks too, with questions and answers. The retro reads the log.
+- **Retired (code stays on the branch):** the spawn queue, the blind Qwen
+  verifier, red-on-base enforcement, and workers running as user `claude`. The
+  right panes run as Wai inside bwrap. Claude's review of the diff and its own
+  check run are the gate.
+- **Still in force from below, after the adversarial review (late
+  2026-11-10):**
+  - Qwen-written code never runs as Wai before it is merged. The lead's
+    check runs inside the same sandbox (`mates check`), and every git step on
+    a Qwen worktree runs with hooks off.
+  - In mates panes all of git is read-only for Qwen, so it cannot move the
+    lead's branch or point its worktree at another git folder. The lead's
+    git commands name the repo explicitly and never find it through Qwen's
+    folder.
+  - The check runs on a snapshot of Qwen's work, and the merge commits that
+    same snapshot.
+  - Each repo has its own OpenCode history; a Qwen pane cannot read another
+    repo's sessions.
+  - Checks get their tools from a tracked `.mates/runtime.sh`, built outside
+    the sandbox and mounted read-only (the Runtimes channel 1 below).
+  - What merges is the tree that passed the check.
+  - One open task at a time until two panes are measured to work at once.
+  - The hosaka lock, the cost fields in the log, and the guard flags.
+  - The unattended retro sees no Qwen-written text, has no tools, and `mates`
+    writes and checks its lessons.
+
 ## Intent
 
 Wai is on a Claude Max subscription. The goal is to **get more work out of the
@@ -297,6 +370,41 @@ both `wai` and `claude`.
 - **Environment.** Started from an empty environment plus a short allowlist
   (`PATH`, `HOME` pointing at the sandbox home, `TERM`, the Ollama settings).
   No tokens, and `MATES_LEAD` is not passed on.
+- **Runtimes (Wai, 2026-11-10: "ensure that any necessary files are either
+  in the worktree repo or (can be) injected by lauching claude").** The
+  sandbox hides `/home/wai`, which takes with it a repo's `.venv`,
+  `node_modules`, and tools under `~/.local`. Nothing a check needs may
+  depend on that folder. A check gets what it needs through one of two
+  channels, and through no other:
+  1. **From the repo.** A tracked `.mates/runtime.sh` at the base commit.
+     `mates` runs it as `wai`, outside the sandbox, with network, and
+     points it at a runtime directory it should fill. Example:
+     `UV_PROJECT_ENVIRONMENT=$MATES_RUNTIME/venv uv sync --frozen`, with uv's
+     Python and cache also under `$MATES_RUNTIME`.
+     - The script comes from the base commit, never from the worker's tree,
+       so a worker cannot change it.
+     - The result is cached in `/srv/mates/runtimes/<repo>/<hash>/`, where
+       the hash covers the script plus the lockfiles it names. It is built
+       once and reused by every later task until the lockfiles change.
+     - It is mounted read-only in the sandbox, at the same absolute path it
+       was built at, so paths baked into a venv still resolve. The script's
+       `PATH` and env additions come with it.
+  2. **Injected at launch.** `mates spawn --inject <path>[:<dest>]` (and a
+     default list in the lead's launch config). `mates` copies the path, as
+     `wai`, into the task's read-only `ctl/inject/` and mounts it at
+     `<dest>`.
+     - **Refused** for anything under `~/.ssh`, `~/.gnupg`, `~/.secrets`,
+       `~/.claude`, `~/.config/gh`, any `.credentials*`, `.env*`, `*.pem`,
+       or `*.key`, and anything holding a token the guard's secret scan
+       finds.
+     - Every injection is logged with its path and hash.
+
+  The runtime is built outside the sandbox, and is therefore trusted code.
+  That is why it may only come from the committed repo or from the lead's
+  launch, never from the worker. If a check still finds a tool missing,
+  red-on-base reports `runtime-missing` with the command that failed, so
+  the lead can add the runtime script or an injection before spawning
+  again.
 - **Version.** The worker's Claude Code is pinned to the tested version with
   auto-update off. A new version is re-tested before workers use it.
 - **No fallback.** If the sandbox cannot start, `mates spawn` fails. It never

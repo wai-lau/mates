@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Clipboard stand-in inside the qwen sandbox, installed as `xclip` and `clip.exe`.
+"""Clipboard stand-in inside the qwen sandbox, installed as `xclip`.
 
-OpenCode copies with xclip; aider (pyperclip) sees WSL and copies with clip.exe.
-Both get this: stdin goes over /run/qwen/clip.sock to `qwen-relay clip` outside,
-which runs pbcopy. Reading the clipboard (xclip -o) is refused: paste with the
+OpenCode copies with xclip and gets this: stdin goes over /run/qwen/clip.sock
+to `qwen-relay clip` outside, which runs pbcopy. Reading the clipboard (xclip -o) is refused: paste with the
 terminal instead.
 """
 import socket

@@ -1,13 +1,15 @@
 # Local LLM Learning
 
 Local LLM inference on this machine: what runs, how to use it, and what was
-tried. Updated 2026-11-10.
+tried. Updated 2026-11-11.
 
 - Daily use of the local coding model: [`docs/qwen.md`](docs/qwen.md)
 - Every model tried, with measurements: [`docs/models.md`](docs/models.md)
-- The Claude-led crew with local Qwen workers ("mates"): spec in
-  [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md),
-  build on branch `mates-phase1` (Phase 1 of 2, gate still open)
+- `mates` (`bin/mates`): Claude Code as the lead in the left tmux pane, sandboxed
+  Qwen (OpenCode) panes on the right, each in its own worktree; the lead sends,
+  checks, diffs and merges their work. Spec:
+  [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md)
+  (the two-pane revision)
 - Retired tools and finished plans: [`ARCHAEOLOGY.md`](ARCHAEOLOGY.md)
 - The TTS server (hosaka): [`docs/superpowers/specs/2026-06-22-local-tts-server-design.md`](docs/superpowers/specs/2026-06-22-local-tts-server-design.md)
 
@@ -43,6 +45,7 @@ left alone. Qwen uses both GPUs, so starting it stops hosaka TTS, and
 
 ```
 qwen                 # OpenCode on the local model, sandboxed, in the current git repo
+qwen exec -- <cmd>   # run a command in the sandbox (no server, no model), return its exit code
 qwen server          # start or find the private server, print its address
 qwen stop            # stop the private server, restart hosaka TTS
 qwen sandbox-test    # print what the sandbox can and cannot reach
@@ -102,16 +105,19 @@ from the model's Modelfile.
 | `~/bin/qwen` | symlink to `bin/qwen` here |
 | `~/.config/qwen/copy-in` | files copied into the sandbox at each launch |
 | `~/.config/qwen/digests/` | short digests of CLAUDE.md files, by hash |
-| `~/.local/state/qwen/` | server log, OpenCode sessions |
+| `~/bin/mates` | symlink to `bin/mates` here |
+| `~/.local/state/qwen/` | server log, OpenCode sessions (one folder per repo), GPU locks |
 | `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
-| `~/.claude/mates/` | mates pilot state (log, measurements, transcripts; local only) |
-| `/srv/mates/` | mates worker sandbox area (shared with user `claude`) |
+| `~/.claude/mates/` | mates state per repo and the task log (local only) |
+| `~/.local/state/mates/` | mates runtimes and check snapshots (only Wai can write there) |
+| `/srv/mates/` | the old pilot's shared area; no longer used, can be deleted |
 
 ## Cleanup if abandoning
 
 ```
 qwen stop
 ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs
-rm -rf ~/.local/opt/opencode-* ~/.config/qwen ~/.local/state/qwen
+rm -rf ~/.local/opt/opencode-* ~/.config/qwen ~/.local/state/qwen ~/.local/state/mates ~/.claude/mates
+rm ~/bin/mates
 rm ~/bin/qwen
 ```

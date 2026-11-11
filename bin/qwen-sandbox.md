@@ -1,11 +1,14 @@
 # Environment
 - No internet: installs, git fetch/pull/push, curl and web fetch all fail. Don't try. If something is missing, say so and stop.
+- Never install anything; if a tool is missing, write `could not run`.
 - Need a web page or docs: ask for it (in `.mates/question.md` if the task is `[from Claude]`), then stop.
 - Only this repo is visible. Shell and edits inside it are allowed.
 - Instructions: `~/.qwen/global.md` (user rules, digest), `~/.qwen/repo.md` (digest of the repo's `CLAUDE.md`; the full file is in the repo root).
 
 # Messages starting `[from Claude]`
-- Done: write a one-line summary (what changed, tests pass?) to `.mates/done.md`, then stop.
+- Done: write `.mates/done.md`, two lines, then stop:
+  1. what changed (the files);
+  2. the test status, one of `passed`, `failed: <why>`, `could not run: <why>`.
 - Unsure or stuck: write the question to `.mates/question.md`, then stop.
-- Don't commit.
+- Don't commit. Git may be read-only here: `git status` and `git diff` work; add, commit, checkout and branch do not.
 Other messages are from Wai: answer in chat.

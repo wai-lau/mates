@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# mates: Claude Code (the lead) on the left, sandboxed Qwen (OpenCode) panes side by side
+# on the right, each Qwen pane in its own worktree. Run it in a git repo.
+#
+#   mates [--fresh] [-- <claude args>]
+#       first run: one Claude and one Qwen. Later runs restore the same Claude
+#       conversation and every Qwen pane that was open. --fresh starts a new
+#       conversation and one Qwen pane (worktrees and their work are kept).
+#       A live mates window for this repo is switched to instead. Outside tmux
+#       it opens a tmux session; in a window with other panes, a new window.
+#   mates <command> ...   the lead's tools (mates/cli.py); most need MATES_LEAD=1
+#
+# env: MATES_CLAUDE (default claude), MATES_QWEN (default the qwen next to this script)
+set -uo pipefail
+SELF=$(readlink -f "$0")
+MATES_DIR=$(dirname "$(dirname "$SELF")")/mates
+CLI=$MATES_DIR/cli.py
+die() { echo "mates: $*" >&2; exit 1; }
+
+case "${1:-}" in -h|--help) sed -n '2,13p' "$SELF"; exit 0 ;; esac
+
+# Never from a Qwen worktree: its files (CLAUDE.md, .claude/settings.json hooks) are Qwen's,
+# and mates or claude started there would run them as Wai. Checked on the path before git runs.
+not_qwen() { case "$1/" in */.claude/worktrees/mates-qwen-*/*) return 1 ;; esac; }
+QWEN_REFUSAL="refusing to run inside a Qwen worktree (Qwen wrote these files); cd to the lead repo first"
+not_qwen "$(pwd -P)" || die "$QWEN_REFUSAL"
+# The retro reads only ~/.claude/mates and the mates checkout, never the folder it ran from:
+# it runs anywhere (the systemd timer starts it in the home folder, git repo or not).
+[ "${1:-}" = retro ] && exec python3 "$CLI" "$@"
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repo"
+GITDIR=$(git rev-parse --absolute-git-dir 2>/dev/null) || die "not in a git repo"
+not_qwen "$ROOT" || die "$QWEN_REFUSAL"
+case "$GITDIR/" in */worktrees/mates-qwen-*/*) die "$QWEN_REFUSAL" ;; esac
+
+case "${1:-}" in
+  ""|-*) ;;
+  *) exec python3 "$CLI" "$@" ;;
+esac
+ARGS=("$@") fresh=""
+for a in "$@"; do
+  case $a in --) break ;; --fresh) fresh=1 ;; *) die "unknown argument '$a' (try --help)" ;; esac
+done
+KEY=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import session; print(session.repo_key(sys.argv[2]))' \
+  "$MATES_DIR" "$ROOT") || die "cannot work out the repo key"
+
+tm() { tmux "$@" 2>/dev/null; }
+self_cmd() { # this script again as a tmux pane command (a new pane gets the server's env, not ours)
+  local v pre=""
+  for v in MATES_CLAUDE MATES_QWEN; do [ -n "${!v:-}" ] && pre+="$v=$(printf %q "${!v}") "; done
+  printf 'exec env %s%q' "$pre" "$SELF"; [ $# -gt 0 ] && printf ' %q' "$@"; echo
+}
+tagged_window() { tm list-windows -a -F $'#{window_id}\t#{@mates-window}' | awk -F'\t' -v k="$KEY" '$2 == k { print $1; exit }'; }
+lead_pane() { tm list-panes -a -F $'#{pane_id}\t#{@mates}' | awk -F'\t' -v k="$KEY:lead" '$2 == k { print $1; exit }'; }
+lead_live() { [ -n "$1" ] && [ "$(tm display -p -t "$1" '#{pane_dead}#{@mates-lead-live}')" = 01 ]; }
+go_to() { # show window $1 and stop; $2 says why
+  local s; s=$(tm display -p -t "$1" '#{session_name}')
+  tm select-window -t "$1"
+  echo "mates: ${2:-already running for this repo}, in tmux session $s" >&2
+  [ -n "${TMUX:-}" ] && { tm switch-client -t "$s"; exit 0; }
+  exec tmux attach -t "$s"
+}
+
+run_lead() { # this pane becomes the lead: cli.py starts the Qwen panes, then claude runs here as our child
+  local out rc argv
+  out=$(mktemp) || die "mktemp failed"
+  python3 "$CLI" launch "$@" > "$out"; rc=$?
+  if [ "$rc" != 0 ]; then
+    rm -f "$out"; echo "mates: launch failed ($rc); a shell instead" >&2; exec "${SHELL:-bash}"
+  fi
+  mapfile -d '' -t argv < "$out"; rm -f "$out"
+  cd "$ROOT" || die "cannot cd to $ROOT"
+  tm set-option -p -t "$TMUX_PANE" @mates-lead-live 1
+  "${argv[@]}"; rc=$?
+  tm set-option -p -u -t "$TMUX_PANE" @mates-lead-live
+  [ "$rc" = 0 ] && exit 0
+  echo "mates: claude exited $rc; a shell instead (run mates here to start it again)" >&2
+  exec "${SHELL:-bash}"
+}
+
+# Already running: switch to it, or bring back a lead that exited (the Qwen panes stay as they are).
+WIN=$(tagged_window)
+if [ -n "$WIN" ]; then
+  LEAD=$(lead_pane)
+  if lead_live "$LEAD"; then
+    [ -n "$fresh" ] && echo "mates: --fresh ignored; quit the running Claude first" >&2
+    go_to "$WIN"
+  fi
+  if [ -n "${TMUX_PANE:-}" ]; then
+    if [ "$TMUX_PANE" = "$LEAD" ] || { [ -z "$LEAD" ] && [ "$(tm display -p -t "$TMUX_PANE" '#{window_id}	#{@mates}')" = "$WIN"$'\t' ]; }; then # an untagged pane only: never a Qwen pane
+      run_lead --lead-only "${ARGS[@]}"
+    fi
+  fi
+  if [ -n "$LEAD" ]; then
+    tmux respawn-pane -k -t "$LEAD" -c "$ROOT" "$(self_cmd "${ARGS[@]}")" || die "cannot restart the lead pane"
+  else # its pane closed: a new one on the left
+    first=$(tm list-panes -t "$WIN" -F '#{pane_left} #{pane_id}' | sort -n | head -1 | cut -d' ' -f2)
+    tmux split-window -hb -l 50% -t "$first" -c "$ROOT" "$(self_cmd "${ARGS[@]}")" || die "cannot open a lead pane"
+  fi
+  go_to "$WIN" "restarted the lead"
+fi
+
+# Window choice.
+if [ -z "${TMUX:-}" ]; then
+  name=$(basename "$ROOT" | tr -c 'A-Za-z0-9_-' '_')
+  name="mates-$name-$(printf %s "$KEY" | sha1sum | cut -c1-4)"
+  if tm has-session -t "=$name"; then
+    tmux new-window -t "=$name:" -c "$ROOT" "$(self_cmd "${ARGS[@]}")" || die "cannot open a window in $name"
+    exec tmux attach -t "=$name"
+  fi
+  exec tmux new-session -s "$name" -c "$ROOT" "$(self_cmd "${ARGS[@]}")"
+fi
+[ -n "${TMUX_PANE:-}" ] || die "inside tmux but TMUX_PANE is not set"
+if [ "$(tm display -p -t "$TMUX_PANE" '#{window_panes}')" != 1 ]; then
+  exec tmux new-window -a -t "$(tm display -p -t "$TMUX_PANE" '#{window_id}')" -c "$ROOT" "$(self_cmd "${ARGS[@]}")"
+fi
+run_lead "${ARGS[@]}"

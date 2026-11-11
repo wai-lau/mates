@@ -4,11 +4,17 @@ What was tried here and then retired, and where the remains are. The live
 setup is in [`README.md`](README.md). Local-only leftovers (finished plans,
 old chat logs) sit in the gitignored `.archaeology/` folder at the repo root.
 
+## Retired 2026-11-11
+
+| What | Why it went | Where it is now |
+|---|---|---|
+| mates Phase 1 pilot (`mates/pilot.py`, `tasks.py`, `fwd.py`, `ctx.py`, `sandbox.sh`, worker env and settings, pilot prompts and their tests) | Wai skipped the pilot for the two-pane mates launcher, which imports none of it | removed in `381e325` on branch `mates-phase1` (git history before it); local copy `.archaeology/mates-phase1/` |
+
 ## Retired 2026-11-10
 
 | What | Why it went | Where it is now |
 |---|---|---|
-| aider as the agent behind `qwen aider` | OpenCode became the default (it runs in the same sandbox) and aider fell out of use | code: `bin/qwen` at commit `9a453b2` (the `qwen aider` branch; it leaves `bin/qwen` when branch `mates-phase1` merges); its old chat history and tag cache: `.archaeology/aider/` |
+| aider as the agent behind `qwen aider` | OpenCode became the default (it runs in the same sandbox) and aider fell out of use | code: `bin/qwen` at commit `9a453b2` (the `qwen aider` branch; it left `bin/qwen` when branch `mates-phase1` merged); its old chat history and tag cache: `.archaeology/aider/` |
 | hosaka TTS build plan (`docs/superpowers/plans/2026-06-22-hosaka-tts.md`) | finished; hosaka runs from its own repo `~/src/hosaka` | `.archaeology/plans/`, plus its task briefs and reports in `.archaeology/plans/hosaka-sdd/`; tracked copy in git history before this commit. The design spec stays in `docs/superpowers/specs/` |
 | `fib_stickman.py` | an empty file from the first commit | git history only |
 

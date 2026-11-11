@@ -2,9 +2,13 @@
 # qwen: chat-to-code with local Qwen through OpenCode, always inside a bubblewrap sandbox.
 #
 #   qwen [opencode args...] start (or reuse) the Qwen server, then run OpenCode sandboxed in this repo
-#   qwen aider [args...]   the same, with aider instead (the old default)
+#   qwen exec -- <cmd...>  run <cmd> in the sandbox here and return its exit code: no server,
+#                          no relay, no model, no TUI (`mates check` uses it)
 #   qwen server            start (or reuse) the server and print its address
+#   qwen host              print the running server's address, or exit 1 (never starts one)
+#   qwen warm              start (or reuse) the server and load the model in the background
 #   qwen stop              stop the server and give the GPU back to hosaka TTS
+#   qwen opencode-dir      print this repo's OpenCode state folder (shared by its worktrees)
 #   qwen sandbox-test      print what the sandbox can and cannot reach (no agent)
 #   qwen shell [bash args] a bash inside the sandbox (no agent), to look around
 #
@@ -12,13 +16,15 @@
 #   - sees the current git repo read-write (plus its git dir if that lives
 #     elsewhere, e.g. a submodule or worktree), with .git/hooks and .git/config
 #     read-only so nothing written there can run later outside the sandbox;
-#   - sees /usr, the OpenCode binary and the aider venv read-only; your home folder is NOT there;
+#     with QWEN_GIT_RO=1 the whole git dir and a worktree's .git file are
+#     read-only too (git status/diff work; no commit, add, ref or object write);
+#   - sees /usr and the OpenCode binary read-only; your home folder is NOT there;
 #   - has no network: the only ways out are a unix socket to the Ollama server and a
-#     write-only one to the clipboard (`xclip`/`clip.exe` inside run bin/qwen-clip,
-#     which hands the text to pbcopy outside; reading the clipboard is refused);
+#     write-only one to the clipboard (`xclip` inside runs bin/qwen-clip, which hands
+#     the text to pbcopy outside; reading the clipboard is refused);
 #   - starts from an empty environment (no tokens);
 #   - gets copies of the files listed in ~/.config/qwen/copy-in (one per line,
-#     `<path>` or `<path>:<path in sandbox home>`). Add lines there when aider
+#     `<path>` or `<path>:<path in sandbox home>`). Add lines there when the agent
 #     needs another file. Secrets (~/.ssh, ~/.gnupg, ~/.secrets, ~/.claude,
 #     ~/.config/gh, .env*, *.pem, *.key, .credentials*) are refused;
 #   - gets short digests of ~/.claude/CLAUDE.md and the repo's CLAUDE.md as
@@ -26,24 +32,50 @@
 #     huge"). Claude writes each digest once per change of its source (one small
 #     `claude -p` call, prompt in bin/qwen-digest-prompt.md); they are cached in
 #     ~/.config/qwen/digests/<hash>.md and never written into the repo;
+#   - keeps OpenCode sessions per repo ($STATE/opencode/<repo key>), so no other
+#     repo's sessions are visible;
 #   - OpenCode runs with every tool allowed (no approval prompts): the sandbox
 #     is what bounds it.
 #
 # The server's port is never fixed: a running private Ollama is found from its
 # own environment (OLLAMA_HOST in /proc/<pid>/environ); a new one gets a free
-# port. Qwen needs both GPUs, so starting it stops hosaka TTS ("Qwen wins vs TTS").
+# port. Qwen needs both GPUs, so starting it stops hosaka TTS ("Qwen wins vs TTS"),
+# and each OpenCode run holds a lock in $STATE/locks/<pid> so hosaka stays off.
 #
-# env: QWEN_MODEL (default qwen3.8-27b-turbo-heretic:mtp-iq4xs), QWEN_CTX (default 65536)
+# env: QWEN_MODEL (default qwen3.8-27b-turbo-heretic:mtp-iq4xs), QWEN_CTX (default 65536),
+#      QWEN_OPENCODE (OpenCode binary), QWEN_GIT_RO=1 (read-only git),
+#      QWEN_ROOT=<dir> (the repo top to mount; the cwd must be inside it; mates sets it),
+#      QWEN_CHECK_DIR=<dir> (exec only: mount just <dir>, at /work/check, and no repo; it and
+#      every folder above it must be writable by no other account; `mates check` sets it),
+#      QWEN_RUNTIME=<dir> (bound read-only; KEY=VALUE lines of <dir>/env are set inside,
+#      a PATH= line goes in front of the sandbox PATH)
 set -euo pipefail
 
 MODEL=${QWEN_MODEL:-qwen3.8-27b-turbo-heretic:mtp-iq4xs}
 CTX=${QWEN_CTX:-65536}
 STATE=${XDG_STATE_HOME:-$HOME/.local/state}/qwen
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/qwen
-AIDER_VENV=$HOME/aider-venv
-OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)}
-HERE=$(dirname "$(readlink -f "$0")")
-mkdir -p "$STATE/aider" "$STATE/opencode" "$CONF"
+OPENCODE=${QWEN_OPENCODE:-$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1 || true)}  # none: only the TUI start refuses
+SELF=$(readlink -f "$0"); HERE=$(dirname "$SELF")
+mkdir -p "$STATE/opencode" "$CONF"; chmod 700 "$STATE"  # the server lock and run dirs are ours only
+# The folder qwen starts in is the repo Qwen writes: hostile to every host-side helper. Keep
+# its path, then leave it, so no host interpreter or tool started below can load a file
+# planted there (python3 -c puts the cwd first on its module path). The sandbox gets the
+# folder back with --chdir. Host Python also always runs -I (no cwd, no PYTHON* env, no user site).
+CWD=$(pwd -P) || { echo "qwen: cannot read the current folder" >&2; exit 1; }
+cd /
+
+# The one cleanup, on the one EXIT trap, set before anything it cleans exists: the relays
+# that were started, this run's sandbox dir, and this run's GPU lock.
+RUN="" RELAY="" CLIP="" LOCK="" DTMP=""
+cleanup() {
+  local p; for p in $RELAY $CLIP; do kill "$p" 2>/dev/null || true; done
+  [ -z "$RUN" ] || rm -rf -- "$RUN"
+  [ -z "$DTMP" ] || rm -rf -- "$DTMP"
+  [ -z "$LOCK" ] || rm -f -- "$LOCK"
+  return 0
+}
+trap cleanup EXIT
 
 die() { echo "qwen: $*" >&2; exit 1; }
 
@@ -59,19 +91,23 @@ find_server() {
   return 1
 }
 
-free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
+# Find-or-start runs under flock on $STATE/server.lock, so `qwen warm` and a pane's qwen
+# starting together wait for one server instead of each starting their own.
 start_server() {
-  local host
-  if host=$(find_server); then echo "$host"; return; fi
+  local host lk
+  exec {lk}>> "$STATE/server.lock"
+  flock -w 120 "$lk" || die "another qwen held the server lock for 2 minutes ($STATE/server.lock)"
+  if host=$(find_server); then exec {lk}>&-; echo "$host"; return; fi
   systemctl --user stop hosaka-server 2>/dev/null && echo "qwen: stopped hosaka TTS (GPU goes to Qwen; 'qwen stop' gives it back)" >&2 || true
   host=127.0.0.1:$(free_port)
   OLLAMA_HOST=$host OLLAMA_MODELS=/usr/share/ollama/.ollama/models OLLAMA_NOPRUNE=1 \
   OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_SCHED_SPREAD=1 \
   OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=60m \
-    setsid nohup ollama serve >> "$STATE/serve.log" 2>&1 < /dev/null &
+    setsid nohup ollama serve >> "$STATE/serve.log" 2>&1 < /dev/null {lk}>&- &  # the server must not hold the lock
   for _ in $(seq 60); do
-    curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { echo "$host"; return; }
+    curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { exec {lk}>&-; echo "$host"; return; }
     sleep 0.5
   done
   die "server did not start (log: $STATE/serve.log)"
@@ -85,6 +121,115 @@ stop_server() {
   systemctl --user start hosaka-server 2>/dev/null && echo "qwen: hosaka TTS back up" || true
 }
 
+# This repo's OpenCode state folder: $STATE/opencode/<key>, the key being the main
+# checkout's path (the parent of the shared git dir, so worktrees share it) with every
+# character outside [A-Za-z0-9] turned into `-`. A shared git dir not named .git (a
+# submodule's .git/modules/<name>, a bare repo) is its own key, so two submodules of
+# one superproject never share sessions. `mates` asks for this instead of computing it.
+opencode_dir() {
+  local main
+  resolve_repo
+  case ${GITDIR##*/} in .git) main=${GITDIR%/*} ;; *) main=$GITDIR ;; esac
+  echo "$STATE/opencode/$(printf '%s' "$main" | sed 's/[^A-Za-z0-9]/-/g')"
+}
+
+# --- Finding the repo, without trusting anything Qwen can write -------------------------
+# The rule: on the host, the folder qwen mounts is hostile. No interpreter is started from
+# it (see CWD above) and no path inside it is followed (see digest: a CLAUDE.md link).
+# Host git is never run to discover the repo: a .git file or config planted in a folder
+# Qwen writes (for example <worktree>/.mates/, which `mates check` runs from) would steer
+# it to another checkout or to $HOME. Instead:
+#   - the top is QWEN_ROOT when set (mates sets it), and the cwd must be inside it; plain
+#     `qwen` finds the nearest .git above the cwd, and refuses inside any .mates folder;
+#   - a .git dir must not be a symlink or carry a commondir file; a .git file must point
+#     at <shared git dir>/worktrees/<name> whose gitdir file points back at this .git, or
+#     at a submodule git dir whose core.worktree is this top;
+#   - core.worktree, wherever set, must be this top, and the configs may not use include;
+#   - the top and the git dirs may not be /, $HOME or above it, or a secret path.
+rp() { realpath -e -- "$1" 2>/dev/null; }
+rel_to() { case $2 in /*) printf '%s\n' "$2" ;; *) printf '%s\n' "$1/$2" ;; esac; }
+first_line() { local l; IFS= read -r l < "$1" || [ -n "$l" ] || return 1; l=${l%"${l##*[![:space:]]}"}; printf '%s\n' "$l"; }
+forbidden_dir() { # status 0 if this folder must never be mounted
+  [ "$1" = / ] && return 0
+  case "$HOME/" in "$1"/*) return 0 ;; esac
+  refuse_secret "$1"
+}
+# lead_checkout <folder> <shared git dir>: status 0 if <folder>/.git is a plain gitfile that
+# points at <shared git dir> (a submodule's own main checkout).
+lead_checkout() {
+  local line
+  [ -n "$1" ] && [ -f "$1/.git" ] && [ ! -L "$1/.git" ] || return 1
+  line=$(first_line "$1/.git") && [ "${line#gitdir: }" != "$line" ] || return 1
+  [ "$(rp "$(rel_to "$1" "${line#gitdir: }")")" = "$2" ]
+}
+check_git_config() { # <config file> <git dir its relative paths start from> <top> [<shared git dir>]
+  # With a 4th argument (the shared config, seen from a linked worktree): git ignores the
+  # shared core.worktree there, so it may also name the main checkout of that git dir
+  # (a submodule's own checkout), and nothing else.
+  local f=$1 v w
+  [ -e "$f" ] || return 0
+  git config --file "$f" --list >/dev/null 2>&1 || die "refusing: cannot parse $f"
+  git config --file "$f" --name-only --list | grep -qiE '^include(if)?\.' && die "refusing: $f uses include"
+  while IFS= read -r v; do
+    w=$(rp "$(rel_to "$2" "$v")")
+    [ "$w" = "$3" ] && continue
+    [ -n "${4:-}" ] && lead_checkout "$w" "$4" && continue
+    die "refusing: core.worktree in $f points away from $3 ($v)"
+  done < <(git config --file "$f" --get-all core.worktree || true)
+}
+TOP="" GITADMIN="" GITDIR=""
+resolve_repo() { # sets TOP, GITADMIN (this checkout's git dir), GITDIR (the shared git dir)
+  local cwd=$CWD root d adm common line
+  if [ -n "${QWEN_ROOT:-}" ]; then
+    root=$(rp "$QWEN_ROOT") && [ -d "$root" ] || die "QWEN_ROOT is not a folder: $QWEN_ROOT"
+    case "$cwd/" in "$root"/*) ;; *) die "refusing: $cwd is not inside QWEN_ROOT ($root)" ;; esac
+  else
+    case "$cwd/" in */.mates/*) die "refusing to find the repo from inside a .mates folder (set QWEN_ROOT)" ;; esac
+    d=$cwd
+    until [ -e "$d/.git" ] || [ -L "$d/.git" ]; do
+      [ "$d" != / ] || die "run qwen inside a git repo (the sandbox only sees that repo)"
+      d=$(dirname "$d")
+    done
+    root=$d
+  fi
+  forbidden_dir "$root" && die "refusing to mount $root (/, your home or above it, or a secret path)"
+  if [ -L "$root/.git" ]; then die "refusing: $root/.git is a symlink"
+  elif [ -d "$root/.git" ]; then
+    adm=$root/.git; common=$adm
+    [ ! -e "$adm/commondir" ] || die "refusing: $adm has a commondir file"
+  elif [ -f "$root/.git" ]; then
+    line=$(first_line "$root/.git") && [ "${line#gitdir: }" != "$line" ] || die "refusing: $root/.git is not a gitfile"
+    adm=$(rp "$(rel_to "$root" "${line#gitdir: }")") && [ -d "$adm" ] || die "refusing: $root/.git points at no folder"
+    if [ -e "$adm/commondir" ]; then
+      line=$(first_line "$adm/commondir") && common=$(rp "$(rel_to "$adm" "$line")") || die "refusing: bad $adm/commondir"
+      [ "$(dirname "$adm")" = "$common/worktrees" ] || die "refusing: $adm is not a worktree folder of $common"
+      line=$(first_line "$adm/gitdir" 2>/dev/null) && [ "$(rp "$(rel_to "$adm" "$line")")" = "$root/.git" ] \
+        || die "refusing: $adm belongs to another worktree, not $root"
+    else
+      common=$adm  # a submodule's git dir: it must name this top as its work tree
+      [ -n "$(git config --file "$adm/config" --get-all core.worktree 2>/dev/null)" ] \
+        || die "refusing: $root/.git points at $adm, which is neither a worktree nor this submodule's git dir"
+    fi
+  else die "refusing: $root/.git is neither a folder nor a file"
+  fi
+  for d in "$adm" "$common"; do
+    forbidden_dir "$d" && die "refusing to mount git dir $d (/, your home or above it, or a secret path)"
+  done
+  # Relative core.worktree values in the shared files start from the shared git dir.
+  if [ "$adm" = "$common" ]; then check_git_config "$common/config" "$common" "$root"
+  else check_git_config "$common/config" "$common" "$root" "$common"; fi
+  check_git_config "$common/config.worktree" "$common" "$root"
+  [ "$adm" = "$common" ] || { check_git_config "$adm/config" "$adm" "$root"; check_git_config "$adm/config.worktree" "$adm" "$root"; }
+  TOP=$root GITADMIN=$adm GITDIR=$common
+}
+
+# GPU lock for hosaka (it will not start while a live pid holds one). TUI runs only.
+take_lock() {
+  mkdir -p "$STATE/locks"
+  LOCK=$STATE/locks/$$
+  echo opencode > "$LOCK"
+}
+
 refuse_secret() { # path -> status 0 if it must not go in
   local p; p=$(readlink -f "$1" 2>/dev/null || echo "$1")
   case $p in "$HOME"/.ssh*|"$HOME"/.gnupg*|"$HOME"/.secrets*|"$HOME"/.claude*|"$HOME"/.config/gh*) return 0 ;; esac
@@ -95,42 +240,92 @@ refuse_secret() { # path -> status 0 if it must not go in
 [ -f "$CONF/copy-in" ] || cat > "$CONF/copy-in" <<'EOF'
 # Files copied into the qwen sandbox's home at every launch.
 # One per line: <path>  or  <path>:<path relative to the sandbox home>
-# Secrets are refused (see `qwen --help`). Add a line when aider needs a file.
+# Secrets are refused (see `qwen --help`). Add a line when the agent needs a file.
 ~/.gitconfig
 ~/.config/git/ignore:.config/git/ignore
 EOF
 sed -i '\#^~/.claude/CLAUDE.md#d' "$CONF/copy-in"  # replaced by digests (it was refused as a secret path anyway)
 
-# digest <source file>: print the path of its cached short version, writing it with Claude if missing.
+# safe_ancestry <path>: status 0 if it and every folder above it is owned by us or root and
+# writable by no one else (mates/fsutil.py safe_ancestry, the same rule).
+safe_ancestry() {
+  local p u m me; me=$(id -u)
+  p=$(realpath -e -- "$1" 2>/dev/null) || return 1
+  while :; do
+    read -r u m < <(stat -c '%u %a' -- "$p" 2>/dev/null) || return 1
+    { [ "$u" = 0 ] || [ "$u" = "$me" ]; } && (( (8#$m & 8#022) == 0 )) || return 1
+    [ "$p" = / ] && return 0
+    p=$(dirname "$p")
+  done
+}
+
+# private_dir: print a fresh mode-700 folder under the user runtime folder (mates/fsutil.py
+# private_cwd's rule): not /tmp, where another account could plant files the call reads.
+private_dir() {
+  local b
+  for b in "${XDG_RUNTIME_DIR:-}" "/run/user/$(id -u)"; do
+    [ -n "$b" ] && [ -d "$b" ] && safe_ancestry "$b" && { mktemp -d "${b%/}/qwen-digest.XXXXXX"; return; }
+  done
+  return 1
+}
+
+# repo_claude_md <out>: copy the repo's CLAUDE.md to <out> without following any path Qwen
+# can write. In a worktree (every mates pane) it is the main checkout's committed file, read
+# from git objects; elsewhere $TOP/CLAUDE.md, only if it is a plain file (no link, no fifo).
+repo_claude_md() {
+  if [ "$GITADMIN" != "$GITDIR" ] && [ "$(dirname "$GITADMIN")" = "$GITDIR/worktrees" ]; then
+    [ "$(git --git-dir="$GITDIR" cat-file -t HEAD:CLAUDE.md 2>/dev/null)" = blob ] || return 1
+    git --git-dir="$GITDIR" cat-file blob HEAD:CLAUDE.md > "$1" 2>/dev/null
+  else
+    python3 -I -c '
+import os, stat, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+    sys.exit(1)
+with os.fdopen(fd, "rb") as f, open(sys.argv[2], "wb") as out:
+    out.write(f.read(1 << 20))' "$TOP/CLAUDE.md" "$1" 2>/dev/null
+  fi
+}
+
+# digest <private dir> <label> <source copy>: print the path of its cached short version,
+# writing it with Claude if missing. The source is already a private copy.
 digest() {
-  local src=$1 sum out tmp
+  local dir=$1 label=$2 src=$3 sum out
   [ -s "$src" ] || return 1
   mkdir -p "$CONF/digests"
   sum=$(sha256sum "$src" | cut -c1-16); out=$CONF/digests/$sum.md
   if [ ! -s "$out" ]; then
-    echo "qwen: writing a short digest of $src (one small Claude call; cached until it changes)" >&2
-    tmp=$(mktemp -d)  # outside $HOME: no CLAUDE.md gets auto-loaded into the digest call
-    if ! (cd "$tmp" && env -u ANTHROPIC_API_KEY claude -p --output-format text --tools "" --strict-mcp-config \
+    echo "qwen: writing a short digest of $label (one small Claude call; cached until it changes)" >&2
+    mkdir -p "$dir/cwd"  # empty and private: no CLAUDE.md or settings get auto-loaded into the call
+    if ! (cd "$dir/cwd" && env -u ANTHROPIC_API_KEY claude -p --output-format text --tools "" --strict-mcp-config \
           --setting-sources project --system-prompt-file "$HERE/qwen-digest-prompt.md" < "$src" > "$out.tmp" 2>/dev/null) \
        || [ ! -s "$out.tmp" ]; then
-      rm -rf "$tmp" "$out.tmp"; echo "qwen: digest failed for $src, continuing without it" >&2; return 1
+      rm -f "$out.tmp"; echo "qwen: digest failed for $label, continuing without it" >&2; return 1
     fi
-    rm -rf "$tmp"; mv "$out.tmp" "$out"
+    mv "$out.tmp" "$out"
   fi
   echo "$out"
 }
 
 # Put the global and repo digests in the sandbox home as ~/.qwen/{global,repo}.md.
 stage_digests() {
-  local home=$1 top d
+  local home=$1 d
   mkdir -p "$home/.qwen"
   cp "$HERE/qwen-sandbox.md" "$home/.qwen/sandbox.md"  # no internet, repo-only: so it doesn't try
-  d=$(digest "$HOME/.claude/CLAUDE.md") && cp "$d" "$home/.qwen/global.md"
-  top=$(git rev-parse --show-toplevel 2>/dev/null) && d=$(digest "$top/CLAUDE.md") && cp "$d" "$home/.qwen/repo.md"
+  DTMP=$(private_dir) || { DTMP=""; echo "qwen: no private runtime folder (XDG_RUNTIME_DIR); no digests" >&2; return 0; }
+  cat -- "$HOME/.claude/CLAUDE.md" > "$DTMP/global.src" 2>/dev/null || true  # Wai's own file
+  d=$(digest "$DTMP" "~/.claude/CLAUDE.md" "$DTMP/global.src") && cp "$d" "$home/.qwen/global.md"
+  if repo_claude_md "$DTMP/repo.src"; then
+    d=$(digest "$DTMP" "the repo's CLAUDE.md" "$DTMP/repo.src") && cp "$d" "$home/.qwen/repo.md"
+  elif [ -e "$TOP/CLAUDE.md" ] || [ -L "$TOP/CLAUDE.md" ]; then
+    echo "qwen: $TOP/CLAUDE.md is not a plain committed file; no repo digest" >&2
+  fi
+  rm -rf -- "$DTMP"; DTMP=""
   return 0
 }
 
-# A fresh sandbox home with the copy-in files; aider's own state persists in $STATE/aider.
+# A fresh sandbox home with the copy-in files.
 make_home() {
   local home=$1 line src dest
   mkdir -p "$home"
@@ -144,22 +339,45 @@ make_home() {
   done < "$CONF/copy-in"
 }
 
-# run_sandboxed <server host:port> <cmd...>: the only way anything Qwen-facing runs.
+# run_sandboxed <server host:port | -> <cmd...>: the only way anything Qwen-facing runs.
+# Host `-` (qwen exec): no relay at all (no Ollama, no clipboard), and the inner bash is
+# told QWEN_NO_RELAY=1 so it starts no `qwen-relay in` either.
 run_sandboxed() {
   local host=$1; shift
   command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
-  local top gitdir run
-  top=$(git rev-parse --show-toplevel 2>/dev/null) || die "run qwen inside a git repo (the sandbox only sees that repo)"
-  gitdir=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir)
-  run=$(mktemp -d "$STATE/run.XXXXXX")
-  make_home "$run/home"
-  stage_digests "$run/home"
-  python3 "$HERE/qwen-relay" out --sock "$run/ollama.sock" --to "$host" & local relay=$!
-  local clip=""; if command -v pbcopy >/dev/null; then
-    python3 "$HERE/qwen-relay" clip --sock "$run/clip.sock" --run "$(command -v pbcopy)" & clip=$!
+  local top="" gitdir="" ocdir="" cwd rt="" chk="" mnt
+  if [ -n "${QWEN_CHECK_DIR:-}" ]; then
+    # A check (mates check): only this snapshot folder is mounted, at a neutral path, and
+    # no repo at all. Its parents in the sandbox are /work and /, so no file Qwen wrote
+    # (a pytest.ini or conftest.py above the snapshot) can change what the check does.
+    [ "$host" = - ] || die "QWEN_CHECK_DIR is for qwen exec only"
+    chk=$(rp "$QWEN_CHECK_DIR") && [ -d "$chk" ] || die "QWEN_CHECK_DIR is not a folder: $QWEN_CHECK_DIR"
+    forbidden_dir "$chk" && die "refusing to mount $chk (/, your home or above it, or a secret path)"
+    safe_ancestry "$chk" || die "QWEN_CHECK_DIR refused (it or a folder above it is writable by another account): $chk"
+    cwd=/work/check mnt=$chk
+  else
+    resolve_repo; top=$TOP gitdir=$GITDIR; cwd=$CWD mnt=$top
+    ocdir=$(opencode_dir)
   fi
-  trap "kill $relay $clip 2>/dev/null; rm -rf '$run'" EXIT
-  for _ in $(seq 50); do [ -S "$run/ollama.sock" ] && break; sleep 0.1; done
+  if [ -n "${QWEN_RUNTIME:-}" ]; then
+    rt=$(readlink -f -- "$QWEN_RUNTIME" 2>/dev/null) && [ -d "$rt" ] || die "QWEN_RUNTIME is not a folder: $QWEN_RUNTIME"
+    case "$HOME/" in "$rt"/*) die "QWEN_RUNTIME refused (it holds your home folder): $rt" ;; esac
+    case "$mnt/" in "$rt"/*) die "QWEN_RUNTIME refused (it holds the repo, which would turn read-only): $rt" ;; esac
+    [ "$rt" != / ] || die "QWEN_RUNTIME refused: /"
+    refuse_secret "$rt" && die "QWEN_RUNTIME refused (secret path): $rt"
+    # Its env PATH runs inside every pane and check: another account able to swap it would own those.
+    safe_ancestry "$rt" || die "QWEN_RUNTIME refused (it or a folder above it is writable by another account): $rt"
+  fi
+  RUN=$(mktemp -d "$STATE/run.XXXXXX")
+  make_home "$RUN/home"
+  [ "$host" = - ] || stage_digests "$RUN/home"  # a check reads no digests: no Claude call
+  if [ "$host" != - ]; then
+    python3 -I "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" & RELAY=$!
+    if command -v pbcopy >/dev/null; then
+      python3 -I "$HERE/qwen-relay" clip --sock "$RUN/clip.sock" --run "$(command -v pbcopy)" & CLIP=$!
+    fi
+    for _ in $(seq 50); do [ -S "$RUN/ollama.sock" ] && break; sleep 0.1; done
+  fi
   # --new-session would block terminal keystroke injection (TIOCSTI), but it also detaches the
   # terminal, so the agent never sees pane resizes (SIGWINCH). The kernel already blocks TIOCSTI
   # when dev.tty.legacy_tiocsti is 0, so keep the terminal then; otherwise keep --new-session.
@@ -171,83 +389,115 @@ run_sandboxed() {
   local A=(--unshare-all --die-with-parent "${session[@]}" --clearenv
     --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib --symlink usr/lib64 /lib64
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /home
-    --bind "$run/home" /home/qwen --bind "$STATE/aider" /home/qwen/.aider
-    --bind "$STATE/opencode" /home/qwen/.local/share/opencode
+    --bind "$RUN/home" /home/qwen
     --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
-    --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/clip.exe
-    --bind "$run" /run/qwen --bind "$top" "$top")
-  case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
-  [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
-  [ -f "$gitdir/config" ] && A+=(--ro-bind "$gitdir/config" "$gitdir/config")
+    --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip
+    --bind "$RUN" /run/qwen)
+  if [ -n "$chk" ]; then A+=(--bind "$chk" /work/check); else A+=(--bind "$top" "$top"); fi
+  # OpenCode sessions: this repo's folder for agent runs; a check (host -) gets an empty one,
+  # so check code cannot touch the session database mates reads.
+  if [ "$host" = - ]; then A+=(--tmpfs /home/qwen/.local/share/opencode)
+  else mkdir -p "$ocdir"; A+=(--bind "$ocdir" /home/qwen/.local/share/opencode); fi
+  if [ -n "$gitdir" ]; then
+    case $gitdir in "$top"/*) ;; *) A+=(--bind "$gitdir" "$gitdir") ;; esac
+    [ -d "$gitdir/hooks" ] && A+=(--ro-bind "$gitdir/hooks" "$gitdir/hooks")
+    [ -f "$gitdir/config" ] && A+=(--ro-bind "$gitdir/config" "$gitdir/config")
+    # Read-only git: bwrap's later bind wins, so these come after the $top and $gitdir binds.
+    # Any value but empty or 0 turns it on (fail closed).
+    case ${QWEN_GIT_RO:-0} in
+      0) ;;
+      *) A+=(--ro-bind "$gitdir" "$gitdir")
+         [ -f "$top/.git" ] && A+=(--ro-bind "$top/.git" "$top/.git") ;;
+    esac
+  fi
+  [ -n "$rt" ] && A+=(--ro-bind "$rt" "$rt")
   [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] && A+=(--ro-bind "$OPENCODE" /opt/opencode/opencode)
   local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
   done
   local e; for e in "${SANDBOX_ENV[@]}"; do A+=(--setenv "${e%%=*}" "${e#*=}"); done
-  local aider_path=""  # aider is retired; mount its venv only while it still exists
-  [ -d "$AIDER_VENV" ] && { A+=(--ro-bind "$AIDER_VENV" "$AIDER_VENV"); aider_path="$AIDER_VENV/bin:"; }
-  A+=(--setenv HOME /home/qwen --setenv PATH "/opt/opencode:/opt/qwen-clip:${aider_path}/usr/bin:/bin" --setenv TERM "${TERM:-xterm-256color}"
-      --setenv LANG C.UTF-8 --setenv OLLAMA_API_BASE http://127.0.0.1:11434 --setenv LITELLM_LOCAL_MODEL_COST_MAP True
-      --chdir "$PWD")
+  # Runtime env: the line filter of mates/runtime.py runtime_env (tests/test_qwen_bin.sh feeds
+  # both one file). PATH= goes in front of the default PATH; the rest is set after the defaults.
+  local path=/opt/opencode:/opt/qwen-clip:/usr/bin:/bin renv=() l
+  if [ -n "$rt" ] && [ -f "$rt/env" ]; then
+    while IFS= read -r l || [ -n "$l" ]; do
+      l=${l%$'\r'}
+      [[ $l =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+      if [ "${l%%=*}" = PATH ]; then path="${l#*=}:/opt/opencode:/opt/qwen-clip:/usr/bin:/bin"
+      else renv+=(--setenv "${l%%=*}" "${l#*=}"); fi
+    done < "$rt/env"
+  fi
+  A+=(--setenv HOME /home/qwen --setenv PATH "$path" --setenv TERM "${TERM:-xterm-256color}" --setenv LANG C.UTF-8)
+  [ "$host" = - ] && A+=(--setenv QWEN_NO_RELAY 1)
+  A+=("${renv[@]}" --chdir "$cwd")
   bwrap "${A[@]}" -- /bin/bash -c '
-    python3 /opt/qwen-relay in --sock /run/qwen/ollama.sock --listen 127.0.0.1:11434 2>/dev/null &
-    for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && break; sleep 0.1; done
+    if [ -z "${QWEN_NO_RELAY:-}" ]; then
+      python3 /opt/qwen-relay in --sock /run/qwen/ollama.sock --listen 127.0.0.1:11434 2>/dev/null &
+      for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && break; sleep 0.1; done
+    fi
     "$@"' bash "$@"
 }
 
 SANDBOX_ENV=()
 case "${1:-}" in
   server) start_server; exit ;;
+  host) find_server && exit 0; exit 1 ;;
+  warm)
+    host=$(start_server)
+    # An empty generate request loads the model with the server's defaults (the same ones
+    # OpenCode's requests get), then returns; it runs on after qwen exits.
+    setsid nohup curl -fsS -m 900 "http://$host/api/generate" -d "{\"model\": \"$MODEL\"}" >/dev/null 2>&1 < /dev/null &
+    echo "qwen: loading $MODEL on http://$host in the background" >&2
+    exit ;;
   stop) stop_server; exit ;;
-  -h|--help) sed -n '2,25p' "$0"; exit ;;
+  opencode-dir) opencode_dir; exit ;;
+  -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"; exit ;;
+  aider) die "aider is no longer supported; plain 'qwen' runs OpenCode" ;;
+  exec)
+    shift; [ "${1:-}" = -- ] && shift
+    [ $# -gt 0 ] || die "usage: qwen exec -- <cmd...>"
+    run_sandboxed - "$@"
+    exit ;;
   shell) host=$(start_server); shift; run_sandboxed "$host" bash "$@"; exit ;;
   sandbox-test)
     host=$(start_server)
     run_sandboxed "$host" python3 -c '
-import os, socket, subprocess, urllib.request
+import os, socket, subprocess, sys, urllib.request
 def t(name, f):
     try: f(); print(f"{name}: REACHABLE")
     except Exception as e: print(f"{name}: blocked ({type(e).__name__})")
+def write_probe(path):  # removes the probe again if the write got through
+    with open(path, "w") as fh: fh.write("x")
+    os.remove(path)
 t("your home (~/.ssh)", lambda: os.listdir("/home/wai/.ssh"))
 t("claude login", lambda: open("/home/wai/.claude/.credentials.json").read(1))
 t("internet 1.1.1.1:443", lambda: socket.create_connection(("1.1.1.1", 443), 3))
 t("ollama via relay", lambda: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=5).read())
 t("clipboard write", lambda: subprocess.run(["xclip", "-selection", "clipboard"], input=b"qwen sandbox-test", check=True))
 t("clipboard read", lambda: subprocess.run(["xclip", "-o"], check=True))
-t("repo write", lambda: (open(".qwen-sandbox-probe", "w").write("x"), os.remove(".qwen-sandbox-probe")))
+t("repo write", lambda: write_probe(".qwen-sandbox-probe"))
 gd = os.popen("git rev-parse --path-format=absolute --git-common-dir").read().strip()
-t("git hooks write", lambda: open(os.path.join(gd, "hooks", "qwen-probe"), "w"))
-t("git config write", lambda: open(os.path.join(gd, "config"), "a"))
+top = os.popen("git rev-parse --show-toplevel").read().strip()
+print("git read-only (QWEN_GIT_RO):", sys.argv[2])
+t("git status", lambda: subprocess.run(["git", "status", "--short"], check=True, capture_output=True))
+t("git hooks write", lambda: write_probe(os.path.join(gd, "hooks", "qwen-probe")))
+t("git config write", lambda: open(os.path.join(gd, "config"), "a").close())
+t("git ref write", lambda: write_probe(os.path.join(gd, "refs", "heads", "qwen-probe")))
+t("git object write", lambda: write_probe(os.path.join(gd, "objects", "qwen-probe")))
+if os.path.isfile(os.path.join(top, ".git")):
+    t("worktree .git file edit", lambda: open(os.path.join(top, ".git"), "a").close())
+else:
+    print("worktree .git file edit: n/a (not a worktree)")
+t("other repos'"'"' OpenCode state", lambda: os.listdir(sys.argv[1]))
+print("OpenCode state here:", sys.argv[3], "->", sorted(os.listdir(os.path.expanduser("~/.local/share/opencode"))))
 print("home sees:", sorted(os.listdir(os.environ["HOME"])))
-print("env:", sorted(os.environ))'
+print("env:", sorted(os.environ))' "$STATE/opencode" "${QWEN_GIT_RO:-0}" "$(opencode_dir)"
     exit ;;
 esac
 
-if [ "${1:-}" = aider ]; then
-  shift
-  [ -x "$AIDER_VENV/bin/aider" ] || die "aider not found at $AIDER_VENV"
-  host=$(start_server)
-  # aider would otherwise pick its own small num_ctx, and ~/.aider.conf.yml's weak model
-  # would load a second model onto the GPUs.
-  cat > "$STATE/aider/qwen-model-settings.yml" <<EOF
-- name: ollama_chat/$MODEL
-  edit_format: diff
-  use_repo_map: true
-  # aider's default for unknown models ("user") appends its SEARCH/REPLACE rules to YOUR
-  # last message, so the model thinks you pasted them. Put them in the system prompt.
-  reminder: sys
-  examples_as_sys_msg: true
-  extra_params:
-    num_ctx: $CTX
-EOF
-  echo "qwen: $MODEL on http://$host, sandboxed (first reply is slow while the model loads)" >&2
-  run_sandboxed "$host" bash -c 'r=(); for f in ~/.qwen/sandbox.md ~/.qwen/global.md ~/.qwen/repo.md; do [ -f "$f" ] && r+=(--read "$f"); done
-    exec aider "${r[@]}" "$@"' aider --model "ollama_chat/$MODEL" --weak-model "ollama_chat/$MODEL" \
-    --model-settings-file /home/qwen/.aider/qwen-model-settings.yml --no-check-update --analytics-disable "$@"
-  exit
-fi
-
 [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] || die "OpenCode not found (expected ~/.local/opt/opencode-<version>/opencode, or set QWEN_OPENCODE)"
+resolve_repo  # refuse before taking the lock or stopping hosaka
+take_lock  # before the server starts, so hosaka cannot come back in between
 host=$(start_server)
 # Offline OpenCode: no update check, no model-catalog fetch (it ships a bundled copy), no plugin or
 # LSP downloads, no Claude Code auto-discovery (the two CLAUDE.md files are listed explicitly).

@@ -1,0 +1,10 @@
+# The mates daily retro (mates/retro.py). Started by mates-retro.timer.
+# Link it: ln -s <repo>/deploy/mates-retro.{service,timer} ~/.config/systemd/user/
+[Unit]
+Description=mates daily retro
+
+[Service]
+Type=oneshot
+# systemd does not expand ~; %h is the home folder. PATH so that mates and claude are found.
+Environment=PATH=%h/bin:%h/.local/bin:/usr/bin:/bin
+ExecStart=%h/bin/mates retro
