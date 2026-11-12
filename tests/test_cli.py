@@ -1963,3 +1963,16 @@ def test_wait_spinner_is_not_idle(m):
         assert m.run("wait", 1, "--timeout", "0.3")[1] == "timeout\n"
     _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
     assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_check_works_when_the_pane_is_gone(m):
+    """A crashed or closed Qwen pane's work must still be checkable (a lead checked a pane
+    that had died of a segfault, 2026-11-12): the screen is read only when the pane is live."""
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    m.live(False)  # qwen no longer runs in the pane
+    code, out, err = m.run("check", 1, "--", "cat a.txt")
+    assert code == 0, err
+    m.no_panes()  # the pane itself is gone
+    code, out, err = m.run("check", 1, "--", "cat a.txt")
+    assert code == 0, err
