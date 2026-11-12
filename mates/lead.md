@@ -64,7 +64,9 @@ before the send or when Qwen asks:
 1. Write `.mates/runtime.sh`. It runs in a build sandbox whose folder holds only
    the files on its `# lockfiles:` line (from HEAD). `$MATES_RUNTIME` is the
    folder to fill; `uv` is on PATH; the only network is HTTPS to pypi.org,
-   files.pythonhosted.org and registry.npmjs.org. `KEY=VALUE` lines in
+   files.pythonhosted.org, registry.npmjs.org and Playwright's two browser hosts
+   (cdn.playwright.dev, playwright.download.prss.microsoft.com), so
+   `playwright install` works there. `KEY=VALUE` lines in
    `$MATES_RUNTIME/env` reach Qwen's panes and checks (`PATH=` goes first).
 2. `git add -f .mates/runtime.sh` (`.mates/` is excluded), then commit.
 3. `mates runtime --reason "<what the check needs; who asked>"` builds it,

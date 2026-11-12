@@ -31,7 +31,10 @@ CLIP_MAX = 1 << 20  # a copy bigger than 1 MiB is cut off
 EGRESS_PORT = 443
 # The package registries a runtime build may download from: exact names, no subdomains.
 # Adding one is a code change here, which Wai sees; the lead cannot widen it on its own.
-REGISTRIES = frozenset({"pypi.org", "files.pythonhosted.org", "registry.npmjs.org"})
+# The two Playwright hosts serve its browsers (PLAYWRIGHT_CDN_MIRRORS in Playwright 1.60);
+# Wai, 2026-11-12, picked this option so browser checks build in the sandbox: "A".
+REGISTRIES = frozenset({"pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+                        "cdn.playwright.dev", "playwright.download.prss.microsoft.com"})
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 HOST_RE = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
 

@@ -87,12 +87,14 @@ def test_egress_refuses_local_targets(egress, target):
     assert _ask(sock, b"CONNECT " + target + b" HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403")
 
 
-@pytest.mark.parametrize("host", ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"])
+@pytest.mark.parametrize("host", ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+                                  "cdn.playwright.dev", "playwright.download.prss.microsoft.com"])
 def test_registries_allowed(host):
     assert relay.allowed_host(host)
 
 
-@pytest.mark.parametrize("host", ["github.com", "evil.example", "pypi.org.evil.example", "8.8.8.8", "xpypi.org"])
+@pytest.mark.parametrize("host", ["github.com", "evil.example", "pypi.org.evil.example", "8.8.8.8", "xpypi.org",
+                                  "playwright.dev", "evil.cdn.playwright.dev", "download.prss.microsoft.com"])
 def test_other_hosts_refused(host):
     assert not relay.allowed_host(host)
 
