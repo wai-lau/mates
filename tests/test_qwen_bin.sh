@@ -310,13 +310,19 @@ check "the lock is gone after SIGTERM" '[ ! -e "$T/state/qwen/locks/$q" ]'
 # --- OpenCode config ------------------------------------------------------
 # Panes share one slot, so a request can queue behind another pane's 10-minute reply; OpenCode's
 # default 5-minute header timeout dropped such requests (2026-11-11 11:24 and 11:33).
-printf '#!/bin/sh\nprintf %%s "$OPENCODE_CONFIG_CONTENT" > ./oc-config.json\n' > "$T/opencode"
+printf '#!/bin/sh\nprintf %%s "$OPENCODE_CONFIG_CONTENT" > ./oc-config.json\ncat "$OPENCODE_TUI_CONFIG" > ./oc-tui.json\ncat /opt/qwen-tui/no-logo.js > ./oc-nologo.js\n' > "$T/opencode"
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1)
 ht=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provider"]["ollama"]["options"].get("headerTimeout"))' "$T/repo/oc-config.json" 2>/dev/null)
 check "OpenCode waits up to an hour for a queued reply (headerTimeout 3600000)" '[ "$ht" = 3600000 ]'
-# grep and glob download ripgrep on first use, which fails with no network: every call was a wasted turn.
+# grep and glob run the system ripgrep; without one OpenCode downloads it, which fails with no
+# network (every call a wasted turn), so they are off on a host with no /usr/bin/rg.
 tl=$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tools"]; print(t.get("grep"), t.get("glob"))' "$T/repo/oc-config.json" 2>/dev/null)
-check "OpenCode grep and glob tools are off (Qwen searches with bash)" '[ "$tl" = "False False" ]'
+if [ -x /usr/bin/rg ]; then want="None None"; else want="False False"; fi
+check "OpenCode grep and glob tools follow the host's /usr/bin/rg ($want)" '[ "$tl" = "$want" ]'
+# Wai, 2026-11-12: no big OpenCode logo on a fresh pane. A TUI plugin empties the logo slot.
+tp=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plugin"])' "$T/repo/oc-tui.json" 2>/dev/null)
+check "the TUI config loads the no-logo plugin" '[ "$tp" = "['\''file:///opt/qwen-tui/no-logo.js'\'']" ]'
+check "the no-logo plugin is readable in the sandbox" 'grep -q home_logo "$T/repo/oc-nologo.js"'
 # No OpenCode prompt may wait on Wai (2026-11-11: "should ask claude instead of me"): every "ask"
 # becomes "deny", and Qwen asks the lead. The real OpenCode resolves the rules (last match wins).
 REAL_OC=$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)

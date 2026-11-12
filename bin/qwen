@@ -411,6 +411,7 @@ run_sandboxed() {
     --bind "$RUN/home" /home/qwen
     --ro-bind "$HERE/qwen-relay" /opt/qwen-relay
     --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip
+    --ro-bind "$HERE/qwen-tui" /opt/qwen-tui
     --bind "$RUN" /run/qwen)
   if [ -n "$chk" ]; then A+=(--bind "$chk" /work/check); else A+=(--bind "$top" "$top"); fi
   # OpenCode sessions: this repo's folder for agent runs; a check (host -) gets an empty one,
@@ -526,9 +527,11 @@ host=$(start_server)
 # LSP downloads, no Claude Code auto-discovery (the two CLAUDE.md files are listed explicitly).
 # headerTimeout: every pane shares one server slot, so a request can wait behind another pane's
 # reply (6-11 minutes at ~5 tokens/s); OpenCode's default of 5 minutes dropped those requests.
-# tools: grep and glob are off. On first use OpenCode downloads ripgrep from GitHub, which fails
-# with no network, so every call was a wasted turn (~22 across three repos, 2026-11-11/12); Qwen
-# searches with bash grep/find instead (qwen-sandbox.md).
+# tools: grep and glob run the host's ripgrep (/usr/bin/rg, which the sandbox sees; Wai installed
+# it 2026-11-12). With none, OpenCode downloads ripgrep from GitHub on first use, which fails with
+# no network, so every call was a wasted turn (~22 across three repos, 2026-11-11/12): then they
+# are off and Qwen searches with bash grep/find.
+# OPENCODE_TUI_CONFIG: a TUI plugin that hides the big home-screen logo (bin/qwen-tui).
 # permission: no prompt may wait on Wai ("should ask claude instead of me"), so every rule OpenCode
 # would "ask" (paths outside the repo and /tmp, .env reads, repeated calls, its question and
 # plan-mode tools) is "deny"; qwen-sandbox.md tells Qwen to ask the lead instead.
@@ -548,14 +551,16 @@ cfg='{
     }
   },
   "instructions": ["/home/qwen/.qwen/sandbox.md", "/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
-  "tools": { "webfetch": false, "websearch": false, "grep": false, "glob": false },
+  "tools": { "webfetch": false, "websearch": false TOOLS_},
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny",
                   "question": "deny", "plan_enter": "deny", "doom_loop": "deny",
                   "external_directory": { "*": "deny", "/tmp/*": "allow" },
                   "read": { "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" } }
 }'
-cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}
+tools=''; [ -x /usr/bin/rg ] || tools=', "grep": false, "glob": false'
+cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}; cfg=${cfg//TOOLS_/$tools}
 SANDBOX_ENV=(OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1
-  OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 "OPENCODE_CONFIG_CONTENT=$cfg")
+  OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 "OPENCODE_CONFIG_CONTENT=$cfg"
+  OPENCODE_TUI_CONFIG=/opt/qwen-tui/tui.json)
 echo "qwen: OpenCode on $MODEL at http://$host, sandboxed (first reply is slow while the model loads)" >&2
 run_sandboxed "$host" opencode "$@"
