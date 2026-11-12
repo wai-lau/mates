@@ -638,8 +638,9 @@ def log_attempt(root, entry, outcome):
            "check": t.get("check_cmd"),
            "check_sha": hashlib.sha256(t["check_cmd"].encode()).hexdigest() if t.get("check_cmd") else None,
            "tree": checked, "flags": t.get("flags") or [],
-           "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
-           "questions": t.get("questions") or [], **_costs(root, entry, t)}
+            "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
+            "red_on_base": t.get("red_on_base"),
+            "questions": t.get("questions") or [], **_costs(root, entry, t)}
     LOG.parent.mkdir(parents=True, exist_ok=True)
     logrec.append(LOG, rec)
 
@@ -657,11 +658,12 @@ def _parser(name, usage):
 # --- send, wait, answer ------------------------------------------------------------------
 
 def send(args):
-    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] "<text>"')
+    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] "<text>"')
     p.add_argument("n", type=int)
     p.add_argument("--reason", required=True)
     p.add_argument("--files", default="")
     p.add_argument("--continue", dest="cont", action="store_true")
+    p.add_argument("--check", default=None)
     p.add_argument("text", nargs="+")
     a = p.parse_args(args)
     text = " ".join(a.text)
@@ -686,6 +688,27 @@ def send(args):
         die(f"Qwen worktree {a.n} has work not merged ({', '.join(dirty[:10])}): "
             f"mates merge {a.n} or mates discard {a.n} first")
     lead = _lead_head(root)
+    if a.check:
+        try:
+            tree = snapshot(root, a.n, lead)
+            env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO")}
+            if state.get("runtime"):
+                env["QWEN_RUNTIME"] = state["runtime"]
+            with _unpacked(root, a.n, tree, lead) as folder:
+                env["QWEN_CHECK_DIR"] = str(folder)
+                r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", a.check],
+                                   cwd="/", env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                err = r.stdout.decode("utf-8", "replace").strip()
+        except GitError as e:
+            die(f"git failed on Qwen worktree {a.n}: {e}")
+        except fsutil.UnsafeDir as e:
+            die(f"refusing to check: {e}")
+        if r.returncode == 0:
+            die("the check passes on the base (it proves nothing); send without --check or fix the check")
+        if r.returncode in (126, 127) or "command not found" in err or "Executable doesn't exist" in err:
+            die(f"the check cannot run on the base ({err}); send without --check or fix the check")
+        print(f"check {a.check} failed on the base (exit {r.returncode}) — red on base; sending anyway")
     # Qwen cannot commit, so mates/qwen-N holds no work of its own: moving it to the lead
     # HEAD is the rebase. Anything on it the lead lacks is kept on a ref first.
     head = git_safe(root, a.n, "rev-parse", "HEAD").stdout.strip()
@@ -705,6 +728,9 @@ def send(args):
         task = old
     else:
         task = _task(lead, summary=summary, reason=a.reason, files=files)
+    if a.check:
+        task["check_cmd"] = a.check
+        task["red_on_base"] = True
     q["task"] = task
     before = session.opencode_session(q["worktree"], db)
     if before:
@@ -712,10 +738,13 @@ def send(args):
     if a.cont:
         task["opencode_session"] = before
     save_state(root, state)
-    if not a.cont:
+    if not a.cont and not a.check:
         paste(pane, "/new")  # a clean context per task (Task 0: works; the row comes with the message)
     task["paste_ts"] = time.time()
-    paste(pane, _message(text))
+    sent_text = text
+    if a.check:
+        sent_text = text + "\n\nCheck: " + a.check
+    paste(pane, _message(sent_text))
     if task["opencode_session"] is None:
         deadline = time.time() + SESSION_WAIT_S
         while True:
@@ -862,11 +891,20 @@ def _check_args(args):
 
 
 def check(args):
-    n, cmd = _check_args(args)
+    n = _int(args[0])
+    cmd = None
+    if len(args) >= 3 and args[1] == "--":
+        rest = args[2:]
+        cmd = rest[0] if len(rest) == 1 else shlex.join(rest)
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, n)
     db = _db(root)
+    task = q.get("task")
+    if cmd is None:
+        if task is None or task.get("direct") or not task.get("check_cmd"):
+            die("usage: mates check N -- <cmd> (no check_cmd stored for this task)")
+        cmd = task["check_cmd"]
     # Qwen can edit the files mid-check only while qwen runs in its pane: a crashed, failed or
     # closed pane's work stays checkable (a lead checked a pane that died of a segfault).
     hit = _find(root, state, q)
@@ -896,9 +934,11 @@ def check(args):
     for line in out[-CHECK_TAIL:]:
         print(line)
     if r.returncode == 0:
-        task.update(checked_tree=tree, check_cmd=cmd)
+        task.update(checked_tree=tree, checked_cmd=cmd)
+        if task.get("check_cmd") is None:
+            task["check_cmd"] = cmd
     else:
-        task.update(checked_tree=None)
+        task.update(checked_tree=None, checked_cmd=None)
     save_state(root, state)
     return r.returncode
 
@@ -990,6 +1030,9 @@ def merge(args):
     if not task or not task.get("checked_tree"):
         die(f"nothing checked on Qwen pane {a.n}: run mates check {a.n} -- <cmd> first")
     checked = task["checked_tree"]
+    if task.get("check_cmd") and task.get("checked_cmd") != task["check_cmd"]:
+        die(f"the check that passed ({task.get('checked_cmd') or 'none'}) is not the send check "
+            f"({task['check_cmd']}); run mates check {a.n} to re-run it")
     if task.get("diffed_tree") != checked:
         die(f"run mates diff {a.n} first: the lead must read the diff of exactly what merges")
     summary = a.summary.splitlines()[0] if a.summary else task.get("summary")

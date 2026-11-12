@@ -10,8 +10,8 @@ Wai can talk to any pane herself.
 > with divergent outcomes go to Claude"
 
 No check, no Qwen: if you cannot write the command that proves the task done,
-do it yourself. Run that check on the untouched tree first (`mates check N`
-before the send): it must fail by its exit code, or it proves nothing.
+do it yourself. Send the check with the task (`--check "<cmd>"`); send refuses
+it if the check passes on the base (it proves nothing) or cannot run there.
 
 ## Briefs
 
@@ -37,13 +37,14 @@ before the send): it must fail by its exit code, or it proves nothing.
 
 ## The loop
 
-1. `mates send N --reason "<why Qwen>" --files a,b "<task + files + how to check>"`
-   (`--continue` keeps the OpenCode session, for a task that builds on what
-   Wai and Qwen just discussed).
+1. `mates send N --reason "<why Qwen>" --files a,b --check "<cmd>" "<task + files>"`
+    (`--continue` keeps the OpenCode session, for a task that builds on what
+    Wai and Qwen just discussed).
 2. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `dead`
    or `failed` and exits 0; `timeout` exits 1, so an until-loop keeps waiting).
    On `question:`, `mates answer N "<answer>"`.
-3. `mates check N -- <cmd>`, then `mates diff N` (the diff of what was checked).
+3. `mates check N` (reuses the check sent with `--check`), then `mates diff N`
+    (the diff of what was checked).
 4. `mates merge N -m "<commit message>"` (write the message; without `-m` it is
    the brief's first sentence, cut), or `mates answer N --sendback "<notes>"`. If `merge` says
    the lead moved, `mates sync N` and check again.
