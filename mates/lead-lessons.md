@@ -12,3 +12,6 @@
 - When a passing verdict still lists findings, skim the diff or the findings before accepting, so that real issues are not waved through.
 - Prefer Qwen for small checkable fixes when latency does not matter; use a subagent only when a fast turnaround is needed.
 - Record the exact worker model id, lead tokens and the check on every attempt, claude-self included, and count each re-brief as an attempt.
+- Keep each brief in a file that survives a restart, and stop if the file is missing: a missing file sends a half-empty brief.
+- Size each Qwen task to fit its 64K context: one plan task per brief, pointing at plan sections instead of pasting them; a re-send costs that context again.
+- Behaviour plus lead-written failing tests that define it gets Qwen's best work; exact code in a brief leaves Qwen nothing to do.
