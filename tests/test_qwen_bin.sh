@@ -295,6 +295,9 @@ printf '#!/bin/sh\nprintf %%s "$OPENCODE_CONFIG_CONTENT" > ./oc-config.json\n' >
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1)
 ht=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provider"]["ollama"]["options"].get("headerTimeout"))' "$T/repo/oc-config.json" 2>/dev/null)
 check "OpenCode waits up to an hour for a queued reply (headerTimeout 3600000)" '[ "$ht" = 3600000 ]'
+# grep and glob download ripgrep on first use, which fails with no network: every call was a wasted turn.
+tl=$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tools"]; print(t.get("grep"), t.get("glob"))' "$T/repo/oc-config.json" 2>/dev/null)
+check "OpenCode grep and glob tools are off (Qwen searches with bash)" '[ "$tl" = "False False" ]'
 # No OpenCode prompt may wait on Wai (2026-11-11: "should ask claude instead of me"): every "ask"
 # becomes "deny", and Qwen asks the lead. The real OpenCode resolves the rules (last match wins).
 REAL_OC=$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)

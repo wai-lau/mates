@@ -512,6 +512,9 @@ host=$(start_server)
 # LSP downloads, no Claude Code auto-discovery (the two CLAUDE.md files are listed explicitly).
 # headerTimeout: every pane shares one server slot, so a request can wait behind another pane's
 # reply (6-11 minutes at ~5 tokens/s); OpenCode's default of 5 minutes dropped those requests.
+# tools: grep and glob are off. On first use OpenCode downloads ripgrep from GitHub, which fails
+# with no network, so every call was a wasted turn (~22 across three repos, 2026-11-11/12); Qwen
+# searches with bash grep/find instead (qwen-sandbox.md).
 # permission: no prompt may wait on Wai ("should ask claude instead of me"), so every rule OpenCode
 # would "ask" (paths outside the repo and /tmp, .env reads, repeated calls, its question and
 # plan-mode tools) is "deny"; qwen-sandbox.md tells Qwen to ask the lead instead.
@@ -531,7 +534,7 @@ cfg='{
     }
   },
   "instructions": ["/home/qwen/.qwen/sandbox.md", "/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
-  "tools": { "webfetch": false, "websearch": false },
+  "tools": { "webfetch": false, "websearch": false, "grep": false, "glob": false },
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny",
                   "question": "deny", "plan_enter": "deny", "doom_loop": "deny",
                   "external_directory": { "*": "deny", "/tmp/*": "allow" },
