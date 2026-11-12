@@ -3,6 +3,18 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-12, from the mates lead
+
+### discard leaves a working Qwen running on the reset worktree
+
+`mates discard N` resets the worktree to the lead's HEAD but does not stop
+OpenCode. A Qwen still in its turn goes on editing the reset tree from its old
+context, and the next `send` reads the pane as busy. One Escape does not stop it:
+OpenCode needs two presses (the first only arms the interrupt).
+
+- **Wanted:** discard interrupts a busy pane first (two Escapes, then wait for
+  the spinner to go) or refuses while it is busy.
+
 ## 2026-11-12, from the spire lead after the WSL 3.0.5 restart
 
 ### send refuses a fresh pane while a killed pane's reply looks live
