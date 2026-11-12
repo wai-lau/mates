@@ -457,11 +457,14 @@ def input_empty(pane):
     if any(INPUT_EMPTY.search(line) for line in lines):
         return True
     border = _box_border(lines)
-    if border is None or border < 1 or not lines[border - 1].lstrip().startswith("┃"):
+    # Only the box's own columns: a wide pane prints a side column (path, branch) past the
+    # end of the border.
+    end = len(lines[border].rstrip()) if border is not None else 0
+    if border is None or border < 1 or not lines[border - 1][:end].lstrip().startswith("┃"):
         return False
     rows = []
     for line in reversed(lines[:border - 1]):  # up from the status row
-        s = line.lstrip()
+        s = line[:end].lstrip()
         if not s.startswith("┃"):
             break
         rows.append(s[1:].strip())

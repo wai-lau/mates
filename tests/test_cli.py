@@ -1989,7 +1989,7 @@ def test_check_works_when_the_pane_is_gone(m):
 import datetime  # noqa: E402
 
 
-def _oc_db(rt, monkeypatch):
+def _chat_db(rt, monkeypatch):
     db = rt.t / "oc" / "opencode.db"
     if not db.exists():
         db.parent.mkdir(exist_ok=True)
@@ -2008,7 +2008,7 @@ def _oc_db(rt, monkeypatch):
     return db
 
 
-def _oc_msg(db, when, text=None, repo="/home/x/src/widget", n=1, role="user", parent=None, parts=None):
+def _chat_msg(db, when, text=None, repo="/home/x/src/widget", n=1, role="user", parent=None, parts=None):
     """One message; `parts` is a list of OpenCode part dicts (default: one text part).
     `when` is an ISO UTC time like 2026-11-09T12:00:00."""
     ms = int(datetime.datetime.fromisoformat(when).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
@@ -2026,18 +2026,18 @@ def _oc_msg(db, when, text=None, repo="/home/x/src/widget", n=1, role="user", pa
     con.close()
 
 
-def _bash(cmd, output):
+def _chat_bash(cmd, output):
     return {"type": "tool", "tool": "bash", "callID": "c1",
             "state": {"status": "completed", "input": {"command": cmd}, "output": output}}
 
 
 def test_retro_sees_messages_sent_to_qwen(rt, monkeypatch):
-    db = _oc_db(rt, monkeypatch)
+    db = _chat_db(rt, monkeypatch)
     rt.line("2026-11-09")
     brief = "[from Claude] Fix the parser. " + "pinned detail " * 20 + "LEAD-BRIEF-END\n" + cli.ASK_SUFFIX
-    _oc_msg(db, "2026-11-09T10:00:00", brief)
-    _oc_msg(db, "2026-11-09T11:00:00", "Resume: OTHER-HAND-PASTE, your files are kept", n=2)
-    _oc_msg(db, "2026-11-10T01:00:00", "[from Claude] TOMORROW-MSG")
+    _chat_msg(db, "2026-11-09T10:00:00", brief)
+    _chat_msg(db, "2026-11-09T11:00:00", "Resume: OTHER-HAND-PASTE, your files are kept", n=2)
+    _chat_msg(db, "2026-11-10T01:00:00", "[from Claude] TOMORROW-MSG")
     assert rt.run("--date", "2026-11-09")[0] == 0
     (c,) = rt.calls()
     s = c["stdin"]
@@ -2047,12 +2047,12 @@ def test_retro_sees_messages_sent_to_qwen(rt, monkeypatch):
 
 
 def test_retro_sees_qwen_replies(rt, monkeypatch):
-    db = _oc_db(rt, monkeypatch)
+    db = _chat_db(rt, monkeypatch)
     rt.line("2026-11-09")
-    _oc_msg(db, "2026-11-09T10:00:00", "[from Claude] LEAD-ASK")
-    _oc_msg(db, "2026-11-09T10:01:00", role="assistant", parts=[
+    _chat_msg(db, "2026-11-09T10:00:00", "[from Claude] LEAD-ASK")
+    _chat_msg(db, "2026-11-09T10:01:00", role="assistant", parts=[
         {"type": "reasoning", "text": "QWEN-THINKING about it"},
-        _bash("QWEN-RAN python -m pytest -q", "QWEN-TOOL-OUTPUT 3 passed"),
+        _chat_bash("QWEN-RAN python -m pytest -q", "QWEN-TOOL-OUTPUT 3 passed"),
         {"type": "text", "text": "QWEN-REPLY all tests pass"},
         {"type": "step-finish", "reason": "stop"}])
     assert rt.run("--date", "2026-11-09")[0] == 0
@@ -2064,20 +2064,20 @@ def test_retro_sees_qwen_replies(rt, monkeypatch):
 
 
 def test_retro_chats_leave_out_qwen_subagents_and_other_repos(rt, monkeypatch):
-    db = _oc_db(rt, monkeypatch)
+    db = _chat_db(rt, monkeypatch)
     rt.line("2026-11-09")
-    _oc_msg(db, "2026-11-09T10:05:00", "QWEN-SUBAGENT explore the repo", parent="ses_parent")
-    _oc_msg(db, "2026-11-09T10:06:00", "OTHER-REPO msg", repo="/home/x/src/elsewhere")
-    _oc_msg(db, "2026-11-09T10:10:00", "[from Claude] LEAD-OK")
+    _chat_msg(db, "2026-11-09T10:05:00", "QWEN-SUBAGENT explore the repo", parent="ses_parent")
+    _chat_msg(db, "2026-11-09T10:06:00", "OTHER-REPO msg", repo="/home/x/src/elsewhere")
+    _chat_msg(db, "2026-11-09T10:10:00", "[from Claude] LEAD-OK")
     assert rt.run("--date", "2026-11-09")[0] == 0
     s = rt.calls()[0]["stdin"]
     assert "LEAD-OK" in s and "QWEN-SUBAGENT" not in s and "OTHER-REPO" not in s
 
 
 def test_retro_runs_on_a_day_with_only_chats(rt, monkeypatch):
-    db = _oc_db(rt, monkeypatch)
+    db = _chat_db(rt, monkeypatch)
     rt.line("2026-11-08")  # the repo is known from any day of the log
-    _oc_msg(db, "2026-11-09T10:00:00", "Resume: OTHER-ONLY-MSG")
+    _chat_msg(db, "2026-11-09T10:00:00", "Resume: OTHER-ONLY-MSG")
     code, _, err = rt.run("--date", "2026-11-09")
     assert code == 0, err
     (c,) = rt.calls()
@@ -2085,10 +2085,10 @@ def test_retro_runs_on_a_day_with_only_chats(rt, monkeypatch):
 
 
 def test_retro_cuts_long_messages(rt, monkeypatch):
-    db = _oc_db(rt, monkeypatch)
+    db = _chat_db(rt, monkeypatch)
     rt.line("2026-11-09")
-    _oc_msg(db, "2026-11-09T10:00:00", "[from Claude] " + "x" * 5000)
-    _oc_msg(db, "2026-11-09T10:01:00", role="assistant", parts=[{"type": "text", "text": "y" * 5000}])
+    _chat_msg(db, "2026-11-09T10:00:00", "[from Claude] " + "x" * 5000)
+    _chat_msg(db, "2026-11-09T10:01:00", role="assistant", parts=[{"type": "text", "text": "y" * 5000}])
     assert rt.run("--date", "2026-11-09")[0] == 0
     s = rt.calls()[0]["stdin"]
     assert "x" * 1900 in s and "x" * 2001 not in s  # each message: at most 2000 characters
@@ -2096,12 +2096,12 @@ def test_retro_cuts_long_messages(rt, monkeypatch):
 
 
 def test_retro_chat_cap_drops_oldest_qwen_first(rt, monkeypatch):
-    db = _oc_db(rt, monkeypatch)
+    db = _chat_db(rt, monkeypatch)
     monkeypatch.setattr(rt.retro, "CHAT_MAX", 6000)  # characters of chat lines per day
     rt.line("2026-11-09")
-    _oc_msg(db, "2026-11-09T09:00:00", "[from Claude] LEAD-FIRST")
+    _chat_msg(db, "2026-11-09T09:00:00", "[from Claude] LEAD-FIRST")
     for i in range(10):
-        _oc_msg(db, f"2026-11-09T10:{i:02d}:00", role="assistant",
+        _chat_msg(db, f"2026-11-09T10:{i:02d}:00", role="assistant",
                 parts=[{"type": "text", "text": f"QWEN-{i:02d} " + "z" * 1000}])
     assert rt.run("--date", "2026-11-09")[0] == 0
     s = rt.calls()[0]["stdin"]
@@ -2115,3 +2115,22 @@ def test_retro_without_an_opencode_db(rt, monkeypatch):
     code, _, err = rt.run("--date", "2026-11-09")
     assert code == 0, err
     assert len(rt.calls()) == 1
+
+
+def test_input_empty_wide_pane_side_column(m):
+    """A wide pane (127 columns) prints a side column (path, branch) to the right of the
+    input box, past the end of its bottom border: only the box's own columns count."""
+    border = "  ╹" + "▀" * 65
+    side = " " * (len(border) + 18)
+    screen = ["     earlier reply"] * 20 + [
+        "     ▣  Build · qwen3.8-27b-turbo", "",
+        "  ┃", "  ┃",
+        "  ┃" + side[3:] + "/home/wai/src/mates/.claude/worktrees/",
+        "  ┃  Build · qwen3.8-27b-turbo local" + " " * 51 + "mates-qwen-1:mates/qwen-1",
+        border,
+        "   /home/wai/src/mates/.claude/worktrees/mates-qwen-1   7.8K (12%)  ctrl+p commands"]
+    _capture(m, "\n".join(screen) + "\n")
+    assert cli.input_empty("%1") is True
+    screen[23] = "  ┃  half a sentence" + side[19:] + "/home/wai/src/mates/.claude/worktrees/"
+    _capture(m, "\n".join(screen) + "\n")
+    assert cli.input_empty("%1") is False
