@@ -368,3 +368,19 @@ def test_claude_session_follows_title(tmp_path):
     assert session.claude_session(root, "mates x") == "bbb"
     assert session.claude_session(root, "nope") is None
     assert session.claude_session("/no/such", "mates x") is None
+
+
+def test_compaction_is_not_a_finished_reply(tmp_path):
+    """OpenCode stores a compaction as a finished assistant message (mode/agent "compaction",
+    summary true, finish "stop") and then carries on: it must read busy (a lead's `mates wait`
+    printed idle right after one, 2026-11-12)."""
+    now = time.time()
+    p = tmp_path / "opencode.db"
+    db = _oc_db(p)
+    _msg(db, "m1", "s", now - 20, "user")
+    data = {"role": "assistant", "mode": "compaction", "agent": "compaction", "summary": True,
+            "finish": "stop", "time": {"created": int((now - 10) * 1000), "completed": int((now - 5) * 1000)}}
+    db.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+               ("m2", "s", int((now - 10) * 1000), int((now - 5) * 1000), json.dumps(data)))
+    db.commit()
+    assert session.opencode_state("s", p, now - 30) == "busy"

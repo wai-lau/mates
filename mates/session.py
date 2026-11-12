@@ -238,8 +238,10 @@ def opencode_state(session, db, since):
                                (session,)).fetchone()[0]
     if newest and newest[0] > since * 1000:
         data = json.loads(newest[1])
+        # A compaction is stored as a finished reply, but OpenCode carries on after it.
+        compaction = data.get("summary") is True or "compaction" in (data.get("mode"), data.get("agent"))
         if data.get("role") == "assistant" and (data.get("time") or {}).get("completed") \
-                and data.get("finish") != "tool-calls":
+                and data.get("finish") != "tool-calls" and not compaction:
             return "idle"
     quiet = last is None or now - last / 1000 > STALE_S
     if quiet and now - since > STALE_S:
