@@ -78,6 +78,10 @@ several times.
 - **Possible fixes:** treat the "esc interrupt" spinner in the pane as busy (the
   YTM lead's monitor already re-waits on it); ask the private server whether a
   request for this pane is queued or running; or raise STALE_S to match.
+- **Catch for the spinner fix (spire, 2026-11-12):** in a narrow tmux pane
+  OpenCode's status line wraps and "esc interrupt" splits across two lines, so
+  a plain grep for it reads a working pane as quiet. Join wrapped lines first
+  (`tmux capture-pane -J`) or match the pieces.
 
 ### A restart drops a runtime set by hand
 
@@ -92,6 +96,7 @@ spire, without `$SPIRE_PROOFS` and the browser-test tools).
   `.mates/runtime.sh` is built (and warn), or make `.mates/runtime.sh` plus
   `mates runtime` the only supported way and warn when a restart drops a
   runtime.
+- **Hit again** in spire after the 2026-11-12 00:30 crash; re-set by hand.
 
 ### No way to re-brief a pane with a dirty worktree
 
