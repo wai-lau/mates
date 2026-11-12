@@ -49,6 +49,8 @@
 #      every folder above it must be writable by no other account; `mates check` sets it),
 #      QWEN_RUNTIME=<dir> (bound read-only; KEY=VALUE lines of <dir>/env are set inside,
 #      a PATH= line goes in front of the sandbox PATH)
+#      QWEN_PROOFS=<dir> (the lead's proof files for checks: bound read-only at /opt/proofs,
+#      $MATES_PROOFS inside; never inside the repo, where Qwen can write)
 set -euo pipefail
 
 MODEL=${QWEN_MODEL:-qwen3.8-27b-turbo-heretic:mtp-iq4xs}
@@ -351,7 +353,7 @@ make_home() {
 run_sandboxed() {
   local host=$1; shift
   command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
-  local top="" gitdir="" ocdir="" cwd rt="" chk="" mnt
+  local top="" gitdir="" ocdir="" cwd rt="" pf="" chk="" mnt
   if [ -n "${QWEN_CHECK_DIR:-}" ]; then
     # A check (mates check): only this snapshot folder is mounted, at a neutral path, and
     # no repo at all. Its parents in the sandbox are /work and /, so no file Qwen wrote
@@ -373,6 +375,17 @@ run_sandboxed() {
     refuse_secret "$rt" && die "QWEN_RUNTIME refused (secret path): $rt"
     # Its env PATH runs inside every pane and check: another account able to swap it would own those.
     safe_ancestry "$rt" || die "QWEN_RUNTIME refused (it or a folder above it is writable by another account): $rt"
+  fi
+  # The lead's proof files (check scripts, browser tests): Qwen and the check read them, and
+  # neither can change them, so a check cannot be bent by editing its proof.
+  if [ -n "${QWEN_PROOFS:-}" ]; then
+    pf=$(readlink -f -- "$QWEN_PROOFS" 2>/dev/null) && [ -d "$pf" ] || die "QWEN_PROOFS is not a folder: $QWEN_PROOFS"
+    case "$HOME/" in "$pf"/*) die "QWEN_PROOFS refused (it holds your home folder): $pf" ;; esac
+    case "$mnt/" in "$pf"/*) die "QWEN_PROOFS refused (it holds the repo): $pf" ;; esac
+    case "$pf/" in "$mnt"/*) die "QWEN_PROOFS refused (it is inside the repo, where Qwen can write): $pf" ;; esac
+    [ "$pf" != / ] || die "QWEN_PROOFS refused: /"
+    refuse_secret "$pf" && die "QWEN_PROOFS refused (secret path): $pf"
+    safe_ancestry "$pf" || die "QWEN_PROOFS refused (it or a folder above it is writable by another account): $pf"
   fi
   RUN=$(mktemp -d "$STATE/run.XXXXXX")
   make_home "$RUN/home"
@@ -417,6 +430,7 @@ run_sandboxed() {
     esac
   fi
   [ -n "$rt" ] && A+=(--ro-bind "$rt" "$rt")
+  [ -n "$pf" ] && A+=(--ro-bind "$pf" /opt/proofs --setenv MATES_PROOFS /opt/proofs)
   [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] && A+=(--ro-bind "$OPENCODE" /opt/opencode/opencode)
   local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")

@@ -11,7 +11,7 @@ command -v bwrap >/dev/null || { echo "SKIP: bwrap not installed"; exit 0; }
 
 T=$(mktemp -d)
 RT=""
-cleanup() { pkill -f "$T/stub/ollama" 2>/dev/null; rm -rf "$T"; [ -z "$RT" ] || rm -rf "$RT"; [ -z "${RT2:-}" ] || rm -rf "$RT2"; }
+cleanup() { pkill -f "$T/stub/ollama" 2>/dev/null; rm -rf "$T"; [ -z "$RT" ] || rm -rf "$RT"; [ -z "${RT2:-}" ] || rm -rf "$RT2"; [ -z "${PF:-}" ] || rm -rf "$PF"; }
 trap cleanup EXIT
 
 mkdir -p "$T/stub" "$T/state" "$T/config"
@@ -135,6 +135,25 @@ check "a runtime env that is a link: refused, never read" '[ "$rc" != 0 ] && ! g
 rm "$RT2/env"; mkfifo "$RT2/env"
 QWEN_RUNTIME=$RT2 timeout 10 bash -c 'cd "$1" && "$2" exec -- true' _ "$T/repo" "$QWEN" 2>/dev/null; rc=$?
 check "a runtime env that is a fifo: refused at once" '[ "$rc" != 0 ] && [ "$rc" != 124 ]'
+
+# --- the lead's proof files: read-only at $MATES_PROOFS ------------------
+PF=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-test-pf.XXXXXX")
+echo proof-ok > "$PF/check.sh"
+out=$(QWEN_PROOFS=$PF in_ "$T/repo" "$QWEN" exec -- sh -c 'cat "$MATES_PROOFS/check.sh"' 2>/dev/null)
+check "proof files are readable at \$MATES_PROOFS" '[ "$out" = proof-ok ]'
+QWEN_PROOFS=$PF in_ "$T/repo" "$QWEN" exec -- sh -c 'echo x > "$MATES_PROOFS/check.sh"' 2>/dev/null; rc=$?
+check "proof files are read-only inside" '[ "$rc" != 0 ] && [ "$(cat "$PF/check.sh")" = proof-ok ]'
+out=$(in_ "$T/repo" "$QWEN" exec -- sh -c 'echo "${MATES_PROOFS:-unset}"' 2>/dev/null)
+check "no QWEN_PROOFS: MATES_PROOFS is unset inside" '[ "$out" = unset ]'
+mkdir -p "$T/repo/proofs-in-repo"
+QWEN_PROOFS=$T/repo/proofs-in-repo in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "a proofs folder inside the repo: refused (Qwen could edit it)" '[ "$rc" != 0 ]'
+rmdir "$T/repo/proofs-in-repo"
+mkdir -p "$T/shared-pf"
+QWEN_PROOFS=$T/shared-pf in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "a proofs folder under a folder others can write (/tmp): refused" '[ "$rc" != 0 ]'
+QWEN_PROOFS=$T/nope in_ "$T/repo" "$QWEN" exec -- true 2>/dev/null; rc=$?
+check "a missing proofs folder refuses to run" '[ "$rc" != 0 ]'
 
 # --- per-repo OpenCode state -------------------------------------------
 key() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
