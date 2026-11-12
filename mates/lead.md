@@ -10,7 +10,8 @@ Wai can talk to any pane herself.
 > with divergent outcomes go to Claude"
 
 No check, no Qwen: if you cannot write the command that proves the task done,
-do it yourself.
+do it yourself. Run that check on the untouched tree first (`mates check N`
+before the send): it must fail by its exit code, or it proves nothing.
 
 ## Briefs
 
