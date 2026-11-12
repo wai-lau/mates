@@ -1891,3 +1891,75 @@ def test_runtime_shows_what_it_builds(m):
     _rt_commit(m)
     code, out, _ = m.run("runtime", "--reason", "r")
     assert code == 0 and ".mates/runtime.sh" in out and "a.txt" in out
+
+
+# --- the pane's screen in a used OpenCode session (docs/bugs.md: send/answer refuse a used
+# pane; `mates wait` reads idle mid-task). Shapes copied from real 59-63 column panes.
+
+IDLE_FOOTER = ["   /home/u/src/x/.claude/     37.9K (5 ctrl+p",
+               "   worktrees/mates-qwen-1                          commands"]
+SPIN_FOOTER = ["   ⬝⬝⬝⬝■■■■  esc interrupt       35.3K (54%)  ctrl+p commands"]
+SPIN_WRAPPED = ["   ⬝⬝⬝⬝■■■■  esc", "   interrupt       35.3K (54%)  ctrl+p", "   commands"]
+EMPTY_BOX = ["  ┃", "  ┃", "  ┃"]
+
+
+def _used_screen(box_rows, footer):
+    """A used session: no placeholder anywhere. Past user messages in the chat above
+    share the ┃ gutter with the input box."""
+    chat = ["     Done. All tests pass (3/3, 24/24, 12/12).", "",
+            "     ▣  Build · qwen3.8-27b-turbo · 27m 55s", "",
+            "  ┃", "  ┃  fix the clock", "  ┃", "",
+            "     + Thought: 2.1s", "", "     Fixed.", "",
+            "     ▣  Build · qwen3.8-27b-turbo · 40s", ""]
+    box = box_rows + ["  ┃  Build · qwen3.8-27b-turbo local", "  ╹" + "▀" * 56]
+    return "\n".join(["     earlier reply"] * 20 + chat + box + footer) + "\n"
+
+
+def test_input_empty_used_session(m):
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    assert cli.input_empty("%1") is True
+    _capture(m, _used_screen(EMPTY_BOX, SPIN_FOOTER))
+    assert cli.input_empty("%1") is True
+
+
+def test_input_not_empty_used_session(m):
+    _capture(m, _used_screen(["  ┃", "  ┃  half a sentence Wai is typ", "  ┃"], IDLE_FOOTER))
+    assert cli.input_empty("%1") is False
+    _capture(m, _used_screen(["  ┃", "  ┃  line one", "  ┃  line two", "  ┃"], IDLE_FOOTER))
+    assert cli.input_empty("%1") is False
+    _capture(m, _used_screen(["  ┃", '  ┃  Run a command… "ls"', "  ┃"], IDLE_FOOTER))  # shell mode
+    assert cli.input_empty("%1") is False
+
+
+def test_send_accepts_used_pane_with_empty_box(m):
+    m.ses("ses_1", updated_s=time.time() - 50)
+    m.msg("ses_1", "assistant", time.time() - 60, completed_s=time.time() - 50, finish="stop")
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    m.send("next", "--continue")
+    assert len(m.buffers()) == 1
+
+
+def test_send_refuses_while_spinner(m):
+    """Wai's own message to Qwen: OpenCode shows its spinner before the database has the reply."""
+    m.ses("ses_1", updated_s=time.time() - 50)
+    m.msg("ses_1", "assistant", time.time() - 60, completed_s=time.time() - 50, finish="stop")
+    for footer in (SPIN_FOOTER, SPIN_WRAPPED):
+        _capture(m, _used_screen(EMPTY_BOX, footer))
+        code, _, err = m.run("send", 1, "--reason", "r", "--continue", "task")
+        assert code != 0 and "busy" in err and m.buffers() == []
+
+
+def test_wait_spinner_is_not_idle(m):
+    """A request queued for the one server slot writes nothing for minutes; the spinner shows it is live."""
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    old = time.time() - 1000
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = old
+    session.save(str(m.root), st)
+    m.msg("ses_1", "user", old + 1)  # quiet for longer than STALE_S
+    for footer in (SPIN_FOOTER, SPIN_WRAPPED):
+        _capture(m, _used_screen(EMPTY_BOX, footer))
+        assert m.run("wait", 1, "--timeout", "0.3")[1] == "timeout\n"
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
