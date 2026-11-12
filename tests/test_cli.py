@@ -2156,3 +2156,78 @@ def test_retro_chat_cap_drops_in_order_across_repos(rt, monkeypatch):
     order = [f"{r}{i}" for i in range(6) for r in "AB"]  # oldest first
     assert kept == order[len(order) - len(kept):]  # only the newest survive, in a block
     assert 0 < len(kept) < len(order)
+
+
+# --- `mates send N --check "<cmd>"` runs the check on the untouched tree first, in Qwen's
+# sandbox (as `mates check` runs it). Green there, it proves nothing: refused. A check that
+# cannot run there (exit 126/127, "command not found", Playwright's "Executable doesn't
+# exist"): refused, so Qwen never iterates against a check it cannot run. Any other failure
+# is red on base: the brief goes out with "Check: <cmd>" appended, the task keeps the command
+# (a later `mates check N` with no command reuses it) and the log line says red_on_base.
+
+def _send_check(m, cmd, text="fix a.txt"):
+    return m.run("send", 1, "--reason", "clear check", "--files", "a.txt", "--check", cmd, text)
+
+
+def test_send_check_refuses_a_check_green_on_base(m):
+    code, _, err = _send_check(m, "true")
+    assert code != 0 and "proves nothing" in err and m.buffers() == []
+    assert m.task() is None or not m.task().get("sent_ts")
+
+
+def test_send_check_refuses_a_check_that_cannot_run(m):
+    for cmd in ("no-such-tool-xyz --run", "exit 126",
+                "echo 'pytest: command not found' >&2; exit 1",
+                "echo \"Executable doesn't exist at /pw/webkit-2287/pw_run.sh\"; exit 1"):
+        code, _, err = _send_check(m, cmd)
+        assert code != 0 and "cannot run" in err and m.buffers() == [], cmd
+
+
+def test_send_check_red_on_base_sends(m):
+    code, out, err = _send_check(m, "test -f done.txt")
+    assert code == 0, err
+    assert "red on base" in out
+    (buf,) = m.buffers()
+    assert "Check: test -f done.txt" in buf
+    t = m.task()
+    assert t["check_cmd"] == "test -f done.txt" and t["red_on_base"] is True
+
+
+def test_send_check_missing_module_is_red_not_refused(m):
+    """The task may be to create the module the test imports."""
+    code, _, err = _send_check(m, "echo \"ModuleNotFoundError: No module named 'newmod'\"; exit 1")
+    assert code == 0, err
+    assert len(m.buffers()) == 1
+
+
+def test_check_reuses_the_send_check(m):
+    assert _send_check(m, "test -f done.txt")[0] == 0
+    (m.wt / "done.txt").write_text("x\n")
+    code, out, err = m.run("check", 1)
+    assert code == 0, err
+    assert out.splitlines()[0].startswith("check exit 0")
+
+
+def test_merge_logs_red_on_base(m):
+    assert _send_check(m, "test -f done.txt")[0] == 0
+    (m.wt / "done.txt").write_text("x\n")
+    assert m.run("check", 1)[0] == 0
+    assert m.run("diff", 1)[0] == 0
+    assert m.run("merge", 1)[0] == 0
+    rec = m.log()[-1]
+    assert rec["red_on_base"] is True and rec["check"] == "test -f done.txt"
+
+
+def test_merge_needs_the_send_check_not_another(m):
+    """A task sent with --check merges only after that check passed on the merged tree: a
+    weaker check that happens to pass cannot stand in for it (seen 2026-11-12 in a lead)."""
+    assert _send_check(m, "test -f done.txt")[0] == 0
+    (m.wt / "a.txt").write_text("b\n")
+    assert m.run("check", 1, "--", "true")[0] == 0  # some other check passes
+    assert m.run("diff", 1)[0] == 0
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "test -f done.txt" in err
+    (m.wt / "done.txt").write_text("x\n")
+    assert m.run("check", 1)[0] == 0  # the send check, reused
+    assert m.run("diff", 1)[0] == 0
+    assert m.run("merge", 1)[0] == 0
