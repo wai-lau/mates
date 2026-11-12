@@ -2259,3 +2259,103 @@ def test_send_check_runs_on_the_lead_tree(m):
     m.lead_commit("new.txt", "x\n")  # the lead moved on after the worktree was made
     code, _, err = _send_check(m, "test -f new.txt")
     assert code != 0 and "proves nothing" in err
+
+
+# --- a readable screen decides busy (docs/bugs.md: send refuses a fresh pane while a killed
+# pane's reply looks live). When the pane is live and its input box is on screen, busy means
+# the spinner shows. The database's rule counts only within PASTE_GRACE_S (30) of mates'
+# own paste (the spinner takes a moment to appear) or when the screen cannot be read: a
+# killed pane's unfinished reply, or a stray write to an old session, no longer reads busy.
+
+def _stale_reply(m, age=20):
+    m.ses("ses_old", updated_s=time.time() - age)
+    m.msg("ses_old", "user", time.time() - age)  # unfinished, newer than STALE_S
+
+
+def test_paste_grace_default():
+    assert getattr(cli, "PASTE_GRACE_S", None) == 30
+
+
+def test_send_ignores_a_stale_reply_when_the_screen_is_idle(m):
+    _stale_reply(m)
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    m.send("task")
+    assert len(m.buffers()) == 1
+
+
+def test_send_still_refuses_while_the_spinner_shows(m):
+    _stale_reply(m)
+    _capture(m, _used_screen(EMPTY_BOX, SPIN_FOOTER))
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "busy" in err and m.buffers() == []
+
+
+def test_unreadable_screen_keeps_the_database_rule(m):
+    _stale_reply(m)  # the fixture's default screen has no input box border
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "busy" in err
+
+
+def test_right_after_a_paste_the_database_counts(m, monkeypatch):
+    m.on_enter_creates_session("ses_1")
+    m.send("first")
+    m.msg("ses_1", "user", time.time())  # the reply has not started; no spinner yet
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    code, _, err = m.run("answer", 1, "more")
+    assert code != 0 and "busy" in err
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 31  # past PASTE_GRACE_S
+    session.save(str(m.root), st)
+    code, _, err = m.run("answer", 1, "more")
+    assert code == 0, err
+
+
+def test_wait_idle_when_the_screen_is_idle_despite_a_stale_reply(m):
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 60
+    session.save(str(m.root), st)
+    m.msg("ses_1", "user", time.time() - 20)  # unfinished, recent: the database alone says busy
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_check_runs_when_the_screen_is_idle_despite_a_stale_reply(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    _stale_reply(m)
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 60
+    session.save(str(m.root), st)
+    code, _, err = m.run("check", 1, "--", "cat a.txt")
+    assert code == 0, err
+
+
+# --- a launch starts a repo's Qwen panes a few seconds apart (docs/bugs.md: two Qwen panes
+# in one repo race for OpenCode's database at restart). PANE_STAGGER_S (default 5) is the gap
+# between one pane's go signal and the next; the first pane is not delayed.
+
+def test_launch_starts_panes_a_few_seconds_apart(m, monkeypatch):
+    monkeypatch.setattr(cli, "PANE_STAGGER_S", 0.4, raising=False)
+    m.no_panes()
+    ids = iter(["%2", "%3"])
+    monkeypatch.setattr(layout, "split", lambda argv: next(ids))
+    hook = m.t / "on-any"  # the fake tmux runs it after logging each call
+    hook.write_text(f"#!/bin/sh\nprintf '%s %s\\n' \"$(date +%s.%N)\" \"$(tail -1 '{m.t}/tmux.log')\""
+                    f" >> '{m.t}/stamped.log'\n")
+    hook.chmod(0o755)
+    plan = {"qwens": [{"n": 1, "worktree": str(m.wt), "cmd": "true"},
+                      {"n": 2, "worktree": _wt(str(m.root), 2), "cmd": "true"}]}
+    t0 = time.time()
+    got = cli._split_qwens(str(m.root), "%0", plan, [])
+    assert [n for n, _ in got] == [1, 2]
+    stamps = [float(line.split()[0]) for line in (m.t / "stamped.log").read_text().splitlines()
+              if "wait-for -S mates-go-" in line]
+    assert len(stamps) == 2
+    assert stamps[0] - t0 < 0.4 and stamps[1] - stamps[0] >= 0.4
+
+
+def test_pane_stagger_default():
+    assert getattr(cli, "PANE_STAGGER_S", None) == 5  # the measured race window was ~2 s
