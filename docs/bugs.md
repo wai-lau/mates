@@ -3,6 +3,25 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-12, from the spire lead after the WSL 3.0.5 restart
+
+### send refuses a fresh pane while a killed pane's reply looks live
+
+spire killed pane %9 mid-reply; `mates add` opened %10. `mates send 1` then
+refused with "Qwen pane 1 is busy (OpenCode is replying)" although %10 sat idle
+on OpenCode's empty start screen. The brief was pasted by hand, so it never
+reached the task log.
+
+- **Cause (from the code):** `_busy()` (`mates/cli.py:427`) asks
+  `opencode_session()` for the worktree's newest OpenCode session. A fresh
+  pane has none until its first message, so the newest one is the killed
+  pane's, whose last reply never finished. `opencode_state()` calls that busy
+  until nothing in it changes for STALE_S (300 s).
+- **Workaround:** wait 5 minutes after the kill, then send.
+- **Wanted:** a reply whose OpenCode process is gone is not busy. For example,
+  only count a session the live pane is showing, or treat OpenCode's empty
+  start screen as idle.
+
 ## 2026-11-12, from the 00:30 WSL crash
 
 ### Two Qwen panes in one repo race for OpenCode's database at restart
@@ -101,6 +120,11 @@ spire, without `$SPIRE_PROOFS` and the browser-test tools).
   `mates runtime` the only supported way and warn when a restart drops a
   runtime.
 - **Hit again** in spire after the 2026-11-12 00:30 crash; re-set by hand.
+- **Hit a third time** after the WSL 3.0.5 restart. The hand re-set itself
+  failed first: it imported `session.py` from an old path, so pane 1 restarted
+  with no runtime. `mates/session.py` has never moved in git, so the old path
+  was likely another checkout. A runtime built from `.mates/runtime.sh` with
+  `mates runtime` comes back on restart; one set by hand does not.
 
 ### No way to re-brief a pane with a dirty worktree
 
