@@ -325,6 +325,7 @@ check "the TUI config loads the no-logo plugin" '[ "$tp" = "['\''file:///opt/qwe
 check "the no-logo plugin is readable in the sandbox" 'grep -q home_logo "$T/repo/oc-nologo.js"'
 # No OpenCode prompt may wait on Wai (2026-11-11: "should ask claude instead of me"): every "ask"
 # becomes "deny", and Qwen asks the lead. The real OpenCode resolves the rules (last match wins).
+# The lead's proofs (/opt/proofs, read-only) must be readable by OpenCode's tools, not only by bash.
 REAL_OC=$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)
 if [ -n "$REAL_OC" ] && [ -s "$T/repo/oc-config.json" ]; then
   mkdir -p "$T/ochome"
@@ -340,12 +341,13 @@ def act(perm, res):
     return hit[-1]["action"] if hit else "ask"
 for perm, res in [("external_directory", "/home/qwen/.config/opencode/skills"), ("doom_loop", "*"),
                   ("read", "/w/.env"), ("read", "/w/.env.local"), ("question", "*"), ("plan_enter", "*"),
-                  ("external_directory", "/tmp/x"), ("read", "/w/.env.example"), ("bash", "ls"), ("edit", "/w/a")]:
+                  ("external_directory", "/tmp/x"), ("external_directory", "/opt/proofs/sub/*"), ("read", "/w/.env.example"), ("bash", "ls"), ("edit", "/w/a")]:
     print(perm, res, act(perm, res))
 print("asks:", sum(r["action"] == "ask" and act(r["permission"], r["pattern"]) == "ask" for r in rules))
 ' <<<"$rules" 2>&1)
   for v in "external_directory /home/qwen/.config/opencode/skills deny" "doom_loop * deny" "read /w/.env deny" \
            "read /w/.env.local deny" "question * deny" "plan_enter * deny" "external_directory /tmp/x allow" \
+           "external_directory /opt/proofs/sub/* allow" \
            "read /w/.env.example allow" "bash ls allow" "edit /w/a allow" "asks: 0"; do
     check "OpenCode permission: $v" 'grep -qxF "$v" <<<"$verdicts"'
   done

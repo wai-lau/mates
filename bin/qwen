@@ -554,7 +554,7 @@ cfg='{
   "tools": { "webfetch": false, "websearch": false TOOLS_},
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny",
                   "question": "deny", "plan_enter": "deny", "doom_loop": "deny",
-                  "external_directory": { "*": "deny", "/tmp/*": "allow" },
+                  "external_directory": { "*": "deny", "/tmp/*": "allow", "/opt/proofs/*": "allow" },
                   "read": { "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" } }
 }'
 tools=''; [ -x /usr/bin/rg ] || tools=', "grep": false, "glob": false'
