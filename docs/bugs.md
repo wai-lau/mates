@@ -14,6 +14,12 @@ OpenCode needs two presses (the first only arms the interrupt).
 
 - **Wanted:** discard interrupts a busy pane first (two Escapes, then wait for
   the spinner to go) or refuses while it is busy.
+- **Worse with `/new`:** `/new` on a busy pane opens a fresh chat but leaves the
+  old one running out of sight. Here it kept working the discarded task for three
+  hours, edited the reset worktree, and kept the pane reading busy (its writes
+  are the newest in the database). Only restarting the pane stopped it. mates'
+  own `send` pastes `/new` only on an idle pane, so it is safe; a lead's hand
+  `/new` on a busy pane is not.
 
 ## 2026-11-12, from the spire lead after the WSL 3.0.5 restart
 

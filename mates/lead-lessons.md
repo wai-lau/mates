@@ -19,3 +19,4 @@
 - Name the line range or a grep pattern when a brief points into a big file: Qwen reads files whole, and a 2,000-line test file fills half its 64K context and slows every turn.
 - OpenCode needs Escape pressed twice to interrupt a reply; one press only arms it. See the spinner gone before you discard, sync or send.
 - When Qwen writes docs or history, pin the exact quotes, versions and counts in the brief, and read its doc diff line by line: it has invented owner quotes and approvals.
+- Never paste /new into a busy Qwen pane: OpenCode keeps the old chat running out of sight. Stop it first (Escape twice), or restart the pane.
