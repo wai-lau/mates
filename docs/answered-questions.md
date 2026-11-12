@@ -4,6 +4,7 @@ Decisions Wai made on open questions, newest first.
 
 | When | Question | Wai's answer | Reading taken |
 |---|---|---|---|
+| 2026-11-12 | Which RAM change first, to stop the WSL kernel panics (three panics, the same bit flipped each time, four mixed sticks at DDR4-3200 above AMD's four-stick rating)? | "gonna try A later" | Keep all four sticks and mix them safely: D.O.C.P. stays on, DRAM Frequency DDR4-2666, Gear Down Mode Enabled; change nothing else (Load Optimized Defaults would turn SVM off and stop WSL). Wai sets it when convenient. The test is 2 days at today's load (spire sims on 10 workers plus Qwen) with no panic; panics came about 11 hours apart. If it still panics, pull the Corsair pair next |
 | 2026-11-12 | Close Qwen panes nobody is using? (asked by Wai) | "close unused opencode panes after 30m" | A pane with no open task, an idle screen and an empty input box closes after 30 minutes without use (a task ending, or any OpenCode message, including Wai chatting with Qwen, resets the clock). The worktree stays; `mates add` reopens it. Tests are written; Qwen builds it |
 | 2026-11-12 | Start OpenCode without its big logo? (asked by Wai) | "I just want it to start in chat mode without the big opencode logo" | OpenCode shows a chat only after the first message, so a fresh pane can't open in chat mode. A TUI plugin hides the logo, leaving just the input box |
 | 2026-11-12 | Install ripgrep so Qwen's grep and glob tools work offline? | "ripgrep installed" | grep and glob are back on whenever the host has `/usr/bin/rg` |
