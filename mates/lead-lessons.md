@@ -16,3 +16,4 @@
 - Size each Qwen task to fit its 64K context: one plan task per brief, pointing at plan sections instead of pasting them; a re-send costs that context again.
 - Behaviour plus lead-written failing tests that define it gets Qwen's best work; exact code in a brief leaves Qwen nothing to do.
 - Merge only under the check that defines done. If the strict check fails, send it back or finish it and log that; a merge under a weaker check logs a false accept.
+- Name the line range or a grep pattern when a brief points into a big file: Qwen reads files whole, and a 2,000-line test file fills half its 64K context and slows every turn.
