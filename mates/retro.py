@@ -239,10 +239,10 @@ def _chat_prompt(day, chats):
     for repo, lines in chats.items():
         repo_lines = []
         for l in lines:
-            obj = json.dumps(l, sort_keys=True)
-            if len(obj) > CHAT_PER_LINE:
-                obj = obj[:CHAT_PER_LINE]
-            repo_lines.append(obj)
+            l = dict(l)
+            if len(l.get("text") or "") > CHAT_PER_LINE:  # cut the text, so each line stays JSON
+                l["text"] = l["text"][:CHAT_PER_LINE] + " [cut]"
+            repo_lines.append(json.dumps(l, sort_keys=True))
         total = sum(len(l) + 1 for l in repo_lines)
         dropped = 0
         if total > CHAT_MAX:

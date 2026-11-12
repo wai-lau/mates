@@ -253,9 +253,8 @@ def opencode_chats(repo, db, day):
     Parts are a list of (part_id, part_data_json). Top-level sessions only."""
     import datetime as dt
     start = dt.datetime.fromisoformat(f"{day}T00:00:00+00:00")
-    end = dt.datetime.fromisoformat(f"{day}T23:59:59+00:00")
     start_ms = int(start.timestamp() * 1000)
-    end_ms = int(end.timestamp() * 1000)
+    end_ms = int((start + dt.timedelta(days=1)).timestamp() * 1000)  # the whole day, to midnight
     prefix = f"{repo}/.claude/worktrees/mates-qwen-"
     out = []
     with _ro(db) as con:
@@ -265,7 +264,7 @@ def opencode_chats(repo, db, day):
         for (sid,) in sessions:
             msgs = con.execute(
                 "SELECT id, time_created, data FROM message WHERE session_id = ? AND "
-                "time_created >= ? AND time_created <= ? ORDER BY time_created, id",
+                "time_created >= ? AND time_created < ? ORDER BY time_created, id",
                 (sid, start_ms, end_ms)).fetchall()
             for mid, ms, data in msgs:
                 parts = con.execute(
