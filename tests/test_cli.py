@@ -2187,8 +2187,8 @@ def test_send_check_red_on_base_sends(m):
     code, out, err = _send_check(m, "test -f done.txt")
     assert code == 0, err
     assert "red on base" in out
-    (buf,) = m.buffers()
-    assert "Check: test -f done.txt" in buf
+    bufs = m.buffers()
+    assert bufs[0] == "/new" and "Check: test -f done.txt" in bufs[-1]
     t = m.task()
     assert t["check_cmd"] == "test -f done.txt" and t["red_on_base"] is True
 
@@ -2197,7 +2197,7 @@ def test_send_check_missing_module_is_red_not_refused(m):
     """The task may be to create the module the test imports."""
     code, _, err = _send_check(m, "echo \"ModuleNotFoundError: No module named 'newmod'\"; exit 1")
     assert code == 0, err
-    assert len(m.buffers()) == 1
+    assert m.buffers()[-1].startswith("[from Claude] ")
 
 
 def test_check_reuses_the_send_check(m):
@@ -2231,3 +2231,31 @@ def test_merge_needs_the_send_check_not_another(m):
     assert m.run("check", 1)[0] == 0  # the send check, reused
     assert m.run("diff", 1)[0] == 0
     assert m.run("merge", 1)[0] == 0
+
+
+# --- send --check follow-ups (lead review of the Qwen version)
+
+def test_send_check_still_starts_a_fresh_chat(m):
+    assert _send_check(m, "test -f done.txt")[0] == 0
+    bufs = m.buffers()
+    assert bufs[0] == "/new" and bufs[1].startswith("[from Claude] ")
+
+
+def test_merge_without_send_check_takes_any_passing_check(m):
+    """Only a task sent with --check has a merge gate: without one, the check that passed last
+    is the one that counts, however many failed before it."""
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    assert m.run("check", 1, "--", "false")[0] != 0
+    assert m.run("check", 1, "--", "true")[0] == 0
+    assert m.run("diff", 1)[0] == 0
+    code, _, err = m.run("merge", 1)
+    assert code == 0, err
+    assert m.log()[-1]["check"] == "true"
+
+
+def test_send_check_runs_on_the_lead_tree(m):
+    """The worktree can be behind the lead: the base run must see the lead's files."""
+    m.lead_commit("new.txt", "x\n")  # the lead moved on after the worktree was made
+    code, _, err = _send_check(m, "test -f new.txt")
+    assert code != 0 and "proves nothing" in err

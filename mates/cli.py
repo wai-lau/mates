@@ -690,7 +690,7 @@ def send(args):
     lead = _lead_head(root)
     if a.check:
         try:
-            tree = snapshot(root, a.n, lead)
+            tree = git_lead(root, "rev-parse", f"{lead}^{{tree}}").stdout.strip()  # the lead's files: the worktree may be behind
             env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO")}
             if state.get("runtime"):
                 env["QWEN_RUNTIME"] = state["runtime"]
@@ -729,8 +729,7 @@ def send(args):
     else:
         task = _task(lead, summary=summary, reason=a.reason, files=files)
     if a.check:
-        task["check_cmd"] = a.check
-        task["red_on_base"] = True
+        task.update(check_cmd=a.check, send_check=a.check, red_on_base=True)
     q["task"] = task
     before = session.opencode_session(q["worktree"], db)
     if before:
@@ -738,7 +737,7 @@ def send(args):
     if a.cont:
         task["opencode_session"] = before
     save_state(root, state)
-    if not a.cont and not a.check:
+    if not a.cont:
         paste(pane, "/new")  # a clean context per task (Task 0: works; the row comes with the message)
     task["paste_ts"] = time.time()
     sent_text = text
@@ -884,27 +883,24 @@ def _unpacked(root, n, tree, base):
 
 
 def _check_args(args):
-    if len(args) < 3 or args[1] != "--":
-        die("usage: mates check N -- <cmd>")
+    """N and the command after `--`; no `--`: None (reuse the task's check)."""
+    if not args or (len(args) > 1 and (args[1] != "--" or len(args) < 3)):
+        die("usage: mates check N [-- <cmd>]")
     rest = args[2:]
-    return _int(args[0]), rest[0] if len(rest) == 1 else shlex.join(rest)
+    return _int(args[0]), (None if not rest else rest[0] if len(rest) == 1 else shlex.join(rest))
 
 
 def check(args):
-    n = _int(args[0])
-    cmd = None
-    if len(args) >= 3 and args[1] == "--":
-        rest = args[2:]
-        cmd = rest[0] if len(rest) == 1 else shlex.join(rest)
+    n, cmd = _check_args(args)
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, n)
     db = _db(root)
     task = q.get("task")
     if cmd is None:
-        if task is None or task.get("direct") or not task.get("check_cmd"):
-            die("usage: mates check N -- <cmd> (no check_cmd stored for this task)")
-        cmd = task["check_cmd"]
+        cmd = (task or {}).get("send_check") or (task or {}).get("check_cmd")
+        if task is None or task.get("direct") or not cmd:
+            die(f"usage: mates check {n} -- <cmd> (this task has no check to reuse)")
     # Qwen can edit the files mid-check only while qwen runs in its pane: a crashed, failed or
     # closed pane's work stays checkable (a lead checked a pane that died of a segfault).
     hit = _find(root, state, q)
@@ -934,11 +930,9 @@ def check(args):
     for line in out[-CHECK_TAIL:]:
         print(line)
     if r.returncode == 0:
-        task.update(checked_tree=tree, checked_cmd=cmd)
-        if task.get("check_cmd") is None:
-            task["check_cmd"] = cmd
+        task.update(checked_tree=tree, check_cmd=cmd)
     else:
-        task.update(checked_tree=None, checked_cmd=None)
+        task.update(checked_tree=None)
     save_state(root, state)
     return r.returncode
 
@@ -1030,9 +1024,9 @@ def merge(args):
     if not task or not task.get("checked_tree"):
         die(f"nothing checked on Qwen pane {a.n}: run mates check {a.n} -- <cmd> first")
     checked = task["checked_tree"]
-    if task.get("check_cmd") and task.get("checked_cmd") != task["check_cmd"]:
-        die(f"the check that passed ({task.get('checked_cmd') or 'none'}) is not the send check "
-            f"({task['check_cmd']}); run mates check {a.n} to re-run it")
+    if task.get("send_check") and task.get("check_cmd") != task["send_check"]:
+        die(f"the check that passed ({task.get('check_cmd')}) is not the send check "
+            f"({task['send_check']}); run mates check {a.n} to re-run it")
     if task.get("diffed_tree") != checked:
         die(f"run mates diff {a.n} first: the lead must read the diff of exactly what merges")
     summary = a.summary.splitlines()[0] if a.summary else task.get("summary")
