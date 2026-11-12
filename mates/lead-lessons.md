@@ -8,7 +8,7 @@
 - Route to Qwen only when the check fixes the outcome; layout, fit or design work where Qwen would choose the approach stays with Claude.
 - After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
 - Before sending to a pane, confirm it has the runtime the check needs; a missing runtime looks like a worker stall.
-- Cap stalled Qwen tasks: after two re-briefs or about 30 minutes without progress, finish from its diff instead of briefing again.
+- Judge a Qwen stall by its turns, not the clock: on a shared slot a turn can wait 6+ minutes. Stuck means no new tool call for 30 minutes, or two re-briefs that failed.
 - When a passing verdict still lists findings, skim the diff or the findings before accepting, so that real issues are not waved through.
 - Prefer Qwen for small checkable fixes when latency does not matter; use a subagent only when a fast turnaround is needed.
 - Record the exact worker model id, lead tokens and the check on every attempt, claude-self included, and count each re-brief as an attempt.
