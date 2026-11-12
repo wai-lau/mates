@@ -24,6 +24,10 @@ human-music's two panes started the same way a second apart and both came up.
 - **Wanted:** a lock error at start should not fail the pane. Either mates
   starts one repo's panes one after another, or `qwen` retries a start that
   fails with "database is locked". And a restart should keep the session id.
+- **Stale session id after the hand restart:** `mates list` still shows pane
+  1's pre-restart session (`ses_e31c95d2cffeQX26zVlwDjYAMU`), so
+  `mates send --continue 1` would go to the wrong session. The open task was
+  re-sent to the new pane as attempt 2 and is running.
 
 ## 2026-11-11, from the YTM mates lead
 
