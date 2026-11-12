@@ -353,6 +353,7 @@ CHECK_TAIL = 20
 # opening quote of the example is part of the rule, so chat text that merely says
 # "Ask anything..." does not count as an empty box.
 INPUT_EMPTY = re.compile(r'Ask anything(…|\.\.\.) "')
+ESCAPE_INTERRUPT = re.compile(r'esc\s+interrupt')
 PROTOCOL = ("done.md", "question.md")
 
 
@@ -430,9 +431,41 @@ def _busy(q, db):
     return sid is not None and session.opencode_state(sid, db, 0) == "busy"
 
 
+def _box_border(lines):
+    """Index of the input box's bottom border (`╹▀▀▀`, the last one on screen), or None."""
+    return max((i for i, line in enumerate(lines) if line.lstrip().startswith("╹▀")), default=None)
+
+
+def screen_busy(pane):
+    """True when OpenCode's "esc interrupt" spinner shows in the footer under the input
+    box: it is working even when the database says idle or quiet. Only the footer counts,
+    so chat text that quotes the words does not; the lines are joined, because in a narrow
+    pane the spinner wraps across two."""
+    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
+    border = _box_border(lines)
+    footer = lines[border + 1:] if border is not None else lines[-3:]
+    return bool(ESCAPE_INTERRUPT.search(" ".join(footer)))
+
+
 def input_empty(pane):
-    """True when the OpenCode input box in `pane` holds no typed text."""
-    return any(INPUT_EMPTY.search(line) for line in _tmux_out("capture-pane", "-p", "-t", pane).splitlines())
+    """True when the OpenCode input box in `pane` holds no typed text. A fresh session
+    shows the placeholder. A used one shows only blank rows: the ┃ rows above the box's
+    status row, which sits on the box's bottom border. Past user messages higher up share
+    the ┃ gutter but end at a blank line. A screen with neither reads as not empty (fail
+    closed: never paste over what Wai is typing)."""
+    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
+    if any(INPUT_EMPTY.search(line) for line in lines):
+        return True
+    border = _box_border(lines)
+    if border is None or border < 1 or not lines[border - 1].lstrip().startswith("┃"):
+        return False
+    rows = []
+    for line in reversed(lines[:border - 1]):  # up from the status row
+        s = line.lstrip()
+        if not s.startswith("┃"):
+            break
+        rows.append(s[1:].strip())
+    return bool(rows) and not any(rows)
 
 
 def paste(pane, text):
@@ -634,7 +667,7 @@ def send(args):
     q = _qentry(state, a.n)
     pane = _live_pane(root, state, q)
     db = _db(root)
-    if _busy(q, db):
+    if _busy(q, db) or screen_busy(pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
@@ -737,16 +770,19 @@ def wait(args):
             if new and new != q.get("opencode_session"):
                 sid = task["opencode_session"] = q["opencode_session"] = new
                 _patch_task(root, a.n, task["id"], opencode_session=new)
-        # A protocol file counts only once OpenCode has stopped (check's busy rule): Qwen
-        # writes done.md and then keeps replying for a while, and check refuses meanwhile.
-        found = [(word, text) for name, word in (("question.md", "question"), ("done.md", "done"))
-                 if (text := _unsafe(read_protocol, q["worktree"], name)) is not None]
-        if found and not _busy(q, db):
-            print(f"{found[0][0]}: {found[0][1]}")
-            return 0
-        if not found and sid and session.opencode_state(sid, db, since) == "idle":
-            print("idle")
-            return 0
+        # The spinner means OpenCode is working, whatever the database says: a request queued
+        # for the one server slot writes nothing for minutes (docs/bugs.md history).
+        if not screen_busy(hit[0]):
+            # A protocol file counts only once OpenCode has stopped (check's busy rule): Qwen
+            # writes done.md and then keeps replying for a while, and check refuses meanwhile.
+            found = [(word, text) for name, word in (("question.md", "question"), ("done.md", "done"))
+                     if (text := _unsafe(read_protocol, q["worktree"], name)) is not None]
+            if found and not _busy(q, db):
+                print(f"{found[0][0]}: {found[0][1]}")
+                return 0
+            if not found and sid and session.opencode_state(sid, db, since) == "idle":
+                print("idle")
+                return 0
         if time.time() >= deadline:
             print("timeout")
             return 1
@@ -768,7 +804,7 @@ def answer(args):
         die(f"Qwen pane {a.n} has no open task (mates send starts one)")
     pane = _live_pane(root, state, q)
     db = _db(root)
-    if _busy(q, db):
+    if _busy(q, db) or screen_busy(pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
@@ -828,7 +864,12 @@ def check(args):
     state = _load(root)
     q = _qentry(state, n)
     db = _db(root)
-    if _busy(q, db):
+    # Qwen can edit the files mid-check only while qwen runs in its pane: a crashed, failed or
+    # closed pane's work stays checkable (a lead checked a pane that died of a segfault).
+    hit = _find(root, state, q)
+    live = hit is not None and hit[1] != "failed" and \
+        _tmux_out("display", "-p", "-t", hit[0], "#{" + QWEN_LIVE + "}").strip() == "1"
+    if live and (_busy(q, db) or screen_busy(hit[0])):
         die(f"Qwen pane {n} is busy (OpenCode is replying): Qwen could edit the files mid-check; wait for it")
     task = q.get("task")
     try:

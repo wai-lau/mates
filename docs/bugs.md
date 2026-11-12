@@ -64,48 +64,6 @@ blocking `answer`, the only way out was discard, `/new`, then send again.
 
 ## 2026-11-11, from the spire mates lead
 
-### send/answer refuse a used OpenCode pane
-
-`mates send` and `mates answer` refuse with "Qwen pane N has text in its input
-box (Wai may be typing); not pasting over it" on any pane whose OpenCode session
-has already been used, even when the box is empty.
-
-- **Cause:** `input_empty()` (`mates/cli.py:433`) only looks for `INPUT_EMPTY`
-  (`mates/cli.py:355`, `Ask anything… "`), which is OpenCode's placeholder. A
-  session that has been used no longer shows it, so an empty box reads as "has
-  text".
-- **Repro:** have Qwen finish one task in a pane, then `mates send <n> ...` with
-  the input box empty.
-- **Workaround:** paste `/new` by hand. That brings the placeholder back but
-  throws away the chat.
-- **Also hit by YTM** twice: `mates answer 1` after the WSL restart, with the
-  box empty. `/new` lost the brief, so it took discard + resend.
-
-### `mates wait` reads idle mid-task
-
-`mates wait` (and `send`/`check`, which share the rule) says a pane is `idle` in
-the middle of a task when nothing in its OpenCode session changes for more than
-`STALE_S` (300 s, `mates/session.py:27`). In spire, a 14m53s turn read as idle
-several times.
-
-- **Cause:** `opencode_state()` (`mates/session.py:222`) treats "no message or
-  part updated for STALE_S" as a crashed OpenCode. Nothing gets written while a
-  request waits for the server's one slot, which is shared by every pane (or
-  while a long think writes nothing), so a live request looks dead.
-- **Made more likely by f31922e:** OpenCode used to drop a request after 5
-  minutes without reply headers; it now waits up to an hour, and the wait writes
-  nothing.
-- **Also hit by YTM** twice: `mates wait 1` printed `idle` while the pane showed
-  OpenCode's "esc interrupt" spinner. At about 5 tokens/s, one think or reply
-  runs past 300 s.
-- **Possible fixes:** treat the "esc interrupt" spinner in the pane as busy (the
-  YTM lead's monitor already re-waits on it); ask the private server whether a
-  request for this pane is queued or running; or raise STALE_S to match.
-- **Catch for the spinner fix (spire, 2026-11-12):** in a narrow tmux pane
-  OpenCode's status line wraps and "esc interrupt" splits across two lines, so
-  a plain grep for it reads a working pane as quiet. Join wrapped lines first
-  (`tmux capture-pane -J`) or match the pieces.
-
 ### A restart drops a runtime set by hand
 
 Restarting mates resets the saved `runtime` to None, so a runtime the lead set
