@@ -18,3 +18,4 @@
 - Merge only under the check that defines done. If the strict check fails, send it back or finish it and log that; a merge under a weaker check logs a false accept.
 - Name the line range or a grep pattern when a brief points into a big file: Qwen reads files whole, and a 2,000-line test file fills half its 64K context and slows every turn.
 - OpenCode needs Escape pressed twice to interrupt a reply; one press only arms it. See the spinner gone before you discard, sync or send.
+- When Qwen writes docs or history, pin the exact quotes, versions and counts in the brief, and read its doc diff line by line: it has invented owner quotes and approvals.

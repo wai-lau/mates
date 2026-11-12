@@ -4,6 +4,7 @@
 - Only this repo is visible. Shell and edits inside it are allowed.
 - Search with bash: `grep -rn`, `find`. There are no grep or glob tools here.
 - A long run (test suite, smoke, browser test): give the bash tool `timeout: 600000`. The default 2 minutes kills it.
+- Never write a quote, approval or decision by Wai or anyone that is not word for word in the brief or the repo. Docs that need one you lack: ask.
 - Instructions: `~/.qwen/global.md` (user rules, digest), `~/.qwen/repo.md` (digest of the repo's `CLAUDE.md`; the full file is in the repo root).
 
 # Messages starting `[from Claude]`
