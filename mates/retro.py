@@ -40,6 +40,10 @@ PROMPT = cli.HERE / "prompts" / "retro.md"
 CLAUDE_ARGS = ["-p", "--tools", "", "--strict-mcp-config", "--setting-sources", "project",
                "--output-format", "json"]
 CLAUDE_TIMEOUT_S = 600
+# The fixed footer of every mates message, with a worktree path or without one (chats from before
+# the footer named it): noise for the retro.
+_PRE, _POST = cli.ASK_SUFFIX.split("{worktree}/")
+ASK_FOOTER = re.compile("(?:" + re.escape(_PRE) + r"(?:\S+/)?" + re.escape(_POST) + r"\s*)+$")
 LAST_RETROS = 7
 LESSON_MAX = 200
 LESSONS_MAX = 20
@@ -171,8 +175,7 @@ def _chat_lines(repo, db, day):
             line = _qwen_line(p, fr, ts)
             if "text" in line:
                 t = line["text"]
-                while t.endswith(cli.ASK_SUFFIX):
-                    t = t[: -len(cli.ASK_SUFFIX)]
+                t = ASK_FOOTER.sub("", t)
                 line["text"] = " ".join(t.split())
             lines.append(line)
         elif role == "assistant":

@@ -81,7 +81,8 @@ def test_launch_plan_fresh(tmp_path):
     assert _after(argv, "-n") == "mates r"
     assert "--resume" not in argv
     prompt = _after(argv, "--append-system-prompt")
-    assert "[from Claude]" in prompt and cli.ASK_SUFFIX in prompt and not prompt.endswith("\n")
+    assert "[from Claude]" in prompt and not prompt.endswith("\n")
+    assert cli.ASK_SUFFIX.format(worktree="<worktree>") in prompt  # lead.md quotes the footer
     assert [(q["n"], q["worktree"]) for q in plan["qwens"]] == [(1, _wt(root, 1))]
     cmd = plan["qwens"][0]["cmd"]
     assert f"QWEN_ROOT={_wt(root, 1)}" in cmd and "QWEN_GIT_RO=1" in cmd and " -s " not in cmd
@@ -467,7 +468,10 @@ def test_send_pastes_prefixed_message(m):
     m.send("fix add() in a.txt", "--continue")
     calls = [c for c in m.tmux_calls() if c.split()[0] in ("load-buffer", "paste-buffer", "send-keys")]
     assert calls == ["load-buffer -b mates-1 -", "paste-buffer -p -d -b mates-1 -t %1", "send-keys -t %1 Enter"]
-    assert m.buffers() == ["[from Claude] fix add() in a.txt\n" + cli.ASK_SUFFIX]
+    assert m.buffers() == ["[from Claude] fix add() in a.txt\n" + cli.ASK_SUFFIX.format(worktree=m.wt)]
+    # OpenCode's write tool takes an absolute path, and Qwen once made `.mates/question.md`
+    # into /mates/question.md (spire 11-12), so the footer names the full path.
+    assert f" {m.wt}/.mates/question.md " in m.buffers()[0]
     t = m.task()
     assert (t["summary"], t["reason"], t["files"], t["attempts"]) == ("fix add() in a.txt", "clear check", ["a.txt"], 1)
     assert t["base"] == m.git("rev-parse", "HEAD") and not t["direct"]
@@ -652,7 +656,7 @@ def test_answer_clears_stale_done(m):
     code, out, err = m.run("answer", 1, "add(), in a.txt")
     assert code == 0, err
     assert not (m.wt / ".mates" / "question.md").exists() and not (m.wt / ".mates" / "done.md").exists()
-    assert m.buffers()[-1] == "[from Claude] add(), in a.txt\n" + cli.ASK_SUFFIX
+    assert m.buffers()[-1] == "[from Claude] add(), in a.txt\n" + cli.ASK_SUFFIX.format(worktree=m.wt)
     t = m.task()
     assert t["questions"] == [{"q": "Which function?", "a": "add(), in a.txt"}] and t["attempts"] == 1
     assert m.log() == []
@@ -2034,8 +2038,11 @@ def _chat_bash(cmd, output):
 def test_retro_sees_messages_sent_to_qwen(rt, monkeypatch):
     db = _chat_db(rt, monkeypatch)
     rt.line("2026-11-09")
-    brief = "[from Claude] Fix the parser. " + "pinned detail " * 20 + "LEAD-BRIEF-END\n" + cli.ASK_SUFFIX
+    brief = ("[from Claude] Fix the parser. " + "pinned detail " * 20 + "LEAD-BRIEF-END\n"
+             + cli.ASK_SUFFIX.format(worktree="/w/r/.claude/worktrees/mates-qwen-1"))
     _chat_msg(db, "2026-11-09T10:00:00", brief)
+    old_footer = cli.ASK_SUFFIX.replace("{worktree}/", "")  # chats from before the full path
+    _chat_msg(db, "2026-11-09T10:30:00", "[from Claude] OLD-FOOTER-MSG\n" + old_footer)
     _chat_msg(db, "2026-11-09T11:00:00", "Resume: OTHER-HAND-PASTE, your files are kept", n=2)
     _chat_msg(db, "2026-11-10T01:00:00", "[from Claude] TOMORROW-MSG")
     assert rt.run("--date", "2026-11-09")[0] == 0
@@ -2043,7 +2050,8 @@ def test_retro_sees_messages_sent_to_qwen(rt, monkeypatch):
     s = c["stdin"]
     assert "LEAD-BRIEF-END" in s and "OTHER-HAND-PASTE" in s and "TOMORROW-MSG" not in s
     assert '"from": "lead"' in s and '"from": "other"' in s
-    assert cli.ASK_SUFFIX.strip() not in s  # the fixed footer of every mates message is noise
+    assert "OLD-FOOTER-MSG" in s
+    assert "stop before editing" not in s  # the fixed footer of every mates message is noise
 
 
 def test_retro_sees_qwen_replies(rt, monkeypatch):

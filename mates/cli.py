@@ -38,8 +38,11 @@ import runtime
 import session
 from gitsafe import GitError, git_lead, git_safe
 
+# {worktree}: the pane's worktree, the same path inside the sandbox. OpenCode's write tool takes
+# an absolute path, and Qwen once turned `.mates/question.md` into /mates/question.md, which
+# mates never sees (spire 11-12).
 ASK_SUFFIX = ("(If any name, file or expected result above is not stated exactly, write your question "
-              "to .mates/question.md and stop before editing. Do not edit tests unless told.)")
+              "to {worktree}/.mates/question.md and stop before editing. Do not edit tests unless told.)")
 HERE = Path(__file__).resolve().parent
 LEAD_PROMPT = (HERE / "lead.md", HERE / "lead-lessons.md")
 QWEN_LIVE = "@mates-qwen-live"  # set on a Qwen pane while its qwen runs (qwen_cmd)
@@ -483,8 +486,8 @@ def paste(pane, text):
             raise RuntimeError(f"tmux {args[0]} failed: {r.stderr.strip()}")
 
 
-def _message(text):
-    return f"[from Claude] {text}\n{ASK_SUFFIX}"
+def _message(text, worktree):
+    return f"[from Claude] {text}\n{ASK_SUFFIX.format(worktree=worktree)}"
 
 
 # Qwen's .mates folder is Qwen's: every read, delete or write there goes through a
@@ -743,7 +746,7 @@ def send(args):
     sent_text = text
     if a.check:
         sent_text = text + "\n\nCheck: " + a.check
-    paste(pane, _message(sent_text))
+    paste(pane, _message(sent_text, q["worktree"]))
     if task["opencode_session"] is None:
         deadline = time.time() + SESSION_WAIT_S
         while True:
@@ -851,7 +854,7 @@ def answer(args):
         _clear_review(task)
     task["paste_ts"] = now
     save_state(root, state)
-    paste(pane, _message(text))
+    paste(pane, _message(text, q["worktree"]))
     print(f"answered Qwen pane {a.n}" + (f" (sent back: attempt {task['attempts']})" if a.sendback else ""))
     if a.sendback:
         _remind(a.n, task)

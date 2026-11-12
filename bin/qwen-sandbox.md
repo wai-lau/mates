@@ -12,5 +12,6 @@
   1. what changed (the files);
   2. the test status, one of `passed`, `failed: <why>`, `could not run: <why>`.
 - Unsure or stuck: write the question to `.mates/question.md`, then stop.
+- `.mates/` is in the repo root, the folder you start in. Write its files by full path, never `/mates/`.
 - Don't commit. Git may be read-only here: `git status` and `git diff` work; add, commit, checkout and branch do not.
 Other messages are from Wai: answer in chat.
