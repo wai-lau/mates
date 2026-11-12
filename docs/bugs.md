@@ -3,6 +3,28 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-12, from the 00:30 WSL crash
+
+### Two Qwen panes in one repo race for OpenCode's database at restart
+
+After the 00:30 crash, spire's two Qwen panes restarted within a second of each
+other (00:48:04). Pane 2 came up. Pane 1 printed `Error: database is locked`,
+`qwen` exited 1, and mates marked the pane failed. Someone restarted it at
+00:49:25 as a fresh `opencode` with no `-s`, so it lost its old session.
+human-music's two panes started the same way a second apart and both came up.
+
+- **Likely cause:** all of a repo's worktrees share one OpenCode state folder
+  (`qwen opencode-dir`, so one `opencode.db`). The failing run never wrote its
+  "creating instance" log line, so it died opening the database while pane 2
+  was writing to it (init plus "project copy refresh", 05:48:05–07Z in that
+  folder's `log/opencode.log`). Not confirmed: three racing
+  `opencode session list` runs on a fresh DB (24 tries) and on a copy of
+  spire's DB and WAL (18 tries) never hit the lock, so the TUI start path is
+  the suspect.
+- **Wanted:** a lock error at start should not fail the pane. Either mates
+  starts one repo's panes one after another, or `qwen` retries a start that
+  fails with "database is locked". And a restart should keep the session id.
+
 ## 2026-11-11, from the YTM mates lead
 
 ### A pane with an open task comes back idle after a WSL restart
