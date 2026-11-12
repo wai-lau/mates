@@ -15,3 +15,4 @@
 - Keep each brief in a file that survives a restart, and stop if the file is missing: a missing file sends a half-empty brief.
 - Size each Qwen task to fit its 64K context: one plan task per brief, pointing at plan sections instead of pasting them; a re-send costs that context again.
 - Behaviour plus lead-written failing tests that define it gets Qwen's best work; exact code in a brief leaves Qwen nothing to do.
+- Merge only under the check that defines done. If the strict check fails, send it back or finish it and log that; a merge under a weaker check logs a false accept.
