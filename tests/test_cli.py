@@ -2134,3 +2134,25 @@ def test_input_empty_wide_pane_side_column(m):
     screen[23] = "  ┃  half a sentence" + side[19:] + "/home/wai/src/mates/.claude/worktrees/"
     _capture(m, "\n".join(screen) + "\n")
     assert cli.input_empty("%1") is False
+
+
+def test_retro_chat_cap_drops_in_order_across_repos(rt, monkeypatch):
+    """The cap covers the day's chats in every repo together, drops the oldest Qwen lines in
+    order (not every other one) and never a lead line."""
+    db = _chat_db(rt, monkeypatch)
+    monkeypatch.setattr(rt.retro, "CHAT_MAX", 7000)
+    rt.line("2026-11-09")
+    rt.line("2026-11-08", repo="/home/x/src/other")
+    for i in range(6):
+        _chat_msg(db, f"2026-11-09T10:{i:02d}:00", role="assistant",
+                  parts=[{"type": "text", "text": f"QWEN-A{i} " + "z" * 1000}])
+        _chat_msg(db, f"2026-11-09T10:{i:02d}:30", role="assistant", repo="/home/x/src/other",
+                  parts=[{"type": "text", "text": f"QWEN-B{i} " + "z" * 1000}])
+    _chat_msg(db, "2026-11-09T09:00:00", "[from Claude] LEAD-KEPT")
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    s = rt.calls()[0]["stdin"]
+    kept = [f"{r}{i}" for i in range(6) for r in "AB" if f"QWEN-{r}{i}" in s]
+    assert "LEAD-KEPT" in s
+    order = [f"{r}{i}" for i in range(6) for r in "AB"]  # oldest first
+    assert kept == order[len(order) - len(kept):]  # only the newest survive, in a block
+    assert 0 < len(kept) < len(order)
