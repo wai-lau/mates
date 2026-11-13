@@ -312,6 +312,13 @@ check "the lock is gone after SIGTERM" '[ ! -e "$T/state/qwen/locks/$q" ]'
 # default 5-minute header timeout dropped such requests (2026-11-11 11:24 and 11:33).
 printf '#!/bin/sh\nprintf %%s "$OPENCODE_CONFIG_CONTENT" > ./oc-config.json\ncat "$OPENCODE_TUI_CONFIG" > ./oc-tui.json\ncat /opt/qwen-tui/no-logo.js > ./oc-nologo.js\n' > "$T/opencode"
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1)
+ed=$(python3 -c 'import json,sys; print(*sorted(json.load(open(sys.argv[1]))["permission"]["external_directory"]))' "$T/repo/oc-config.json" 2>/dev/null)
+check "no runtime: the config parses and allows only /tmp and the proofs" '[ "$ed" = "* /opt/proofs/* /tmp/*" ]'
+(cd "$T/repo" && QWEN_RUNTIME=$RT exec "$QWEN" >/dev/null 2>&1)
+ed=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["permission"]["external_directory"].get(sys.argv[2] + "/*"))' "$T/repo/oc-config.json" "$(readlink -f "$RT")" 2>/dev/null)
+# Some leads keep proofs in the runtime (spire, 2026-11-12): OpenCode's read tool and its bash
+# both refused them until the read-only runtime got an allow rule.
+check "OpenCode tools may read the runtime folder" '[ "$ed" = allow ]'
 ht=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provider"]["ollama"]["options"].get("headerTimeout"))' "$T/repo/oc-config.json" 2>/dev/null)
 check "OpenCode waits up to an hour for a queued reply (headerTimeout 3600000)" '[ "$ht" = 3600000 ]'
 # grep and glob run the system ripgrep; without one OpenCode downloads it, which fails with no
@@ -341,13 +348,14 @@ def act(perm, res):
     return hit[-1]["action"] if hit else "ask"
 for perm, res in [("external_directory", "/home/qwen/.config/opencode/skills"), ("doom_loop", "*"),
                   ("read", "/w/.env"), ("read", "/w/.env.local"), ("question", "*"), ("plan_enter", "*"),
-                  ("external_directory", "/tmp/x"), ("external_directory", "/opt/proofs/sub/*"), ("read", "/w/.env.example"), ("bash", "ls"), ("edit", "/w/a")]:
+                  ("external_directory", "/tmp/x"), ("external_directory", "/opt/proofs/sub/*"), ("external_directory", sys.argv[1] + "/proofs/*"), ("read", "/w/.env.example"), ("bash", "ls"), ("edit", "/w/a")]:
     print(perm, res, act(perm, res))
 print("asks:", sum(r["action"] == "ask" and act(r["permission"], r["pattern"]) == "ask" for r in rules))
-' <<<"$rules" 2>&1)
+' "$(readlink -f "$RT")" <<<"$rules" 2>&1)
   for v in "external_directory /home/qwen/.config/opencode/skills deny" "doom_loop * deny" "read /w/.env deny" \
            "read /w/.env.local deny" "question * deny" "plan_enter * deny" "external_directory /tmp/x allow" \
            "external_directory /opt/proofs/sub/* allow" \
+           "external_directory $(readlink -f "$RT")/proofs/* allow" \
            "read /w/.env.example allow" "bash ls allow" "edit /w/a allow" "asks: 0"; do
     check "OpenCode permission: $v" 'grep -qxF "$v" <<<"$verdicts"'
   done

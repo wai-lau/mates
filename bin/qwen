@@ -554,11 +554,16 @@ cfg='{
   "tools": { "webfetch": false, "websearch": false TOOLS_},
   "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny",
                   "question": "deny", "plan_enter": "deny", "doom_loop": "deny",
-                  "external_directory": { "*": "deny", "/tmp/*": "allow", "/opt/proofs/*": "allow" },
+                  "external_directory": { "*": "deny", "/tmp/*": "allow", "/opt/proofs/*": "allow" RTDIR_},
                   "read": { "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" } }
 }'
 tools=''; [ -x /usr/bin/rg ] || tools=', "grep": false, "glob": false'
-cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}; cfg=${cfg//TOOLS_/$tools}
+# The runtime is bound read-only, and some leads keep proofs in it (spire, 2026-11-12): OpenCode's
+# tools, its bash included, refuse any folder outside the repo without an allow rule. Only a
+# plain path goes into the JSON; any other keeps the deny.
+rtdir=''; rtp=$(readlink -f -- "${QWEN_RUNTIME:-}" 2>/dev/null) || rtp=''
+[ -n "${QWEN_RUNTIME:-}" ] && [[ $rtp =~ ^/[A-Za-z0-9._/+-]+$ ]] && rtdir=", \"$rtp/*\": \"allow\""
+cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}; cfg=${cfg//TOOLS_/$tools}; cfg=${cfg//RTDIR_/$rtdir}
 SANDBOX_ENV=(OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1
   OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 "OPENCODE_CONFIG_CONTENT=$cfg"
   OPENCODE_TUI_CONFIG=/opt/qwen-tui/tui.json)
