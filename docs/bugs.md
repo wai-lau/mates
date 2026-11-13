@@ -5,17 +5,6 @@ fixed leaves this list; its fix commit says what changed.
 
 ## 2026-11-13, from the human-music and spire leads
 
-### `mates wait` says idle on one missed screen read
-
-On a shared slot each Qwen step waits ~10 minutes, so the database is quiet past
-STALE_S between steps and only the spinner on screen says busy. One capture that
-misses it (OpenCode mid-redraw) is enough: human-music's `mates wait 2` printed
-`idle` while `mates check 2` saw the pane busy a moment later (pane %8, task
-15df4cfe8f80).
-
-- **Wanted:** idle only when it holds on two polls in a row. A red test is
-  ready in the lead's scratchpad; it lands after the screen-first busy work merges.
-
 ### OpenCode loops on "no user query found in messages"; wait says idle
 
 spire pane 2 (task b46d4ea614f6) made seven normal tool calls from a 3,199-char
@@ -50,28 +39,12 @@ OpenCode needs two presses (the first only arms the interrupt).
   own `send` pastes `/new` only on an idle pane, so it is safe; a lead's hand
   `/new` on a busy pane is not.
 
-## 2026-11-12, from the spire lead after the WSL 3.0.5 restart
-
-### send refuses a fresh pane while a killed pane's reply looks live
-
-spire killed pane %9 mid-reply; `mates add` opened %10. `mates send 1` then
-refused with "Qwen pane 1 is busy (OpenCode is replying)" although %10 sat idle
-on OpenCode's empty start screen. The brief was pasted by hand, so it never
-reached the task log.
-
-- **Cause (from the code):** `_busy()` (`mates/cli.py:427`) asks
-  `opencode_session()` for the worktree's newest OpenCode session. A fresh
-  pane has none until its first message, so the newest one is the killed
-  pane's, whose last reply never finished. `opencode_state()` calls that busy
-  until nothing in it changes for STALE_S (300 s).
-- **Workaround:** wait 5 minutes after the kill, then send.
-- **Wanted:** a reply whose OpenCode process is gone is not busy. For example,
-  only count a session the live pane is showing, or treat OpenCode's empty
-  start screen as idle.
-
 ## 2026-11-12, from the 00:30 WSL crash
 
 ### Two Qwen panes in one repo race for OpenCode's database at restart
+
+**Start race fixed (2026-11-13):** a launch starts a repo's panes PANE_STAGGER_S (5 s)
+apart. The two notes below are still open.
 
 After the 00:30 crash, spire's two Qwen panes restarted within a second of each
 other (00:48:04). Pane 2 came up. Pane 1 printed `Error: database is locked`,

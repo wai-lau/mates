@@ -286,6 +286,8 @@ def _split_qwens(root, lead, plan, warnings):
         if hit is not None:
             warnings.append(f"mates: Qwen pane {q['n']} is already open ({hit[0]}); left as it is")
             continue
+        if ids:  # one repo's OpenCode panes share a database: two starting at once race for it
+            time.sleep(PANE_STAGGER_S)
         session.ensure_worktree(root, q["n"])
         try:
             pane = layout.split(layout.split_qwen(lead, [p for _, p in ids], q["worktree"], q["cmd"]))
@@ -428,10 +430,8 @@ def _db(root):
         die(f"cannot find the OpenCode sessions: {getattr(e, 'stderr', None) or e}")
 
 
-def _busy(q, db):
-    """Is OpenCode replying in pane q's newest session right now?"""
-    sid = session.opencode_session(q["worktree"], db)
-    return sid is not None and session.opencode_state(sid, db, 0) == "busy"
+PASTE_GRACE_S = 30  # after mates' own paste, the spinner takes a moment: the database counts
+PANE_STAGGER_S = 5  # a launch starts a repo's panes this far apart (OpenCode's database race)
 
 
 def _box_border(lines):
@@ -439,15 +439,38 @@ def _box_border(lines):
     return max((i for i, line in enumerate(lines) if line.lstrip().startswith("╹▀")), default=None)
 
 
-def screen_busy(pane):
-    """True when OpenCode's "esc interrupt" spinner shows in the footer under the input
-    box: it is working even when the database says idle or quiet. Only the footer counts,
-    so chat text that quotes the words does not; the lines are joined, because in a narrow
-    pane the spinner wraps across two."""
-    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
-    border = _box_border(lines)
+def _spinner(lines, border):
+    """OpenCode's "esc interrupt" spinner in the footer under the input box. Only the footer
+    counts, so chat text that quotes the words does not; the lines are joined, because in a
+    narrow pane the spinner wraps across two."""
     footer = lines[border + 1:] if border is not None else lines[-3:]
     return bool(ESCAPE_INTERRUPT.search(" ".join(footer)))
+
+
+def screen_busy(pane):
+    """True when the spinner shows: OpenCode is working whatever the database says."""
+    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
+    return _spinner(lines, _box_border(lines))
+
+
+def busy(q, db, pane, since=0, sid=None):
+    """The one busy rule (send, answer, check, wait). A readable screen decides: with the
+    input box on screen and mates' last paste over PASTE_GRACE_S old, busy means the
+    spinner shows, so a killed pane's unfinished reply or a stray write to an old session
+    no longer reads busy. Right after a paste, or with no box on screen, the database rule
+    counts too (messages since `since`)."""
+    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
+    border = _box_border(lines)
+    if _spinner(lines, border):
+        return True
+    paste = (q.get("task") or {}).get("paste_ts")
+    if border is not None and not (paste and time.time() - paste < PASTE_GRACE_S):
+        return False
+    if sid is None:
+        sid = session.opencode_session(q["worktree"], db)
+    if sid is None and not since:
+        return False  # no session yet and no paste to wait for
+    return session.opencode_state(sid, db, since) == "busy"
 
 
 def input_empty(pane):
@@ -675,7 +698,7 @@ def send(args):
     q = _qentry(state, a.n)
     pane = _live_pane(root, state, q)
     db = _db(root)
-    if _busy(q, db) or screen_busy(pane):
+    if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
@@ -787,6 +810,7 @@ def wait(args):
     since = (task.get("paste_ts") or task["attempt_ts"]) if task else time.time()
     db = _db(root)
     deadline = time.time() + a.timeout
+    stopped = 0
     while True:
         hit = session.find_pane(root, a.n)
         if hit is None:  # mark it closed in the state as it is now (wait may have run for a while)
@@ -804,19 +828,19 @@ def wait(args):
             if new and new != q.get("opencode_session"):
                 sid = task["opencode_session"] = q["opencode_session"] = new
                 _patch_task(root, a.n, task["id"], opencode_session=new)
-        # The spinner means OpenCode is working, whatever the database says: a request queued
-        # for the one server slot writes nothing for minutes (docs/bugs.md history).
-        if not screen_busy(hit[0]):
-            # A protocol file counts only once OpenCode has stopped (check's busy rule): Qwen
-            # writes done.md and then keeps replying for a while, and check refuses meanwhile.
-            found = [(word, text) for name, word in (("question.md", "question"), ("done.md", "done"))
-                     if (text := _unsafe(read_protocol, q["worktree"], name)) is not None]
-            if found and not _busy(q, db):
-                print(f"{found[0][0]}: {found[0][1]}")
-                return 0
-            if not found and sid and session.opencode_state(sid, db, since) == "idle":
-                print("idle")
-                return 0
+        # The one busy rule; a stop counts only when it holds on two polls in a row: one
+        # capture can miss the spinner (OpenCode mid-redraw) while the database is quiet for
+        # minutes between steps on the shared slot.
+        # A protocol file counts once OpenCode is not replying right now (check's busy rule):
+        # Qwen writes done.md and then keeps replying for a while, and check refuses meanwhile.
+        # Without one, idle means no reply is running since the paste.
+        found = [(word, text) for name, word in (("question.md", "question"), ("done.md", "done"))
+                 if (text := _unsafe(read_protocol, q["worktree"], name)) is not None]
+        still = busy(q, db, hit[0]) if found else busy(q, db, hit[0], since, sid)
+        stopped = 0 if still else stopped + 1
+        if stopped >= 2:
+            print(f"{found[0][0]}: {found[0][1]}" if found else "idle")
+            return 0
         if time.time() >= deadline:
             print("timeout")
             return 1
@@ -838,7 +862,7 @@ def answer(args):
         die(f"Qwen pane {a.n} has no open task (mates send starts one)")
     pane = _live_pane(root, state, q)
     db = _db(root)
-    if _busy(q, db) or screen_busy(pane):
+    if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
@@ -909,7 +933,7 @@ def check(args):
     hit = _find(root, state, q)
     live = hit is not None and hit[1] != "failed" and \
         _tmux_out("display", "-p", "-t", hit[0], "#{" + QWEN_LIVE + "}").strip() == "1"
-    if live and (_busy(q, db) or screen_busy(hit[0])):
+    if live and busy(q, db, hit[0]):
         die(f"Qwen pane {n} is busy (OpenCode is replying): Qwen could edit the files mid-check; wait for it")
     task = q.get("task")
     try:
@@ -1168,7 +1192,7 @@ def _log_runtime(root, base, reason, h, outcome, restarted):
 
 def _not_restartable(q, pane, db):
     """Why Qwen pane q must not be restarted now, or None."""
-    if _busy(q, db):
+    if busy(q, db, pane):
         return "busy (OpenCode is replying)"
     live = _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() == "1"
     if live and not input_empty(pane):

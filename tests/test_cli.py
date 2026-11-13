@@ -2288,7 +2288,7 @@ def test_send_ignores_a_stale_reply_when_the_screen_is_idle(m):
     _stale_reply(m)
     _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
     m.send("task")
-    assert len(m.buffers()) == 1
+    assert m.buffers()[-1].startswith("[from Claude] task")
 
 
 def test_send_still_refuses_while_the_spinner_shows(m):
@@ -2407,3 +2407,28 @@ def test_add_lead_never_below_a_third_and_warns(m):
     assert _resizes(m) == ["resize-pane -t %0 -x 40", "resize-pane -t %1 -x 19",
                            "resize-pane -t %2 -x 19", "resize-pane -t %3 -x 19"]  # ceil(120 / 3) = 40
     assert "under 40" in out + err and "mates remove" in out + err
+
+
+def test_wait_idle_needs_two_readings_in_a_row(m):
+    """One screen capture can miss the spinner (OpenCode mid-redraw), and on a shared slot the
+    database is quiet for minutes between steps: `wait` printed idle while `check` saw the
+    pane busy a moment later (human-music, 2026-11-13). Idle must hold on two polls in a row."""
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    old = time.time() - 1000
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = old
+    session.save(str(m.root), st)
+    m.msg("ses_1", "user", old + 1)  # quiet for longer than STALE_S
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))  # the first capture misses the spinner
+    spin = m.t / "spin-screen"
+    spin.write_text(_used_screen(EMPTY_BOX, SPIN_FOOTER))
+    hook = m.t / "on-any"  # from the second capture-pane on, the spinner shows
+    hook.write_text(f"""#!/bin/sh
+case "$(tail -1 '{m.t}/tmux.log')" in capture-pane*)
+  n=$(cat '{m.t}/captures' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{m.t}/captures'
+  [ "$n" -ge 2 ] && cp '{spin}' '{m.t}/capture';;
+esac
+""")  # the hook runs before the fake prints the capture: read 1 idle, read 2 on the spinner
+    hook.chmod(0o755)
+    assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
