@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -81,6 +82,63 @@ def add(args):
     if q not in state["qwens"]:
         state["qwens"].append(q)
     cli.save_state(root, state)
+
+    # Even out Qwen pane widths: with k Qwen panes in a W-column window and
+    # lead L wide, each Qwen pane gets (W - L - k) // k columns. Under 40,
+    # shrink the lead for 40 each, never below ceil(W/3).
+    all_panes = dict(found)
+    all_panes[pane] = q["n"]
+    k = len(all_panes)
+    if k > 0:
+        # Get actual column widths for all panes including the lead
+        first = next(iter(all_panes))
+        r = layout._tmux("list-panes", "-t", first, "-F", "#{pane_id} #{pane_left} #{pane_width} #{window_width}")
+        if r.returncode == 0:
+            cols = {}
+            lefts = {}
+            win_w = 0
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    pid, left, pw, ww = parts[0], int(parts[1]), int(parts[2]), int(parts[3])
+                    cols[pid] = pw
+                    lefts[pid] = left
+                    win_w = ww
+
+            if win_w > 0:
+                lead_cols = cols.get(lead, 0)
+                import math
+                # Target: (W - lead - k) // k columns per Qwen pane
+                target = (win_w - lead_cols - k) // k
+                lead_target = lead_cols
+                warning = None
+
+                if target < 40:
+                    lead_for_40 = win_w - k * 40 - k
+                    third = math.ceil(win_w / 3)
+                    if lead_for_40 >= third:
+                        lead_target = lead_for_40
+                        target = 40
+                    else:
+                        lead_target = third
+                        target = (win_w - third - k) // k
+
+                if target < 40:
+                    warning = f"Qwen panes are {target} columns wide (under 40); " \
+                              f"close one with `mates remove N` to widen them"
+
+                # Resize lead if it's shrinking
+                if lead_cols != lead_target:
+                    layout._tmux("resize-pane", "-t", lead, "-x", str(lead_target))
+
+                # Resize all Qwen panes except the last one (it takes the rest)
+                for i, pid in enumerate(sorted(all_panes.keys(), key=lambda p: lefts.get(p, 0))):
+                    if i < k - 1:
+                        layout._tmux("resize-pane", "-t", pid, "-x", str(target))
+
+                if warning:
+                    print(warning, file=sys.stderr)
+
     print(f"opened Qwen pane {q['n']} ({pane}) in {q['worktree']}")
     return 0
 
