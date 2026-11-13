@@ -202,12 +202,26 @@ def _names(recs):
     return {n.lower() for n in names if n.strip()}
 
 
+# The retro reads Qwen's chat text, and the lessons load into every lead's system prompt, so a
+# lesson that weakens review or runs something is refused whatever its wording (security
+# audit, 2026-11-13): it may be a prompt-injected Qwen's words echoed back.
+UNSAFE_LESSON = re.compile(
+    r"\b(curl|wget|sudo|chmod|chown|ssh|scp|eval|base64|nc|netcat)\b|\|\s*(ba)?sh\b|\brm\s+-\w*r"
+    r"|\bskip\w*\s+(\w+\s+){0,3}(diff|check|review|tests?|guard|flags?)"
+    r"|\bwithout\s+(\w+\s+){0,2}(diff|check|review|tests?)"
+    r"|\btrust\w*\b|\bapproved by\b|\bstraight away\b|\bright away\b"
+    r"|\bignore\w*\s+(\w+\s+){0,2}(rules?|lead\.md|flags?|guards?|warnings?)"
+    r"|\b(disable|bypass|override)\w*\b", re.I)
+
+
 def check_lesson(lesson, names):
     """None if the lesson may go into lead-lessons.md, else why not."""
     if not lesson:
         return "empty"
     if len(lesson) > LESSON_MAX:
         return f"longer than {LESSON_MAX} characters"
+    if UNSAFE_LESSON.search(lesson):
+        return "reads as weakening review or running a command"
     if LEADING_PATH.search(lesson) or FILE_PATH.search(lesson):
         return "looks like a path"
     low = lesson.lower()

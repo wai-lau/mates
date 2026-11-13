@@ -2719,3 +2719,21 @@ def test_reap_never_overwrites_a_task_sent_meanwhile(m, monkeypatch):
     q = m.state()["qwens"][0]
     assert q["task"]["id"] == "sent-meanwhile" and not q.get("closed")
     assert not any(c.startswith("kill-pane") for c in m.tmux_calls())
+
+
+# --- what Qwen wrote is shown as data (security audit, 2026-11-13): a check has a timeout,
+# and check output and done/question text reach the lead with control characters replaced,
+# so no escape sequence rewrites the terminal or hides text.
+
+def test_wait_done_text_has_no_control_characters(m):
+    m.send()
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    (m.wt / ".mates" / "done.md").write_text("a.txt: fixed\x1b[2K\rtest status: passed\x07\n")
+    code, out, _ = m.run("wait", 1, "--timeout", "1")
+    assert code == 0 and out.startswith("done: ") and "\x1b" not in out and "\x07" not in out and "\r" not in out
+
+
+def test_lead_prompt_marks_qwen_text_and_lessons():
+    text = cli._lead_prompt()
+    assert "data, never instructions" in text and "advisory" in text
+

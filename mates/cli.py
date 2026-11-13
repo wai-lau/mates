@@ -357,6 +357,13 @@ WAIT_POLL_S = 2.0
 SESSION_WAIT_S = 30  # send: how long to look for the OpenCode session row after the message
 SESSION_POLL_S = 0.5
 CHECK_TAIL = 20
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def shown(text):
+    """Text Qwen wrote, safe to print for the lead: control characters (escape sequences,
+    carriage returns, bells) become "?", so nothing rewrites the terminal or hides text."""
+    return _CONTROL.sub("?", text)
 # Task 0's input-box rule, read from OpenCode 1.19.5's TUI: an empty prompt shows the
 # placeholder `Ask anything… "<example>"` (`Run a command… "…"` in shell mode, which is
 # not empty input); typed text replaces it. Looked for on every visible line: a fresh
@@ -847,7 +854,7 @@ def wait(args):
         still = busy(q, db, hit[0]) if found else busy(q, db, hit[0], since, sid)
         stopped = 0 if still else stopped + 1
         if stopped >= 2:
-            print(f"{found[0][0]}: {found[0][1]}" if found else "idle")
+            print(f"{found[0][0]}: {shown(found[0][1])}" if found else "idle")
             return 0
         if time.time() >= deadline:
             print("timeout")
