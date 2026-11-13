@@ -2432,3 +2432,16 @@ esac
 """)  # the hook runs before the fake prints the capture: read 1 idle, read 2 on the spinner
     hook.chmod(0o755)
     assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
+
+
+def test_add_never_grows_a_narrow_lead(m):
+    st = m.state()
+    st["qwens"] += [_q(str(m.root), 2), _q(str(m.root), 3)]
+    session.save(str(m.root), st)
+    m.pane("%2", 2)
+    m.pane("%3", 3)
+    _lead_window(m, "%4", ["%0 0 30 120", "%1 31 21 120", "%2 53 21 120", "%3 75 21 120", "%4 97 23 120"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert not any(c.startswith("resize-pane -t %0") for c in _resizes(m))  # 30 < a third: left alone
+    assert "under 40" in out + err

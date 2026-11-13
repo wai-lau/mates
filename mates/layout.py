@@ -1,7 +1,8 @@
 """Side-by-side tmux panes for mates: Claude on the left, Qwen panes to its right.
 
-Nothing here re-tiles. A new pane splits off the lead (the first one, taking
-half the window) or off the rightmost Qwen pane; Wai resizes by hand, and
+A new pane splits off the lead (the first one, taking
+half the window) or off the rightmost Qwen pane; `even_qwen_panes` then evens out the
+Qwen panes after `mates add` (Wai's call, 2026-11-12). Otherwise Wai resizes by hand, and
 `pane_widths` / `restore_widths` carry those widths across a restore.
 """
 import math
@@ -103,15 +104,9 @@ def even_qwen_panes(panes):
     warning = None
     lead_target = lead_cols
 
-    if target < 40:
-        lead_for_40 = win_w - k * 40 - k
-        third = math.ceil(win_w / 3)
-        if lead_for_40 >= third:
-            lead_target = lead_for_40
-            target = 40
-        else:
-            lead_target = third
-            target = (win_w - third - k) // k
+    if target < 40:  # the lead gives up just enough for 40 each, never below a third, never grows
+        lead_target = min(lead_cols, max(win_w - k * 41, math.ceil(win_w / 3)))
+        target = (win_w - lead_target - k) // k
 
     if target < 40:
         warning = f"Qwen panes are {target} columns wide (under 40); " \
