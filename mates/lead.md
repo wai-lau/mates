@@ -12,6 +12,10 @@ Wai can talk to any pane herself.
 No check, no Qwen: if you cannot write the command that proves the task done,
 do it yourself. Send the check with the task (`--check "<cmd>"`); send refuses
 it if the check passes on the base (it proves nothing) or cannot run there.
+A clear auditable outcome means a check you wrote (tests or a probe) that is red
+on base: tests Qwen writes are not a check, since it grades itself. Docs, history
+with owner quotes, and look-only work stay with you unless the check pins the
+asked values.
 
 ## Briefs
 
