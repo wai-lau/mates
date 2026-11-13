@@ -2367,3 +2367,43 @@ def test_launch_starts_panes_a_few_seconds_apart(m, monkeypatch):
 
 def test_pane_stagger_default():
     assert getattr(cli, "PANE_STAGGER_S", None) == 5  # the measured race window was ~2 s
+
+
+# --- `mates add` evens out the Qwen panes (Wai, 2026-11-12: "C", then "allow qwens to take up
+# to 2/3 of the screen if there are too many panes"). With k Qwen panes in a W-column window
+# and the lead L wide, each Qwen pane gets (W - L - k) // k columns (k pane borders). Under 40,
+# the lead shrinks just enough for 40 each, never below ceil(W / 3); still under 40, a warning
+# says how wide they are and to close one with `mates remove N`. Every Qwen pane but the last
+# is resized to that width (the last takes the rest); the lead is resized only when it shrinks.
+
+def _resizes(m):
+    return [c for c in m.tmux_calls() if c.startswith("resize-pane")]
+
+
+def test_add_evens_out_qwen_panes(m):
+    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 70 200", "%2 172 28 200"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert _resizes(m) == ["resize-pane -t %1 -x 49"]  # (200 - 100 - 2) // 2; the lead keeps its 100
+
+
+def test_add_shrinks_the_lead_for_40_column_panes(m):
+    _lead_window(m, "%2", ["%0 0 150 200", "%1 151 24 200", "%2 176 24 200"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert _resizes(m) == ["resize-pane -t %0 -x 118", "resize-pane -t %1 -x 40"]  # 200 - 2 * 41
+    assert "under 40" not in out + err
+
+
+def test_add_lead_never_below_a_third_and_warns(m):
+    st = m.state()
+    st["qwens"] += [_q(str(m.root), 2), _q(str(m.root), 3)]
+    session.save(str(m.root), st)
+    m.pane("%2", 2)
+    m.pane("%3", 3)
+    _lead_window(m, "%4", ["%0 0 80 120", "%1 81 9 120", "%2 91 9 120", "%3 101 9 120", "%4 111 9 120"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert _resizes(m) == ["resize-pane -t %0 -x 40", "resize-pane -t %1 -x 19",
+                           "resize-pane -t %2 -x 19", "resize-pane -t %3 -x 19"]  # ceil(120 / 3) = 40
+    assert "under 40" in out + err and "mates remove" in out + err
