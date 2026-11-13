@@ -37,3 +37,8 @@ def private_dir():
     d = pathlib.Path(tempfile.mkdtemp(prefix="mates-test-", dir=fsutil._private_base()))
     yield d
     shutil.rmtree(d, ignore_errors=True)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "e2e: end-to-end tests on a private tmux server with a fake OpenCode "
+                                       "(tests/e2e; about 20 s; deselect with -m 'not e2e')")
