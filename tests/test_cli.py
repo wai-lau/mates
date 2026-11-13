@@ -2445,3 +2445,119 @@ def test_add_never_grows_a_narrow_lead(m):
     assert code == 0, err
     assert not any(c.startswith("resize-pane -t %0") for c in _resizes(m))  # 30 < a third: left alone
     assert "under 40" in out + err
+
+
+
+# --- close unused Qwen panes (Wai, 2026-11-12: "close unused opencode panes after 30m") ---
+# An unused pane: no open task, OpenCode not replying, nothing typed in its input box, and
+# no use for IDLE_CLOSE_S (the later of the task's end, the pane's start, and its newest
+# OpenCode message, which also counts Wai chatting with Qwen directly). `mates reap` closes
+# such panes as `mates remove` does, minus the worktree removal; `mates add` reopens one.
+
+def _idle_since(m, s_ago, n=1):
+    st = m.state()
+    next(q for q in st["qwens"] if q["n"] == n)["idle_since"] = time.time() - s_ago
+    session.save(str(m.root), st)
+
+
+def _old_chat(m, s_ago, sid="ses_old"):
+    t = time.time() - s_ago
+    m.ses(sid, updated_s=t)
+    m.msg(sid, "assistant", t - 5, t, finish="stop")
+
+
+def _reap(m):
+    code, out, err = m.run("reap")
+    assert code == 0, err
+    return out
+
+
+def test_reap_closes_a_pane_unused_for_30_minutes(m):
+    assert cli.IDLE_CLOSE_S == 1800
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    out = _reap(m)
+    assert "kill-pane -t %1" in m.tmux_calls()
+    q = m.state()["qwens"][0]
+    assert q["closed"] is True and q["task"] is None
+    assert "Qwen pane 1" in out and m.wt.exists()  # the worktree stays, as after a Wai close
+
+
+def test_reap_keeps_a_recent_chat(m):
+    _idle_since(m, 1900)
+    _old_chat(m, 600)  # Wai talked to Qwen 10 minutes ago
+    _reap(m)
+    assert "kill-pane -t %1" not in m.tmux_calls() and m.state()["qwens"][0]["closed"] is False
+
+
+def test_reap_keeps_a_task_that_ended_recently(m):
+    _idle_since(m, 600)  # the last task was merged or discarded 10 minutes ago
+    _old_chat(m, 1900)
+    _reap(m)
+    assert "kill-pane -t %1" not in m.tmux_calls()
+
+
+def test_reap_keeps_a_pane_with_an_open_task(m):
+    m.send()
+    _idle_since(m, 7200)
+    _old_chat(m, 7200)
+    _reap(m)
+    assert "kill-pane -t %1" not in m.tmux_calls() and m.task() is not None
+
+
+def test_reap_keeps_a_pane_with_typed_text(m):
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    m.input("┃  half a message from Wai\n")
+    _reap(m)
+    assert "kill-pane -t %1" not in m.tmux_calls()
+
+
+def test_reap_keeps_a_busy_pane(m):
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    _capture(m, _used_screen(EMPTY_BOX, SPIN_FOOTER))
+    _reap(m)
+    assert "kill-pane -t %1" not in m.tmux_calls()
+
+
+def test_reap_starts_the_clock_on_an_entry_without_one(m):
+    """An entry saved before this rule has no idle_since: the first reap starts its clock
+    rather than closing a pane it knows nothing about."""
+    _old_chat(m, 7200)
+    _reap(m)
+    assert "kill-pane -t %1" not in m.tmux_calls()
+    assert time.time() - m.state()["qwens"][0]["idle_since"] < 60
+
+
+def test_task_end_starts_the_clock(m):
+    """merge and discard both start it; so does `mates add` for a new pane."""
+    m.send()
+    code, out, err = m.run("discard", 1)
+    assert code == 0, err
+    assert time.time() - m.state()["qwens"][0]["idle_since"] < 60
+
+
+def test_send_to_a_reaped_pane_says_how_to_reopen(m):
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    _reap(m)
+    code, out, err = m.run("send", 1, "--reason", "clear check", "fix a.txt")
+    assert code != 0 and "unused" in err and "mates add" in err
+
+
+def test_reap_logs_the_close(m):
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    _reap(m)
+    assert [(r.get("event"), r.get("n")) for r in m.log()] == [("idle-close", 1)]
+
+
+def test_reap_watch_ends_with_the_lead(m):
+    """`mates reap --watch` (started by launch) runs reap every REAP_POLL_S and ends when
+    the repo's lead pane is gone, so it never outlives the mates session."""
+    m.no_panes()
+    t0 = time.time()
+    code, out, err = m.run("reap", "--watch")
+    assert code == 0, err
+    assert time.time() - t0 < 5
