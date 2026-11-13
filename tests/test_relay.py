@@ -117,3 +117,120 @@ def test_egress_logs_each_refusal(egress):
     _ask(sock, b"CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n")
     p.kill()
     assert "refused 127.0.0.1:443" in p.stderr.read()
+
+
+# --- the model relay (`out`): the sandbox reaches the owner's Ollama through it, so it must
+# pass only the chat API. Ollama's other endpoints act as the owner with the network: pull
+# fetches from any registry host a model name names (data out), delete/create change models.
+# One fully read request per connection, Connection: close upstream; a second request in the
+# same connection never reaches the model server.
+
+import socketserver  # noqa: E402
+import threading  # noqa: E402
+
+
+class _Upstream(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+@pytest.fixture
+def model_relay(private_dir):
+    got = []
+
+    class H(socketserver.BaseRequestHandler):
+        def handle(self):
+            self.request.settimeout(2)
+            data = b""
+            try:
+                while chunk := self.request.recv(65536):
+                    data += chunk
+                    if b"\r\n\r\n" in data:
+                        head, _, body = data.partition(b"\r\n\r\n")
+                        n = int(next((l.split(b":")[1] for l in head.split(b"\r\n")
+                                      if l.lower().startswith(b"content-length:")), b"0"))
+                        if len(body) >= n:
+                            break
+            except OSError:
+                pass
+            got.append(data)
+            self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+
+    up = _Upstream(("127.0.0.1", 0), H)
+    threading.Thread(target=up.serve_forever, daemon=True).start()
+    sock = private_dir / "model.sock"
+    p = subprocess.Popen([sys.executable, "-I", str(RELAY), "out", "--sock", str(sock),
+                          "--to", f"127.0.0.1:{up.server_address[1]}"], stderr=subprocess.PIPE, text=True)
+    for _ in range(50):
+        if sock.exists():
+            break
+        time.sleep(0.05)
+    yield sock, got
+    p.kill()
+    p.wait()
+    up.shutdown()
+
+
+def _http(sock, raw):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(5)
+    s.connect(str(sock))
+    s.sendall(raw)
+    out = b""
+    try:
+        while chunk := s.recv(65536):
+            out += chunk
+    except OSError:
+        pass
+    s.close()
+    return out
+
+
+def _post(path, body=b'{"model":"m","messages":[]}', extra=b""):
+    return (b"POST " + path + b" HTTP/1.1\r\nHost: 127.0.0.1:11434\r\nContent-Type: application/json\r\n"
+            + extra + b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+
+
+def test_model_relay_passes_chat(model_relay):
+    sock, got = model_relay
+    body = b'{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}'
+    reply = _http(sock, _post(b"/v1/chat/completions", body, b"Connection: keep-alive\r\n"))
+    assert reply.startswith(b"HTTP/1.1 200") and reply.endswith(b"ok")
+    (req,) = got
+    head, _, sent = req.partition(b"\r\n\r\n")
+    assert sent == body and b"connection: close" in head.lower() and b"keep-alive" not in head.lower()
+
+
+@pytest.mark.parametrize("path", [b"/api/pull", b"/api/push", b"/api/delete", b"/api/create", b"/api/copy",
+                                  b"/api/generate", b"/v1/chat/completions/../../api/pull"])
+def test_model_relay_refuses_other_endpoints(model_relay, path):
+    sock, got = model_relay
+    reply = _http(sock, _post(path, b'{"model":"evil.example/x/y","insecure":true}'))
+    assert reply.startswith(b"HTTP/1.1 403") and got == []
+
+
+def test_model_relay_allows_read_only_gets(model_relay):
+    sock, got = model_relay
+    for path in (b"/api/version", b"/api/tags", b"/v1/models"):
+        assert _http(sock, b"GET " + path + b" HTTP/1.1\r\nHost: x\r\n\r\n").startswith(b"HTTP/1.1 200")
+    assert len(got) == 3
+
+
+def test_model_relay_one_request_per_connection(model_relay):
+    sock, got = model_relay
+    smuggled = _post(b"/v1/chat/completions") + _post(b"/api/pull", b'{"model":"evil.example/x"}')
+    _http(sock, smuggled)
+    time.sleep(0.3)
+    assert len(got) == 1 and b"/api/pull" not in got[0]
+
+
+@pytest.mark.parametrize("raw", [
+    b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\ntransfer-encoding: chunked\r\nContent-Length: 5\r\n\r\nhello",
+    b"POST http://evil.example/api/pull HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{}",
+    b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n\r\n",  # a POST with no length
+    b"GARBAGE\r\n\r\n",
+])
+def test_model_relay_refuses_ambiguous_requests(model_relay, raw):
+    sock, got = model_relay
+    assert _http(sock, raw).startswith(b"HTTP/1.1 4") and got == []

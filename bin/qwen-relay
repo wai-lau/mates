@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Byte relay between TCP and a unix socket, for the qwen sandbox.
 
-  qwen-relay out --sock S --to 127.0.0.1:PORT      (outside: unix socket -> Ollama)
+  qwen-relay out --sock S --to 127.0.0.1:PORT      (outside: unix socket -> Ollama, chat API only)
   qwen-relay in  --sock S --listen 127.0.0.1:11434 (inside, no network: TCP -> unix socket)
   qwen-relay clip --sock S --run PROG               (outside: each connection's bytes -> PROG's stdin)
   qwen-relay egress --sock S                        (outside: HTTPS proxy for a runtime build)
@@ -125,6 +125,60 @@ async def egress(r, w):
     await asyncio.gather(pipe(r, uw), pipe(ur, w))
 
 
+# The model relay (`out`) passes only these to the owner's Ollama. Everything else there acts
+# as the owner with the network: /api/pull fetches from any registry host a model name names
+# (data out), and delete/create/copy change the models. One request per connection, read in
+# full first (no chunked bodies), sent upstream with Connection: close, so a second request
+# can never follow it on the same connection.
+MODEL_ROUTES = frozenset({("POST", "/v1/chat/completions"), ("GET", "/v1/models"),
+                          ("GET", "/api/version"), ("GET", "/api/tags")})
+MODEL_HEAD_MAX = 64 << 10
+MODEL_BODY_MAX = 64 << 20  # a full 64K-token chat is a few MB of JSON
+HOP_HEADERS = {b"connection", b"keep-alive", b"proxy-connection", b"upgrade", b"te", b"trailer"}
+
+
+async def model_request(r):
+    """(raw request to send upstream, None) or (None, refusal status) for one client request."""
+    try:
+        head = await r.readuntil(b"\r\n\r\n")
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+        return None, b"400 Bad Request"
+    if len(head) > MODEL_HEAD_MAX:
+        return None, b"431 Request Header Fields Too Large"
+    lines = head[:-4].split(b"\r\n")
+    parts = lines[0].split(b" ")
+    if len(parts) != 3 or not parts[2].startswith(b"HTTP/1."):
+        return None, b"400 Bad Request"
+    method, target = parts[0].decode("ascii", "replace"), parts[1].decode("ascii", "replace")
+    path = target.split("?", 1)[0]
+    if not path.startswith("/") or "/../" in path + "/" or "//" in path or (method, path) not in MODEL_ROUTES:
+        return None, b"403 Forbidden"
+    headers, length = [], None
+    for line in lines[1:]:
+        name, sep, value = line.partition(b":")
+        key = name.strip().lower()
+        if not sep or not key:
+            return None, b"400 Bad Request"
+        if key == b"transfer-encoding":
+            return None, b"411 Length Required"  # chunked bodies are refused: no ambiguity about the end
+        if key == b"content-length":
+            if length is not None or not value.strip().isdigit():
+                return None, b"400 Bad Request"
+            length = int(value.strip())
+        if key in HOP_HEADERS:
+            continue
+        headers.append(line)
+    if method == "POST" and length is None:
+        return None, b"411 Length Required"
+    if (length or 0) > MODEL_BODY_MAX:
+        return None, b"413 Content Too Large"
+    try:
+        body = await r.readexactly(length or 0)
+    except asyncio.IncompleteReadError:
+        return None, b"400 Bad Request"
+    return b"\r\n".join([lines[0], *headers, b"Connection: close"]) + b"\r\n\r\n" + body, None
+
+
 async def pipe(r, w):
     try:
         while (b := await r.read(65536)):
@@ -168,16 +222,25 @@ async def main():
         host, port = a.to.rsplit(":", 1)
 
         async def handle(r, w):
+            raw, refusal = await model_request(r)
+            if refusal:
+                w.write(b"HTTP/1.1 " + refusal + b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                await w.drain()
+                w.close()
+                return
             try:
                 ur, uw = await asyncio.open_connection(host, int(port))
             except OSError:
                 w.close()
                 return
-            await asyncio.gather(pipe(r, uw), pipe(ur, w))
+            uw.write(raw)
+            await uw.drain()
+            await pipe(ur, w)  # the reply only: nothing more from the client goes upstream
+            uw.close()
 
         if os.path.exists(a.sock):
             os.unlink(a.sock)
-        srv = await asyncio.start_unix_server(handle, path=a.sock)
+        srv = await asyncio.start_unix_server(handle, path=a.sock, limit=MODEL_HEAD_MAX + 1)
         os.chmod(a.sock, 0o600)
     else:
         host, port = a.listen.rsplit(":", 1)
