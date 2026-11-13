@@ -3,6 +3,35 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-13, from the human-music and spire leads
+
+### `mates wait` says idle on one missed screen read
+
+On a shared slot each Qwen step waits ~10 minutes, so the database is quiet past
+STALE_S between steps and only the spinner on screen says busy. One capture that
+misses it (OpenCode mid-redraw) is enough: human-music's `mates wait 2` printed
+`idle` while `mates check 2` saw the pane busy a moment later (pane %8, task
+15df4cfe8f80).
+
+- **Wanted:** idle only when it holds on two polls in a row. A red test is
+  ready in the lead's scratchpad; it lands after the screen-first busy work merges.
+
+### OpenCode loops on "no user query found in messages"; wait says idle
+
+spire pane 2 (task b46d4ea614f6) made seven normal tool calls from a 3,199-char
+plain-text brief, then OpenCode looped "no user query found in messages
+[retrying in 19s ...]". The error is Ollama's ("chat prompt error", serve.log
+2026-11-13 03:47:20) while building the prompt; the prompt was about 47K of the
+65K window and OpenCode's last write was an empty assistant message, so the
+failing request may be OpenCode's compaction call. Not truncation: the log's one
+"truncating input prompt" is from 11-12 21:10. Not `answer` versus `send`: the
+brief reached OpenCode as an ordinary text part.
+
+- **Wanted:** `mates wait` reports an error the screen shows ("retrying in",
+  "error") as `error: <line>` instead of `idle`, so the lead acts at once.
+- **To learn:** what request fails, by logging the request OpenCode sends on
+  the next occurrence.
+
 ## 2026-11-12, from the mates lead
 
 ### discard leaves a working Qwen running on the reset worktree
