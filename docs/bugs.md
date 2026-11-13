@@ -3,6 +3,17 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-13, from the 11-12 retro
+
+### The audit log can't compare Qwen's cost with Claude's
+
+- 8 Qwen rows logged `worker_tokens: 0` after 1,000-9,200 s of wall time
+  (likely the OpenCode session id changed mid-task, e.g. after a pane restart,
+  so the count read an empty session).
+- `claude-self` rows carry no lead tokens, so a takeover's cost is invisible.
+- Probe checks are logged inline (about 10K characters each); a file path plus
+  its sha would do.
+
 ## 2026-11-13, from the human-music and spire leads
 
 ### OpenCode loops on "no user query found in messages"; wait says idle
