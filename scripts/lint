@@ -1,0 +1,7 @@
+#!/bin/sh
+# Lint mates: ruff (ruff.toml) on the Python, shellcheck on the shell scripts. Exit 0 = clean.
+# Needs ruff and shellcheck on PATH (Qwen's runtime has both; see .mates/runtime.sh).
+set -e
+cd "$(dirname "$0")/.."
+ruff check .
+shellcheck -x -s bash bin/mates bin/qwen tests/test_launcher.sh tests/test_qwen_bin.sh

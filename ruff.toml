@@ -1,0 +1,22 @@
+# Lint config (audit 2026-11-13). Run scripts/lint; Qwen's runtime has ruff and shellcheck.
+line-length = 130
+target-version = "py312"
+extend-include = ["bin/qwen-relay", "bin/qwen-clip"]
+extend-exclude = [".claude", ".archaeology", ".mates", "graphify-out"]
+
+[lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "PL", "RUF", "S"]
+ignore = [
+  "S101",                                   # asserts are the tests
+  "S603", "S607",                           # every subprocess call is a fixed argv list (git, tmux); no shell=True
+  "PLR2004",                                # magic numbers in tests and limits
+  "PLR0911", "PLR0912", "PLR0913", "PLR0915",  # size metrics: cli.py needs a split, not a lint gate
+  "PLC0415",                                # deliberate lazy imports
+  "E701", "E702",                           # the compact one-line style is used on purpose
+  "E741",                                   # `l` for a line
+  "RUF059",                                 # `code, out, _ = m.run(...)` in tests
+  "PLW1510",                                # run() without check= where the return code is read
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S108", "S104", "S608", "PLW2901", "E501"]
