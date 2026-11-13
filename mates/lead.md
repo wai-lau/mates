@@ -59,6 +59,8 @@ asked values.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
 - `mates list` shows the panes; `mates log` the audit log. `mates add` opens
   another Qwen pane only for truly independent parallel work; `mates remove N` closes one.
+- A Qwen pane unused for 30 minutes closes itself (`mates launch` starts `mates reap
+  --watch`); its worktree stays, and `mates add` opens it again.
 
 ## Installs
 

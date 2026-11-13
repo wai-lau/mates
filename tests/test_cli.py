@@ -2561,3 +2561,61 @@ def test_reap_watch_ends_with_the_lead(m):
     code, out, err = m.run("reap", "--watch")
     assert code == 0, err
     assert time.time() - t0 < 5
+
+
+# --- reap follow-ups (lead review of the Qwen version): launch starts the watcher, a merge
+# and `mates add` restart the 30-minute clock, add clears the idle mark, and the close is
+# logged as a pane event, not as an accepted Qwen task.
+
+def test_launch_starts_the_reap_watcher(m, monkeypatch):
+    started = []
+
+    class FakePopen:
+        def __init__(self, argv, **kw):
+            started.append((argv, kw))
+    monkeypatch.setattr(cli.subprocess, "Popen", FakePopen)
+    cli.start_reaper(str(m.root))
+    ((argv, kw),) = started
+    assert argv[-2:] == ["reap", "--watch"]
+    assert kw["env"]["MATES_LEAD"] == "1" and kw["env"]["MATES_ROOT"] == str(m.root)
+    assert kw.get("start_new_session") is True
+
+
+def test_one_reap_watcher_per_repo(m):
+    import fcntl
+    lock = cli.reaper_lock(str(m.root))
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        t0 = time.time()
+        code, out, err = m.run("reap", "--watch")  # the lead pane is live: only the lock ends it
+        assert code == 0, err
+        assert time.time() - t0 < 5
+
+
+def test_merge_restarts_the_idle_clock(m):
+    m.send()
+    _checked_and_diffed(m)
+    t0 = time.time()
+    assert m.run("merge", 1)[0] == 0
+    assert m.state()["qwens"][0]["idle_since"] >= t0
+
+
+def test_add_restarts_the_idle_clock_and_clears_the_mark(m):
+    st = m.state()
+    st["qwens"][0].update(closed=True, closed_idle=True, idle_since=1.0)
+    session.save(str(m.root), st)
+    m.no_panes()
+    _lead_window(m, "%6", ["%0 0 100 200", "%6 101 99 200"])
+    t0 = time.time()
+    assert m.run("add")[0] == 0
+    q = m.state()["qwens"][0]
+    assert q["closed"] is False and not q.get("closed_idle") and q["idle_since"] >= t0
+
+
+def test_idle_close_is_logged_as_a_pane_event(m):
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    _reap(m)
+    (rec,) = m.log()
+    assert (rec["route"], rec["outcome"]) == ("pane", "closed") and rec["task_id"]

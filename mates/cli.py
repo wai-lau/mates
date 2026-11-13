@@ -8,6 +8,7 @@ the lead's tools and refuse unless MATES_LEAD=1 (except list, log and retro).
 import argparse
 import contextlib
 import copy
+import fcntl
 import hashlib
 import http.client
 import json
@@ -341,6 +342,7 @@ def launch(args):
     if r.returncode != 0:
         die(f"tmux set-option @mates-window failed: {r.stderr.strip()}", 1)
     save_state(root, state)
+    start_reaper(root)  # closes Qwen panes unused for 30 minutes (one per repo, under a lock)
     sys.stdout.buffer.write(b"".join(a.encode() + b"\0" for a in argv))
     sys.stdout.flush()
     return 0
@@ -1082,6 +1084,7 @@ def merge(args):
     task["summary"] = summary  # merged: log it and close the task before the worktree tidy-up
     log_attempt(root, q, "accepted")
     q["task"] = None
+    q["idle_since"] = time.time()  # the 30-minute idle clock restarts when a task ends
     save_state(root, state)
     print(f"merged Qwen pane {a.n}: {commit[:12]} {message.splitlines()[0]}")
     try:
@@ -1285,9 +1288,16 @@ def reap(args):
 
     if a.watch:
         root = _lead_root()
-        while session.find_lead(root):
-            reap([])
-            time.sleep(REAP_POLL_S)
+        lock = reaper_lock(root)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a") as f:
+            try:  # one watcher per repo: a relaunch finds the first one running and leaves
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return 0
+            while session.find_lead(root):
+                reap([])
+                time.sleep(REAP_POLL_S)
         return 0
 
     root = _lead_root()
@@ -1328,10 +1338,25 @@ def reap(args):
 
 
 def _log_idle_close(root, q):
-    """Log an idle-close event."""
-    logrec.append(LOG, {"repo": root, "task_id": None, "summary": f"idle-close qwen-{q['n']}",
-                        "event": "idle-close", "n": q["n"], "route": "qwen", "reason": "idle",
-                        "outcome": "accepted", "pane": q["n"]})
+    """Log an idle close as a pane event (route "pane"), never as a Qwen task."""
+    logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
+                        "summary": f"idle-close qwen-{q['n']}", "event": "idle-close", "n": q["n"],
+                        "route": "pane", "reason": f"unused for {IDLE_CLOSE_S // 60} minutes",
+                        "outcome": "closed", "pane": q["n"]})
+
+
+def reaper_lock(root):
+    """The lock that keeps one `mates reap --watch` per repo."""
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "mates" / f"reap-{session.repo_key(str(root))}.lock"
+
+
+def start_reaper(root):
+    """Start `mates reap --watch` for this repo, detached: it ends with the lead pane."""
+    env = {**os.environ, "MATES_LEAD": "1", "MATES_ROOT": str(root)}
+    subprocess.Popen([sys.executable, str(HERE / "cli.py"), "reap", "--watch"], env=env, cwd=str(root),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
 
 
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,

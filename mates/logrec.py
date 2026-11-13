@@ -8,8 +8,8 @@ FIELDS = ("ts", "repo", "task_id", "summary", "route", "reason", "check", "check
           "lead_tokens", "questions", "pane", "runtime", "restarted", "event", "n")
 PILOT_FIELDS = ("arm", "full_diff_read", "lead_cache_read", "detail", "commit", "tree")
 REQUIRED = ("repo", "task_id", "summary", "route", "reason", "outcome")
-ROUTES = {"qwen", "claude-subagent", "claude-self", "runtime"}  # runtime: a `mates runtime` build
-OUTCOMES = {"accepted", "sent-back", "escalated", "failed"}
+ROUTES = {"qwen", "claude-subagent", "claude-self", "runtime", "pane"}  # runtime: a `mates runtime` build; pane: a pane event (idle close)
+OUTCOMES = {"accepted", "sent-back", "escalated", "failed", "closed"}  # closed: a pane event
 
 
 def validate(rec: dict) -> dict:
