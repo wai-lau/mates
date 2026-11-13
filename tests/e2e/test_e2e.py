@@ -86,7 +86,7 @@ esac
     def pane(self, n=1):
         hit = None
         for line in self.tmux("list-panes", "-a", "-F", "#{pane_id} #{@mates}").splitlines():
-            pid, tag = (line.split(" ", 1) + [""])[:2]
+            pid, tag = [*line.split(" ", 1), ""][:2]
             if tag == f"{self.key}:{n}":
                 hit = pid
         return hit

@@ -78,10 +78,8 @@ class Fake:
         rows = os.get_terminal_size().lines
         box = min(w - 4, 70)
         typed = self.typed.replace("\n", " ")[: box - 4]
-        if self.sid is None and not typed:
-            input_row = '  ┃  Ask anything… "Fix a TODO in the codebase"'
-        else:
-            input_row = "  ┃  " + typed
+        fresh = self.sid is None and not typed  # a fresh chat shows the placeholder
+        input_row = '  ┃  Ask anything… "Fix a TODO in the codebase"' if fresh else "  ┃  " + typed
         footer = "   ⬝⬝⬝■■■■■  esc interrupt" if self.working else f"   {self.cwd[-40:]}   ctrl+p commands"
         bottom = ["  ┃", input_row, "  ┃", "  ┃  Build · fake-model local", "  ╹" + "▀" * box, footer]
         chat = self.lines[-(rows - len(bottom) - 1):]
