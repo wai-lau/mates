@@ -20,3 +20,4 @@
 - OpenCode needs Escape pressed twice to interrupt a reply; one press only arms it. See the spinner gone before you discard, sync or send.
 - When Qwen writes docs or history, pin the exact quotes, versions and counts in the brief, and read its doc diff line by line: it has invented owner quotes and approvals.
 - Never paste /new into a busy Qwen pane: OpenCode keeps the old chat running out of sight. Stop it first (Escape twice), or restart the pane.
+- Keep a queued task's red tests off main until its send: a full-suite check fails on another task's red tests, so no merge gate can pass. Hold them in .mates/held/.
