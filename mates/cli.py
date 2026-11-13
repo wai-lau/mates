@@ -38,6 +38,9 @@ import runtime
 import session
 from gitsafe import GitError, git_lead, git_safe
 
+IDLE_CLOSE_S = 1800
+REAP_POLL_S = 300
+
 # {worktree}: the pane's worktree, the same path inside the sandbox. OpenCode's write tool takes
 # an absolute path, and Qwen once turned `.mates/question.md` into /mates/question.md, which
 # mates never sees (spire 11-12).
@@ -60,7 +63,8 @@ def _claude():
 
 def _entry(root, n):
     return {"n": n, "worktree": str(Path(root) / ".claude" / "worktrees" / f"mates-qwen-{n}"),
-            "branch": f"mates/qwen-{n}", "opencode_session": None, "closed": False, "task": None}
+            "branch": f"mates/qwen-{n}", "opencode_session": None, "closed": False, "task": None,
+            "idle_since": None}
 
 
 # --- the Qwen pane wrapper ----------------------------------------------------------
@@ -411,6 +415,8 @@ def _find(root, state, q):
 def _live_pane(root, state, q):
     """The pane id of entry q, refusing unless OpenCode runs in it now."""
     if q.get("closed"):
+        if q.get("closed_idle"):
+            die(f"Qwen pane {q['n']} was closed after 30 minutes unused (mates add opens it again)")
         die(f"Qwen pane {q['n']} is closed (mates add opens one)")
     hit = _find(root, state, q)
     if hit is None:
@@ -1164,6 +1170,7 @@ def discard(args):
     if task:
         log_attempt(root, q, "failed" if a.failed else "escalated")
         q["task"] = None
+    q["idle_since"] = time.time()
     save_state(root, state)
     print(f"discarded Qwen pane {a.n}'s task; its worktree is at the lead HEAD")
     return 0
@@ -1258,9 +1265,78 @@ def retro(args):
     return r.main(args)
 
 
+def _newest_message_time(q, db):
+    """Epoch seconds of the newest OpenCode message in entry q's session, or 0."""
+    sid = session.opencode_session(q["worktree"], db)
+    if not sid:
+        return 0
+    try:
+        tokens, last_reply = session.opencode_usage(sid, db, 0)
+        return last_reply if last_reply is not None else 0
+    except Exception:
+        return 0
+
+
+def reap(args):
+    """Close Qwen panes unused for IDLE_CLOSE_S seconds."""
+    p = _parser("reap", "mates reap [--watch]")
+    p.add_argument("--watch", action="store_true")
+    a = p.parse_args(args)
+
+    if a.watch:
+        root = _lead_root()
+        while session.find_lead(root):
+            reap([])
+            time.sleep(REAP_POLL_S)
+        return 0
+
+    root = _lead_root()
+    state = _load(root)
+    db = _db(root)
+    now = time.time()
+    for q in list(state["qwens"]):
+        if q.get("closed") or q.get("task"):
+            continue
+        hit = _find(root, state, q)
+        if hit is None:
+            q["closed"] = True
+            continue
+        pane = hit[0]
+        # If idle_since is not set, this is the first reap for this entry: set the clock, don't close.
+        if q.get("idle_since") is None:
+            q["idle_since"] = now
+            continue
+        last_used = max(q["idle_since"], _newest_message_time(q, db))
+        if now - last_used < IDLE_CLOSE_S:
+            continue
+        try:
+            if busy(q, db, pane) or not input_empty(pane):
+                continue
+        except Exception:
+            continue
+        r = subprocess.run([layout.TMUX, "kill-pane", "-t", pane], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"failed to kill pane {pane}: {r.stderr.strip()}", file=sys.stderr)
+            continue
+        q["closed"] = True
+        q["closed_idle"] = True
+        q["idle_since"] = now
+        _log_idle_close(root, q)
+        print(f"closed idle Qwen pane {q['n']} ({pane})")
+    save_state(root, state)
+    return 0
+
+
+def _log_idle_close(root, q):
+    """Log an idle-close event."""
+    logrec.append(LOG, {"repo": root, "task_id": None, "summary": f"idle-close qwen-{q['n']}",
+                        "event": "idle-close", "n": q["n"], "route": "qwen", "reason": "idle",
+                        "outcome": "accepted", "pane": q["n"]})
+
+
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
-            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd}
+            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd, "reap": reap}
 
 
 def main(argv=None):

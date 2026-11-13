@@ -5,7 +5,7 @@ import time
 
 FIELDS = ("ts", "repo", "task_id", "summary", "route", "reason", "check", "check_sha", "red_on_base",
           "flags", "attempts", "outcome", "answered_by", "worker_wall_s", "worker_tokens", "verdict",
-          "lead_tokens", "questions", "pane", "runtime", "restarted")
+          "lead_tokens", "questions", "pane", "runtime", "restarted", "event", "n")
 PILOT_FIELDS = ("arm", "full_diff_read", "lead_cache_read", "detail", "commit", "tree")
 REQUIRED = ("repo", "task_id", "summary", "route", "reason", "outcome")
 ROUTES = {"qwen", "claude-subagent", "claude-self", "runtime"}  # runtime: a `mates runtime` build
