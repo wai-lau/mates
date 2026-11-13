@@ -2619,3 +2619,83 @@ def test_idle_close_is_logged_as_a_pane_event(m):
     _reap(m)
     (rec,) = m.log()
     assert (rec["route"], rec["outcome"]) == ("pane", "closed") and rec["task_id"]
+
+
+# --- a restart keeps a runtime set by hand (docs/bugs.md: a restart drops a runtime set by
+# hand), `mates parallel on|off` replaces editing the saved state by hand, and the lead's proof
+# files reach panes and checks read-only (bin/qwen QWEN_PROOFS, bound at /opt/proofs as
+# $MATES_PROOFS; a repo's proofs live in <repo root>/.mates/proofs/).
+
+def test_launch_plan_keeps_a_hand_set_runtime(tmp_path):
+    root = _root(tmp_path)
+    hand = tmp_path / "hand-rt"
+    hand.mkdir()
+    old = session.new_state(root)
+    old["runtime"] = str(hand)
+    old["qwens"] = [_q(root, 1)]
+    plan = cli.launch_plan(old, root, False, [], runtime_dir=None)
+    assert plan["state"]["runtime"] == str(hand)
+    assert f"QWEN_RUNTIME={hand}" in plan["qwens"][0]["cmd"]
+    assert any(str(hand) in w and ".mates/runtime.sh" in w for w in plan["warnings"])
+
+
+def test_launch_plan_built_runtime_wins_over_a_hand_set_one(tmp_path):
+    root = _root(tmp_path)
+    hand = tmp_path / "hand-rt"
+    hand.mkdir()
+    old = session.new_state(root)
+    old["runtime"] = str(hand)
+    old["qwens"] = [_q(root, 1)]
+    plan = cli.launch_plan(old, root, False, [], runtime_dir="/srv/rt/built")
+    assert plan["state"]["runtime"] == "/srv/rt/built"
+    assert "QWEN_RUNTIME=/srv/rt/built" in plan["qwens"][0]["cmd"]
+
+
+def test_launch_plan_drops_a_hand_set_runtime_that_is_gone(tmp_path):
+    root = _root(tmp_path)
+    old = session.new_state(root)
+    old["runtime"] = str(tmp_path / "deleted-rt")
+    old["qwens"] = [_q(root, 1)]
+    plan = cli.launch_plan(old, root, False, [], runtime_dir=None)
+    assert plan["state"]["runtime"] is None and "QWEN_RUNTIME" not in plan["qwens"][0]["cmd"]
+    assert any("deleted-rt" in w for w in plan["warnings"])
+
+
+def test_parallel_on_off(m):
+    code, out, err = m.run("parallel", "on", "--reason", "two independent plan tasks")
+    assert code == 0, err
+    assert m.state()["parallel"] is True and "parallel on" in out
+    rec = m.log()[-1]
+    assert (rec["route"], rec["summary"], rec["reason"]) == ("parallel", "parallel on", "two independent plan tasks")
+    code, out, err = m.run("parallel", "off", "--reason", "one task left")
+    assert code == 0, err
+    assert m.state()["parallel"] is False and m.log()[-1]["summary"] == "parallel off"
+
+
+def test_parallel_needs_on_or_off_and_a_reason(m):
+    assert m.run("parallel", "maybe", "--reason", "r")[0] != 0
+    assert m.run("parallel", "on")[0] != 0
+    assert m.state().get("parallel") in (None, False)
+
+
+def test_qwen_cmd_passes_the_proofs_folder(tmp_path):
+    root = _root(tmp_path)
+    assert "QWEN_PROOFS" not in cli.qwen_cmd(_wt(root, 1), None, None, root)
+    proofs = Path(root) / ".mates" / "proofs"
+    proofs.mkdir(parents=True)
+    assert f"QWEN_PROOFS={proofs}" in cli.qwen_cmd(_wt(root, 1), None, None, root)
+
+
+def test_check_passes_the_proofs_folder(m):
+    m.send()
+    code, out, _ = m.run("check", 1, "--", 'echo "proofs=${QWEN_PROOFS:-none}"')
+    assert code == 0 and "proofs=none" in out
+    proofs = m.root / ".mates" / "proofs"
+    proofs.mkdir(parents=True)
+    code, out, _ = m.run("check", 1, "--", 'echo "proofs=${QWEN_PROOFS:-none}"')
+    assert code == 0 and f"proofs={proofs}" in out
+
+
+def test_lead_prompt_says_where_proofs_go():
+    text = (Path(cli.__file__).parent / "lead.md").read_text()
+    assert ".mates/proofs" in text and "$MATES_PROOFS" in text
