@@ -2699,3 +2699,23 @@ def test_check_passes_the_proofs_folder(m):
 def test_lead_prompt_says_where_proofs_go():
     text = (Path(cli.__file__).parent / "lead.md").read_text()
     assert ".mates/proofs" in text and "$MATES_PROOFS" in text
+
+
+def test_reap_never_overwrites_a_task_sent_meanwhile(m, monkeypatch):
+    """reap reads the state, then spends seconds on tmux and the database: a `send` that
+    attaches a task in that time must keep it (a whole-state save from reap's stale copy
+    used to write the entry back without its task). The audit found it, 2026-11-13."""
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    real = cli.input_empty
+
+    def send_meanwhile(pane):  # another command attaches a task while reap is looking
+        st = session.load(str(m.root))
+        st["qwens"][0]["task"] = {"id": "sent-meanwhile", "direct": False, "attempts": 1}
+        session.save(str(m.root), st)
+        return real(pane)
+    monkeypatch.setattr(cli, "input_empty", send_meanwhile)
+    _reap(m)
+    q = m.state()["qwens"][0]
+    assert q["task"]["id"] == "sent-meanwhile" and not q.get("closed")
+    assert not any(c.startswith("kill-pane") for c in m.tmux_calls())

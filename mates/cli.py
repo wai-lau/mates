@@ -1269,15 +1269,17 @@ def retro(args):
 
 
 def _newest_message_time(q, db):
-    """Epoch seconds of the newest OpenCode message in entry q's session, or 0."""
+    """Epoch seconds of the newest OpenCode reply in entry q's session, 0 with none, or
+    None when the database can't be read (the reaper then leaves the pane alone)."""
     sid = session.opencode_session(q["worktree"], db)
     if not sid:
         return 0
     try:
-        tokens, last_reply = session.opencode_usage(sid, db, 0)
-        return last_reply if last_reply is not None else 0
-    except Exception:
-        return 0
+        _, last_reply = session.opencode_usage(sid, db, 0)
+    except (OSError, sqlite3.Error) as e:
+        print(f"mates reap: cannot read Qwen pane {q['n']}'s sessions: {e}", file=sys.stderr)
+        return None
+    return last_reply or 0
 
 
 def reap(args):
@@ -1304,36 +1306,49 @@ def reap(args):
     state = _load(root)
     db = _db(root)
     now = time.time()
-    for q in list(state["qwens"]):
+
+    def change(n, fn):
+        """Change entry n under the state lock, only while it still has no task and is
+        open: reap looks for seconds, and a send may attach a task meanwhile. Writing
+        reap's own copy of the state back would drop that task."""
+        def apply(st):
+            e = next((x for x in st.get("qwens", []) if x["n"] == n), None)
+            if e is not None and not e.get("task") and not e.get("closed"):
+                fn(e)
+        session.update(root, apply)
+
+    for q in state["qwens"]:
         if q.get("closed") or q.get("task"):
             continue
-        hit = _find(root, state, q)
+        n, hit = q["n"], _find(root, state, q)
         if hit is None:
-            q["closed"] = True
+            change(n, lambda e: e.update(closed=True))
             continue
-        pane = hit[0]
-        # If idle_since is not set, this is the first reap for this entry: set the clock, don't close.
-        if q.get("idle_since") is None:
-            q["idle_since"] = now
+        if q.get("idle_since") is None:  # the first look at this entry starts its clock
+            change(n, lambda e: e.update(idle_since=e.get("idle_since") or now))
             continue
-        last_used = max(q["idle_since"], _newest_message_time(q, db))
-        if now - last_used < IDLE_CLOSE_S:
+        newest = _newest_message_time(q, db)
+        if newest is None or now - max(q["idle_since"], newest) < IDLE_CLOSE_S:
             continue
         try:
-            if busy(q, db, pane) or not input_empty(pane):
+            if busy(q, db, hit[0]) or not input_empty(hit[0]):
                 continue
-        except Exception:
+        except (RuntimeError, OSError, sqlite3.Error) as e:
+            print(f"mates reap: left Qwen pane {n} open: {e}", file=sys.stderr)
             continue
-        r = subprocess.run([layout.TMUX, "kill-pane", "-t", pane], capture_output=True, text=True)
-        if r.returncode != 0:
-            print(f"failed to kill pane {pane}: {r.stderr.strip()}", file=sys.stderr)
-            continue
-        q["closed"] = True
-        q["closed_idle"] = True
-        q["idle_since"] = now
-        _log_idle_close(root, q)
-        print(f"closed idle Qwen pane {q['n']} ({pane})")
-    save_state(root, state)
+        closed = []
+
+        def close(e, pane=hit[0], closed=closed):
+            r = subprocess.run([layout.TMUX, "kill-pane", "-t", pane], capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"mates reap: cannot close {pane}: {r.stderr.strip()}", file=sys.stderr)
+                return
+            e.update(closed=True, closed_idle=True, idle_since=now)
+            closed.append(dict(e))
+        change(n, close)
+        for e in closed:
+            _log_idle_close(root, e)
+            print(f"closed idle Qwen pane {n} ({hit[0]})")
     return 0
 
 

@@ -72,6 +72,19 @@ def save(root, state):
     state["qwens"] = out["qwens"]
 
 
+def update(root, fn):
+    """Re-read the saved state under the exclusive lock, let `fn` change it in place, and
+    write it back: for a command that worked from an older copy for a while and must
+    change one entry without writing its stale copy of the others (the reaper)."""
+    with _locked(root, fcntl.LOCK_EX) as path:
+        state = _read(path)
+        if state is None:
+            return None
+        fn(state)
+        _write(path, state)
+        return state
+
+
 def drop(root, n):
     """Remove Qwen entry `n` from the saved state. Only `mates remove` calls this:
     `save` never drops an entry."""
