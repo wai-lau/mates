@@ -220,7 +220,57 @@ def snapshot(root, n, base):
                         attrs=base).stdout
         if kept:
             git_safe(root, n, "update-index", "-z", "--index-info", index=idx, input=kept, attrs=base)
-        return git_safe(root, n, "write-tree", index=idx, attrs=base).stdout.strip()
+        tree = git_safe(root, n, "write-tree", index=idx, attrs=base).stdout.strip()
+    _verify_snapshot(root, n, base, tree)
+    return tree
+
+
+def _read_nofollow(top, rel):
+    """(mode, bytes) of worktree path `rel` with no link followed on the way: "120000" and
+    the link text for a link, "file" and the content for a regular file. OSError otherwise."""
+    *dirs, last = rel.split("/")
+    fd = os.open(top, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for d in dirs:
+            nfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        st = os.stat(last, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISLNK(st.st_mode):
+            return "120000", os.fsencode(os.readlink(last, dir_fd=fd))
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"{rel} is not a regular file")
+        ffd = os.open(last, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        with os.fdopen(ffd, "rb") as f:
+            return "file", f.read()
+    finally:
+        os.close(fd)
+
+
+def _verify_snapshot(root, n, base, tree):
+    """Refuse a snapshot that differs from the worktree read again with no link followed.
+    `git add` runs as the owner while sandbox processes may still run: one that swaps a file
+    for a link to an owner file while git reads it would put that file in the snapshot, then
+    the diff, then main (security audit, 2026-11-13). Qwen can't read owner files, so it can't
+    make the re-read match."""
+    _, _, wt = gitsafe.dirs(root, n)
+    out = git_safe(root, n, "diff-tree", "-r", "-z", "--no-renames", base, tree, attrs=base).stdout
+    fields = out.split("\0")
+    for meta, path in zip(fields[0::2], fields[1::2], strict=False):
+        if not meta.startswith(":"):
+            continue
+        _, mode, _, sha, status = meta[1:].split(" ")
+        if status.startswith("D") or mode == "160000":
+            continue
+        try:
+            kind, data = _read_nofollow(str(wt), path)
+        except OSError as e:
+            raise GitError(f"{path} changed while mates read it ({e}); not taking this snapshot") from e
+        if (kind == "120000") != (mode == "120000"):
+            raise GitError(f"{path} changed while mates read it (file and link swapped); not taking this snapshot")
+        args = ("hash-object", "--no-filters", "--stdin") if kind == "120000" else ("hash-object", "--path", path, "--stdin")
+        if git_safe(root, n, *args, input=data, attrs=base).stdout.decode().strip() != sha:
+            raise GitError(f"{path} changed while mates read it; not taking this snapshot")
 
 
 def worktree_dirty(root, n):

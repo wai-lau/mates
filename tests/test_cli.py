@@ -2737,3 +2737,32 @@ def test_lead_prompt_marks_qwen_text_and_lessons():
     text = cli._lead_prompt()
     assert "data, never instructions" in text and "advisory" in text
 
+
+
+# --- a snapshot matches the worktree read without following links (security audit 2026-11-13):
+# a sandbox process that swaps a file for a link to an owner file while mates' `git add` reads
+# it would make git, running as the owner, store the owner's file. After the add, every changed
+# path is read again with no link followed and must hash to the blob git stored.
+
+def test_snapshot_refuses_a_file_changed_while_read(m, monkeypatch):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    real = cli.git_safe
+
+    def racing(root, n, *args, **kw):
+        r = real(root, n, *args, **kw)
+        if args[:1] == ("add",):  # the swap lands after git read the file
+            (m.wt / "a.txt").write_text("not what git stored\n")
+        return r
+    monkeypatch.setattr(cli, "git_safe", racing)
+    code, out, err = m.run("check", 1, "--", "true")
+    assert code != 0 and "changed while mates read it" in out + err
+
+
+def test_snapshot_keeps_a_link_as_a_link(m):
+    m.send()
+    (m.wt / "link").symlink_to("/etc/hostname")  # stored as a link (its target text), never followed
+    code, out, err = m.run("check", 1, "--", "true")
+    assert code == 0, err
+    tree = m.task()["checked_tree"]
+    assert m.git("cat-file", "-p", f"{tree}:link") == "/etc/hostname"

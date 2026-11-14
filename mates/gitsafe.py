@@ -46,7 +46,8 @@ def _env():
 
 
 def _run(argv, cwd, env, check, input):
-    r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, input=input)
+    # bytes in, bytes out (a file's raw content for hash-object); otherwise text
+    r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=not isinstance(input, bytes), input=input)
     if check and r.returncode != 0:
         raise GitError(r.stderr.strip() or f"{' '.join(argv)} exited {r.returncode}")
     return r
