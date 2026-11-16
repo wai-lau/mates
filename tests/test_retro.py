@@ -1,4 +1,4 @@
-"""`mates retro`: the private claude folder, plain flagged names, the lesson-drop cap
+"""`mates retro`: the private claude folder, plain flagged names, the retire and size caps
 (the base retro tests and the `Retro` harness are in test_cli.py)."""
 import json
 import os
@@ -63,7 +63,7 @@ def test_retro_refuses_without_private_folder(rt, monkeypatch):
 def test_retro_keeps_lessons_with_plain_flagged_names(rt):
     rt.line("2026-11-09", flags=["unnamed-file:the", "unnamed-file:check", "test-file:Makefile",
                                  "unnamed-file:lib/tasks", "unnamed-file:src/gadget.py", "unnamed-file:frobnicator"])
-    rt.reply(lessons=["Name the check in the brief", "Run the Makefile target first", "Split tasks small",
+    rt.reply(add=["Name the check in the brief", "Run the Makefile target first", "Split tasks small",
                       "Never touch gadget.py", "Mind the frobnicator", "Keep lib changes small"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.kept() == ["Name the check in the brief", "Run the Makefile target first", "Split tasks small",
@@ -75,30 +75,38 @@ def _old_lessons(rt, n):
     rt.git("commit", "-qam", "lessons")
 
 
-def test_retro_drops_at_most_three_lessons(rt):
+def test_retro_retires_at_most_three_lessons_a_day(rt):
     _old_lessons(rt, 5)
     rt.line("2026-11-09")
-    rt.reply(lessons=["old lesson 0", "one merged lesson"])  # would drop 4
+    rt.reply(add=["one merged lesson"], retire=[1, 2, 2, 3, 4, 9, "x"])
     assert rt.run("--date", "2026-11-09")[0] == 0
-    assert rt.kept() == [f"old lesson {i}" for i in range(5)]
-    assert rt.git("log", "-1", "--format=%s").strip() == "lessons"
-    q = (rt.src / "OPEN-QUESTIONS.md").read_text().split("## Open", 1)[1]
-    assert "drops 4 of the current 5" in q and "one merged lesson" in q
-    assert "old list stays" in rt.retro_file("2026-11-09").read_text()
-
-
-def test_retro_may_drop_three_lessons(rt):
-    _old_lessons(rt, 5)
-    rt.line("2026-11-09")
-    rt.reply(lessons=["old lesson 0", "old lesson 1", "new lesson"])  # drops 3
-    assert rt.run("--date", "2026-11-09")[0] == 0
-    assert rt.kept() == ["old lesson 0", "old lesson 1", "new lesson"]
+    assert rt.kept() == ["old lesson 3", "old lesson 4", "one merged lesson"]
     assert not (rt.src / "OPEN-QUESTIONS.md").exists()
+    f = rt.retro_file("2026-11-09").read_text().split("Not retired:", 1)[1]
+    assert "4: over the 3-a-day retire cap" in f and "9: not a lesson number" in f and "'x'" in f
+
+
+def test_retro_appends_up_to_the_cap_and_skips_repeats(rt):
+    _old_lessons(rt, 18)
+    rt.line("2026-11-09")
+    rt.reply(add=["old lesson 2", "new one", "new one", "new two", "new three"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == [f"old lesson {i}" for i in range(18)] + ["new one", "new two"]
+    f = rt.retro_file("2026-11-09").read_text()
+    assert "old lesson 2 (already in the list)" in f and "new three (over the 20-lesson cap)" in f
+
+
+def test_retro_answer_needs_lists(rt):
+    rt.line("2026-11-09")
+    (rt.t / "reply.json").write_text(json.dumps({"findings_md": "x", "add": "one lesson"}))
+    code, _, err = rt.run("--date", "2026-11-09")
+    assert code == 1 and "not a list" in err
+    assert rt.kept() == []
 
 
 def test_retro_flags_not_a_list_are_empty(rt):
     rt.line("2026-11-09", flags="unnamed-file:SECRETX", questions="QSECRET")
-    rt.reply(lessons=["Keep briefs short"])
+    rt.reply(add=["Keep briefs short"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     s = rt.calls()[0]["stdin"]
     assert "SECRETX" not in s and "QSECRET" not in s

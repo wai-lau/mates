@@ -1449,9 +1449,9 @@ class Retro:
     def git(self, *a):
         return subprocess.run(["git", "-C", str(self.src), *a], check=True, capture_output=True, text=True).stdout
 
-    def reply(self, findings="All fine.", lessons=(), proposals=()):
-        (self.t / "reply.json").write_text(json.dumps({"findings_md": findings, "lessons": list(lessons),
-                                                       "proposals": list(proposals)}))
+    def reply(self, findings="All fine.", add=(), retire=(), proposals=()):
+        (self.t / "reply.json").write_text(json.dumps({"findings_md": findings, "add": list(add),
+                                                       "retire": list(retire), "proposals": list(proposals)}))
 
     def line(self, day, **kw):
         import logrec
@@ -1530,7 +1530,7 @@ def test_retro_input_flags_have_no_paths(rt):
 
 def test_retro_rejects_lesson_with_repo_name(rt):
     rt.line("2026-11-09", flags=["unnamed-file:src/gadget.py"])
-    rt.reply(lessons=["Widget tasks need the check named", "Never touch gadget.py", "Briefs name the check"])
+    rt.reply(add=["Widget tasks need the check named", "Never touch gadget.py", "Briefs name the check"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.kept() == ["Briefs name the check"]
     f = rt.retro_file("2026-11-09").read_text()
@@ -1539,7 +1539,7 @@ def test_retro_rejects_lesson_with_repo_name(rt):
 
 def test_retro_allows_slash_words(rt):
     rt.line("2026-11-09")
-    rt.reply(lessons=["Report pass/fail with the check tail", "Read and/or diff before merge",
+    rt.reply(add=["Report pass/fail with the check tail", "Read and/or diff before merge",
                       "Split work 1 / 2 between panes", "Look at ~/notes first", "Check /etc first", "Edit src/app.py carefully"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.kept() == ["Report pass/fail with the check tail", "Read and/or diff before merge",
@@ -1548,7 +1548,7 @@ def test_retro_allows_slash_words(rt):
 
 def test_retro_caps_lessons(rt):
     rt.line("2026-11-09")
-    rt.reply(lessons=["x" * 201, "y" * 200] + [f"lesson number {i}" for i in range(25)])
+    rt.reply(add=["x" * 201, "y" * 200] + [f"lesson number {i}" for i in range(25)])
     assert rt.run("--date", "2026-11-09")[0] == 0
     kept = rt.kept()
     assert len(kept) == 20 and kept[0] == "y" * 200 and kept[-1] == "lesson number 18"
@@ -1557,7 +1557,7 @@ def test_retro_caps_lessons(rt):
 
 def test_retro_writes_findings_and_rejects(rt):
     rt.line("2026-11-09")
-    rt.reply(findings="## Misroutes\n\nOne task went to Qwen with no check.", lessons=["z" * 250])
+    rt.reply(findings="## Misroutes\n\nOne task went to Qwen with no check.", add=["z" * 250])
     code, out, err = rt.run("--date", "2026-11-09")
     assert code == 0, err
     f = rt.retro_file("2026-11-09").read_text()
@@ -1590,14 +1590,20 @@ def test_retro_appends_proposals_new_file(rt):
     assert "## Open" in q and "**1." in q and "Try the bigger model" in q
 
 
-def test_retro_lessons_replace_file(rt):
-    rt.lessons.write_text("## Lessons\n\n- old lesson one\n- old lesson two\n")
+def test_retro_appends_and_retires_lessons(rt):
+    """Wai, 2026-11-16: "The agent that runs the retro should be the one to append the lessons,
+    do this without waiting for approval"."""
+    rt.lessons.write_text("## Lessons\n\n- old lesson one\n- old lesson two\n- old lesson three\n")
     rt.git("commit", "-qam", "lessons")
     rt.line("2026-11-09")
-    rt.reply(lessons=["merged lesson"])
+    rt.reply(add=["merged lesson"], retire=[1, 3])
     assert rt.run("--date", "2026-11-09")[0] == 0
-    assert rt.kept() == ["merged lesson"]
-    assert "old lesson one" in rt.calls()[0]["stdin"]  # the retro saw the old list
+    assert rt.kept() == ["old lesson two", "merged lesson"]
+    assert "1. old lesson one\n2. old lesson two\n" in rt.calls()[0]["stdin"]  # numbered for retire
+    assert rt.git("log", "-1", "--format=%s").strip() == "mates: lessons from retro 2026-11-09"
+    assert not (rt.src / "OPEN-QUESTIONS.md").exists()  # nothing waits for approval
+    f = rt.retro_file("2026-11-09").read_text()
+    assert "Added 1, retired 2" in f and "- old lesson three" in f.split("Retired:", 1)[1]
 
 
 def test_retro_commits_only_lessons_on_main(rt):
@@ -1606,7 +1612,7 @@ def test_retro_commits_only_lessons_on_main(rt):
     rt.git("add", ".gitignore")
     rt.git("commit", "-qm", "ignore")
     rt.line("2026-11-09")
-    rt.reply(lessons=["Briefs name the check"], proposals=["p"])
+    rt.reply(add=["Briefs name the check"], proposals=["p"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.git("log", "-1", "--format=%s").strip() == "mates: lessons from retro 2026-11-09"
     assert rt.git("show", "--name-only", "--format=", "HEAD").split() == ["mates/lead-lessons.md"]
@@ -1614,9 +1620,9 @@ def test_retro_commits_only_lessons_on_main(rt):
     # another branch: written, not committed
     rt.git("checkout", "-qb", "side")
     rt.line("2026-11-10")
-    rt.reply(lessons=["Second lesson"])
+    rt.reply(add=["Second lesson"])
     assert rt.run("--date", "2026-11-10")[0] == 0
-    assert rt.kept() == ["Second lesson"]
+    assert rt.kept() == ["Briefs name the check", "Second lesson"]
     assert rt.git("log", "-1", "--format=%s").strip() == "mates: lessons from retro 2026-11-09"
     assert "not committed" in rt.retro_file("2026-11-10").read_text()
     assert "side" in rt.retro_file("2026-11-10").read_text()
@@ -1625,7 +1631,7 @@ def test_retro_commits_only_lessons_on_main(rt):
 def test_retro_no_commit_when_tree_dirty(rt):
     (rt.src / "mates" / "cli.py").write_text("wip\n")
     rt.line("2026-11-09")
-    rt.reply(lessons=["Briefs name the check"])
+    rt.reply(add=["Briefs name the check"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.kept() == ["Briefs name the check"]
     assert rt.git("log", "-1", "--format=%s").strip() == "init"

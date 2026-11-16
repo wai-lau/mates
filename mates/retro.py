@@ -5,10 +5,14 @@ text removed, each flag cut to its kind, `detail` dropped: those are the parts Q
 wrote or chose), plus the messages sent to Qwen that day (the leads' briefs and
 answers, and Wai's own messages, from OpenCode's sessions; never Qwen's replies, so
 Qwen's words can't become lessons), plus the current lessons and the last 7 retros, and asks
-a no-tools `claude -p` for findings, a new lessons list and proposals. It writes
-`~/.claude/mates/retros/<day>.md`, rewrites `mates/lead-lessons.md` (committed only
-when the mates checkout is on main and that file is its only change) and appends the
-proposals to the checkout's gitignored OPEN-QUESTIONS.md. Nothing else is changed.
+a no-tools `claude -p` for findings, lessons to add, lessons to retire and proposals. It
+writes `~/.claude/mates/retros/<day>.md`, applies the lessons to `mates/lead-lessons.md`
+itself, with no one's approval (Wai, 2026-11-16: "The agent that runs the retro should be
+the one to append the lessons, do this without waiting for approval"): new lessons are
+appended, at most RETIRE_MAX current ones are retired a day, the list stays under
+LESSONS_MAX, and every lesson passes `check_lesson`. The file is committed only when the
+mates checkout is on main and that file is its only change. Proposals go to the
+checkout's gitignored OPEN-QUESTIONS.md. Nothing else is changed.
 
 Chat lines are capped per day (CHAT_MAX, 300000 characters); when the cap is hit
 the oldest lines go first, and a line says how many were dropped. Each chat
@@ -47,9 +51,9 @@ ASK_FOOTER = re.compile("(?:" + re.escape(_PRE) + r"(?:\S+/)?" + re.escape(_POST
 LAST_RETROS = 7
 LESSON_MAX = 200
 LESSONS_MAX = 20
-DROP_MAX = 3  # a retro that would remove more of the current lessons proposes it instead
+RETIRE_MAX = 3  # current lessons one retro may retire; the rest wait for the next day's retro
 LESSONS_REL = "mates/lead-lessons.md"
-NO_LESSONS = "None yet. The daily retro rewrites this section.\n"
+NO_LESSONS = "None yet. The daily retro adds to this list.\n"
 LOG_HEADER = "## Log lines"
 CHAT_MAX = 300000  # characters of chat lines per day; past this, oldest Qwen lines go first
 CHAT_PER_LINE = 2000  # each chat line is at most this many characters
@@ -228,15 +232,39 @@ def check_lesson(lesson, names):
     return None
 
 
-def sort_lessons(lessons, names):
+def sort_lessons(lessons, names, have=()):
+    """Split new lessons into those that may be appended after `have` and (lesson, why) rejects."""
     kept, rejected = [], []
     for raw in lessons:
         lesson = " ".join(str(raw).split())
         why = check_lesson(lesson, names)
-        if why is None and len(kept) >= LESSONS_MAX:
+        if why is None and (lesson in have or lesson in kept):
+            why = "already in the list"
+        if why is None and len(have) + len(kept) >= LESSONS_MAX:
             why = f"over the {LESSONS_MAX}-lesson cap"
         (rejected.append((lesson, why)) if why else kept.append(lesson))
     return kept, rejected
+
+
+def current_lessons(text):
+    return [l[2:] for l in text.splitlines() if l.startswith("- ")]
+
+
+def pick_retired(retire, current):
+    """The current lessons to retire (1-based numbers, at most RETIRE_MAX, in the order asked)
+    and a note on each number not taken."""
+    taken, notes = [], []
+    for raw in retire:
+        n = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+        if n is None or not 1 <= n <= len(current):
+            notes.append(f"{raw!r}: not a lesson number")
+        elif n in taken:
+            continue
+        elif len(taken) >= RETIRE_MAX:
+            notes.append(f"{n}: over the {RETIRE_MAX}-a-day retire cap, kept for now")
+        else:
+            taken.append(n)
+    return taken, notes
 
 
 def _write(path, text):
@@ -276,7 +304,9 @@ def _chat_prompt(day, chats):
 
 
 def _prompt(day, lines, lessons_text, prior, chats):
-    parts = [PROMPT.read_text(), "## Current lessons\n", lessons_text.strip() + "\n"]
+    current = current_lessons(lessons_text)
+    numbered = "".join(f"{i}. {l}\n" for i, l in enumerate(current, 1)) or "None yet.\n"
+    parts = [PROMPT.read_text(), "## Current lessons (numbered for `retire`)\n", numbered]
     parts.append(f"## The last {LAST_RETROS} retros\n")
     parts += [p.read_text().strip() + "\n" for p in prior] or ["None yet.\n"]
     parts.append(f"{LOG_HEADER} for {day} (one JSON object per line)\n")
@@ -303,9 +333,10 @@ def ask_claude(prompt):
     except ValueError:
         raise RetroError("claude's answer is not JSON")
     if not (isinstance(d, dict) and isinstance(d.get("findings_md"), str)
-            and isinstance(d.get("lessons"), list) and isinstance(d.get("proposals", []), list)):
-        raise RetroError("claude's answer lacks findings_md, lessons or proposals")
-    return d["findings_md"], d["lessons"], [" ".join(str(p).split()) for p in d.get("proposals") or [] if str(p).strip()]
+            and all(isinstance(d.get(k, []), list) for k in ("add", "retire", "proposals"))):
+        raise RetroError("claude's answer lacks findings_md, or add, retire or proposals is not a list")
+    proposals = [" ".join(str(p).split()) for p in d.get("proposals") or [] if str(p).strip()]
+    return d["findings_md"], d.get("add") or [], d.get("retire") or [], proposals
 
 
 def _git(*a):
@@ -361,31 +392,33 @@ def run_day(day, lines, names, chats):
     lessons_path = SRC / LESSONS_REL
     old = lessons_path.read_text() if lessons_path.exists() else ""
     prior = sorted(p for p in _retros_dir().glob("*.md") if p.stem < day)[-LAST_RETROS:]
-    findings, lessons, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
-    kept, rejected = sort_lessons(lessons, names)
-    current = [l[2:] for l in old.splitlines() if l.startswith("- ")]
-    dropped = [l for l in current if l not in kept]
-    held = ""
-    if len(dropped) > DROP_MAX:  # too big a change to make unattended: keep the old list, ask Wai
-        proposals = proposals + [f"replace the lead lessons with this list, which drops {len(dropped)} of the "
-                                 f"current {len(current)}: " + " | ".join(kept or ["(none)"])]
-        held = (f"The retro would drop {len(dropped)} of the current lessons (more than {DROP_MAX}), so the "
-                "old list stays and the new one is in OPEN-QUESTIONS.md.\n")
-        kept = current
-    new = "## Lessons\n\n" + ("".join(f"- {l}\n" for l in kept) if kept else NO_LESSONS)
+    findings, add, retire, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
+    current = current_lessons(old)
+    taken, notes = pick_retired(retire, current)
+    have = [l for i, l in enumerate(current, 1) if i not in taken]
+    added, rejected = sort_lessons(add, names, have)
+    kept = have + added
+    new = old if kept == current else \
+        "## Lessons\n\n" + ("".join(f"- {l}\n" for l in kept) if kept else NO_LESSONS)
     if new != old:
         _write(lessons_path, new)
     committed = commit_lessons(day, new != old)
     append_proposals(day, proposals)
     out = [f"# Retro {day}\n", findings.strip() + "\n",
-           f"## Lessons\n\n{held}Kept {len(kept)} of {len(lessons)} in {LESSONS_REL}; {committed}.\n"]
+           f"## Lessons\n\nAdded {len(added)}, retired {len(taken)}; {len(kept)} in {LESSONS_REL}; {committed}.\n"]
+    if added:
+        out.append("Added:\n\n" + "".join(f"- {l}\n" for l in added))
+    if taken:
+        out.append("Retired:\n\n" + "".join(f"- {current[n - 1]}\n" for n in taken))
+    if notes:
+        out.append("Not retired:\n\n" + "".join(f"- {x}\n" for x in notes))
     if rejected:
         out.append("Rejected:\n\n" + "".join(f"- {l} ({why})\n" for l, why in rejected))
     out.append("## Proposals (in OPEN-QUESTIONS.md, not applied)\n\n"
                + ("".join(f"- {p}\n" for p in proposals) if proposals else "None.\n"))
     _write(_retros_dir() / f"{day}.md", "\n".join(out))
-    print(f"retro {day}: {len(lines)} log lines, {len(kept)} lessons kept, {len(rejected)} rejected, "
-          f"{len(proposals)} proposals; {committed}")
+    print(f"retro {day}: {len(lines)} log lines, {len(added)} lessons added, {len(taken)} retired, "
+          f"{len(rejected)} rejected, {len(proposals)} proposals; {committed}")
 
 
 def _days(recs, date):
