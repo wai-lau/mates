@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import shutil
 import sqlite3
 import stat
@@ -418,6 +419,7 @@ WAIT_POLL_S = 2.0
 SESSION_WAIT_S = 30  # send: how long to look for the OpenCode session row after the message
 SESSION_POLL_S = 0.5
 CHECK_TAIL = 20
+CHECK_TIMEOUT_S = 1800  # a check still running after this is killed and fails ("timed out")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
@@ -794,24 +796,17 @@ def send(args):
     if a.check:
         try:
             tree = git_lead(root, "rev-parse", f"{lead}^{{tree}}").stdout.strip()  # the lead's files: the worktree may be behind
-            env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO")}
-            if state.get("runtime"):
-                env["QWEN_RUNTIME"] = state["runtime"]
-            with _unpacked(root, a.n, tree, lead) as folder:
-                env["QWEN_CHECK_DIR"] = str(folder)
-                r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", a.check],
-                                   cwd="/", env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                err = r.stdout.decode("utf-8", "replace").strip()
+            code, err = run_check(root, state, a.n, tree, lead, a.check)
+            err = err.strip()
         except GitError as e:
             die(f"git failed on Qwen worktree {a.n}: {e}")
         except fsutil.UnsafeDir as e:
             die(f"refusing to check: {e}")
-        if r.returncode == 0:
+        if code == 0:
             die("the check passes on the base (it proves nothing); send without --check or fix the check")
-        if r.returncode in (126, 127) or "command not found" in err or "Executable doesn't exist" in err:
-            die(f"the check cannot run on the base ({err}); send without --check or fix the check")
-        print(f"check {a.check} failed on the base (exit {r.returncode}) — red on base; sending anyway")
+        if code in (124, 126, 127) or "command not found" in err or "Executable doesn't exist" in err:
+            die(f"the check cannot run on the base ({err[-2000:]}); send without --check or fix the check")
+        print(f"check {a.check} failed on the base (exit {code}) — red on base; sending anyway")
     # Qwen cannot commit, so mates/qwen-N holds no work of its own: moving it to the lead
     # HEAD is the rebase. Anything on it the lead lacks is kept on a ref first.
     head = git_safe(root, a.n, "rev-parse", "HEAD").stdout.strip()
@@ -995,6 +990,35 @@ def _check_args(args):
     return _int(args[0]), (None if not rest else rest[0] if len(rest) == 1 else shlex.join(rest))
 
 
+def run_check(root, state, n, tree, base, cmd):
+    """Run `cmd` in the check sandbox (`qwen exec`) on `tree`, unpacked with `base`'s
+    attributes: the one runner for `mates check` and `mates send --check`. Returns
+    (exit status, output). The output is Qwen's code's, so control characters are made
+    visible (`shown`). Past CHECK_TIMEOUT_S the whole check is killed (its process group;
+    the sandbox dies with its parent) and fails with status 124 and a "timed out" line."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO", "QWEN_PROOFS")}
+    if state.get("runtime"):
+        env["QWEN_RUNTIME"] = state["runtime"]
+    proofs_dir = Path(root) / ".mates" / "proofs"
+    if proofs_dir.is_dir():
+        env["QWEN_PROOFS"] = str(proofs_dir)
+    with _unpacked(root, n, tree, base) as folder:
+        env["QWEN_CHECK_DIR"] = str(folder)
+        p = subprocess.Popen([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd="/", env=env,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+        try:
+            raw, _ = p.communicate(timeout=CHECK_TIMEOUT_S)
+            code = p.returncode
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            raw, _ = p.communicate()
+            raw += f"\nmates: check timed out after {CHECK_TIMEOUT_S} s and was killed\n".encode()
+            code = 124
+    return code, shown(raw.decode("utf-8", "replace"))
+
+
 def check(args):
     n, cmd = _check_args(args)
     root = _lead_root()
@@ -1006,7 +1030,6 @@ def check(args):
         cmd = (task or {}).get("send_check") or (task or {}).get("check_cmd")
         if task is None or task.get("direct") or not cmd:
             die(f"usage: mates check {n} -- <cmd> (this task has no check to reuse)")
-    proofs_dir = Path(root) / ".mates" / "proofs"
     # Qwen can edit the files mid-check only while qwen runs in its pane: a crashed, failed or
     # closed pane's work stays checkable (a lead checked a pane that died of a segfault).
     hit = _find(root, state, q)
@@ -1020,29 +1043,20 @@ def check(args):
             base = git_lead(root, "merge-base", "HEAD", f"refs/heads/{q['branch']}").stdout.strip()
             task = q["task"] = _task(base, direct=True)
         tree = snapshot(root, n, task["base"])
-        env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO", "QWEN_PROOFS")}
-        if state.get("runtime"):
-            env["QWEN_RUNTIME"] = state["runtime"]
-        if proofs_dir.is_dir():
-            env["QWEN_PROOFS"] = str(proofs_dir)
-        with _unpacked(root, n, tree, task["base"]) as folder:
-            env["QWEN_CHECK_DIR"] = str(folder)
-            r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd="/", env=env,
-                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        code, output = run_check(root, state, n, tree, task["base"], cmd)
     except GitError as e:
         die(f"git failed on Qwen worktree {n}: {e}")
     except fsutil.UnsafeDir as e:
         die(f"refusing to check: {e}")
-    out = r.stdout.decode("utf-8", "replace").splitlines()
-    print(f"check exit {r.returncode} on tree {tree[:12]}")
-    for line in out[-CHECK_TAIL:]:
+    print(f"check exit {code} on tree {tree[:12]}")
+    for line in output.splitlines()[-CHECK_TAIL:]:
         print(line)
-    if r.returncode == 0:
+    if code == 0:
         task.update(checked_tree=tree, check_cmd=cmd)
     else:
         task.update(checked_tree=None)
     save_state(root, state)
-    return r.returncode
+    return code
 
 
 def diff(args):

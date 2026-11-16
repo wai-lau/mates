@@ -2910,3 +2910,36 @@ def test_log_counts_tokens_and_compactions_across_sessions(m):
     assert m.run("merge", 1)[0] == 0
     rec = m.log()[-1]
     assert rec["worker_tokens"] == 165 and rec["compactions"] == 2
+
+
+# --- one check runner for check and send --check: a timeout, control characters made visible,
+# and the same sandbox env (audit 2026-11-13, finding 5; send --check lacked QWEN_PROOFS).
+
+
+
+def test_check_times_out(m, monkeypatch):
+    monkeypatch.setattr(cli, "CHECK_TIMEOUT_S", 1)
+    m.send()
+    t0 = time.time()
+    code, out, err = m.run("check", 1, "--", "sleep 30")
+    assert code != 0 and "timed out" in out + err and time.time() - t0 < 10
+
+
+def test_check_output_has_no_control_characters(m):
+    m.send()
+    code, out, _ = m.run("check", 1, "--", "printf 'ok\\033[2J\\033]0;title\\007 done\\n'")
+    assert code == 0 and "\x1b" not in out and "\x07" not in out and "done" in out
+
+
+def test_send_check_times_out_as_cannot_run(m, monkeypatch):
+    monkeypatch.setattr(cli, "CHECK_TIMEOUT_S", 1)
+    t0 = time.time()
+    code, _, err = _send_check(m, "sleep 30")
+    assert code != 0 and "cannot run" in err and "timed out" in err and m.buffers() == []
+    assert time.time() - t0 < 10
+
+
+def test_send_check_sees_the_proofs(m):
+    (m.root / ".mates" / "proofs").mkdir(parents=True)
+    code, out, err = _send_check(m, 'test -z "$QWEN_PROOFS"')  # red on base only when it is set
+    assert code == 0 and "red on base" in out, err
