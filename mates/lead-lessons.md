@@ -5,18 +5,18 @@
 - Tests Qwen writes are not a check: it grades itself. Write the probe or failing tests first and send them as the spec; probe-first tasks passed review on the first try.
 - Behaviour plus lead-written failing tests gets Qwen's best work; exact code in a brief leaves it nothing to do, and a known diff of a few lines is faster to apply yourself.
 - Keep briefs for small checkable fixes lean: behaviour and check. Name every file the task may create or edit, so a flag for an unnamed file means something.
-- Route to Qwen only when the check fixes the outcome. For look-only work, pin the asked values (sizes, factors) in the check; 'nothing else moved' alone lets wrong values pass.
+- Route to Qwen only when the check fixes the outcome, not when Qwen must design the approach. For look-only work pin the asked values in the check; 'nothing else moved' lets wrong ones pass.
 - Qwen misses what no test pins: an untested file in a brief comes back wrong, and its own fakes can hide real crashes. Leave untested parts out or add a test that loads the real file.
 - Forbid edits to existing tests; if Qwen changes a test or skips a case to make it agree with its code, send it back.
 - Treat Qwen's done note as a claim: it has reported asks done that were missing or wrong. Probe every accept against the spec before merging.
 - Merge only under the check that defines done; if the strict check fails, send it back or finish it and log that.
 - After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
-- Before sending, confirm the pane has the runtime and can see the proof files its check needs; a missing runtime or mount looks like a worker stall.
-- Judge a stall by turns, not the clock: on a shared slot a turn can wait 10+ minutes. Stuck means no new tool call for 30 minutes or two failed re-briefs.
-- Size each task to fit Qwen's 64K context: one plan task, plan sections by pointer. A task that must read many modules compacts, and each compaction loses or invents detail.
+- Before sending, confirm the pane has the runtime and can open the proof files its check needs; a missing runtime or mount looks like a worker stall.
+- Judge a stall by turns, not the clock. Stuck means no new tool call for 30 minutes or two failed re-briefs; after a pane restart, confirm the task resumed before waiting on it.
+- Size each task to fit Qwen's 64K context: one plan task, a few functions, plan sections by pointer. A task that reads or writes many modules compacts, and each compaction loses detail.
 - Name the line range or a grep pattern when a brief points into a big file; Qwen reads files whole and a large test file fills half its context.
-- Keep each brief in a file that survives a restart and send it once, whole; a resume note without the brief, or a second paste a minute later, leaves Qwen re-reading.
-- When Qwen writes docs or history, pin exact quotes, dates and numbers and read the doc diff line by line; it invents owner quotes and dates. Better, write those lines yourself.
-- Record worker model id, lead tokens, the check and red-on-base on every attempt, claude-self and sent-back rows included; count each re-brief as an attempt.
-- Wait on Qwen with long blocking waits, not frequent polls: lead cache reads grow with every turn spent checking a slow pane and were most of the lead's cost
-- OpenCode needs Escape pressed twice to stop a reply, and a new chat opened in a busy pane leaves the old one running unseen: stop the reply first, or restart the pane.
+- Keep each brief in a file that survives a restart and send it once, whole, into a fresh chat; leftover context from the last task or a second paste leaves Qwen re-reading.
+- When Qwen writes docs or history, write the quotes, dates and numbers yourself; forbid author or credit lines in code and commits, and read those diffs line by line.
+- Record worker model id, lead tokens, the check and red-on-base on every attempt, claude-self rows included; log an outcome for every send and count each re-brief.
+- Wait on Qwen with long blocking waits, not frequent polls: lead cache reads grow with every turn spent checking a slow pane and were most of the lead's cost.
+- OpenCode needs Escape twice to stop a reply, and a new chat in a busy pane leaves the old one running unseen: stop the reply first, or restart the pane.
