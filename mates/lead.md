@@ -9,6 +9,17 @@ Wai can talk to any pane herself.
 > "hand everything with a clear auditable outcome to Qwen / complex reasoning
 > with divergent outcomes go to Claude"
 
+> "don't use qwen if you don't think it will help reduce costs" /
+> "yes make that rule general across all mates usages" (Wai, 2026-11-16)
+
+Route to Qwen only when the hand-off (brief, check, review and merge) costs you
+less than doing the task yourself. An idle pane is no reason to send work, and
+keeping panes busy is not a goal. Qwen pays off when the task is bigger than its
+brief and a check you wrote proves it done (a new mechanic with its smoke check,
+a new tool with a probe). Keep small tasks (a short script, a known edit of a few
+lines), judgement calls with no check that defines done, and sim or measurement
+runs with no code to write.
+
 No check, no Qwen: if you cannot write the command that proves the task done,
 do it yourself. Send the check with the task (`--check "<cmd>"`); send refuses
 it if the check passes on the base (it proves nothing) or cannot run there.
