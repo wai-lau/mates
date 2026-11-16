@@ -1449,9 +1449,10 @@ class Retro:
     def git(self, *a):
         return subprocess.run(["git", "-C", str(self.src), *a], check=True, capture_output=True, text=True).stdout
 
-    def reply(self, findings="All fine.", add=(), retire=(), proposals=()):
+    def reply(self, findings="All fine.", add=(), retire=(), proposals=(), merge=()):
         (self.t / "reply.json").write_text(json.dumps({"findings_md": findings, "add": list(add),
-                                                       "retire": list(retire), "proposals": list(proposals)}))
+                                                       "merge": list(merge), "retire": list(retire),
+                                                       "proposals": list(proposals)}))
 
     def line(self, day, **kw):
         import logrec
@@ -1546,23 +1547,32 @@ def test_retro_allows_slash_words(rt):
                          "Split work 1 / 2 between panes"]
 
 
-def test_retro_caps_lessons(rt):
+def test_retro_has_no_lesson_count_cap(rt):
+    """Wai, 2026-11-16: "we should allow as many lessons as Claude can handle"."""
     rt.line("2026-11-09")
-    rt.reply(add=["x" * 201, "y" * 200] + [f"lesson number {i}" for i in range(25)])
+    rt.reply(add=["x" * 301, "y" * 300] + [f"lesson number {i}" for i in range(25)])
     assert rt.run("--date", "2026-11-09")[0] == 0
-    kept = rt.kept()
-    assert len(kept) == 20 and kept[0] == "y" * 200 and kept[-1] == "lesson number 18"
-    assert "x" * 201 in rt.retro_file("2026-11-09").read_text()
+    assert rt.kept() == ["y" * 300] + [f"lesson number {i}" for i in range(25)]
+    assert "x" * 301 in rt.retro_file("2026-11-09").read_text()
+
+
+def test_retro_caps_the_list_size(rt, monkeypatch):
+    monkeypatch.setattr(rt.retro, "LESSONS_CHARS_MAX", 400)
+    rt.line("2026-11-09")
+    rt.reply(add=["y" * 300] + [f"lesson number {i}" for i in range(10)])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == ["y" * 300] + [f"lesson number {i}" for i in range(6)]  # 300 + 6 * 15 = 390
+    assert "lesson number 6 (over the 400-character list cap)" in rt.retro_file("2026-11-09").read_text()
 
 
 def test_retro_writes_findings_and_rejects(rt):
     rt.line("2026-11-09")
-    rt.reply(findings="## Misroutes\n\nOne task went to Qwen with no check.", add=["z" * 250])
+    rt.reply(findings="## Misroutes\n\nOne task went to Qwen with no check.", add=["z" * 350])
     code, out, err = rt.run("--date", "2026-11-09")
     assert code == 0, err
     f = rt.retro_file("2026-11-09").read_text()
     assert "One task went to Qwen with no check." in f
-    assert "z" * 250 in f and "200" in f
+    assert "z" * 350 in f and "300" in f
 
 
 def test_retro_appends_proposals(rt):
@@ -1603,7 +1613,7 @@ def test_retro_appends_and_retires_lessons(rt):
     assert rt.git("log", "-1", "--format=%s").strip() == "mates: lessons from retro 2026-11-09"
     assert not (rt.src / "OPEN-QUESTIONS.md").exists()  # nothing waits for approval
     f = rt.retro_file("2026-11-09").read_text()
-    assert "Added 1, retired 2" in f and "- old lesson three" in f.split("Retired:", 1)[1]
+    assert "Added 1, merged 0, retired 2" in f and "- old lesson three" in f.split("Retired:", 1)[1]
 
 
 def test_retro_commits_only_lessons_on_main(rt):

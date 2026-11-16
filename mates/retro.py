@@ -5,12 +5,14 @@ text removed, each flag cut to its kind, `detail` dropped: those are the parts Q
 wrote or chose), plus the messages sent to Qwen that day (the leads' briefs and
 answers, and Wai's own messages, from OpenCode's sessions; never Qwen's replies, so
 Qwen's words can't become lessons), plus the current lessons and the last 7 retros, and asks
-a no-tools `claude -p` for findings, lessons to add, lessons to retire and proposals. It
+a no-tools `claude -p` for findings, lessons to add, merge and retire, and proposals. It
 writes `~/.claude/mates/retros/<day>.md`, applies the lessons to `mates/lead-lessons.md`
 itself, with no one's approval (Wai, 2026-11-16: "The agent that runs the retro should be
 the one to append the lessons, do this without waiting for approval"): new lessons are
-appended, at most RETIRE_MAX current ones are retired a day, the list stays under
-LESSONS_MAX, and every lesson passes `check_lesson`. The file is committed only when the
+appended, overlapping ones merged (at most MERGE_MAX merges a day), at most RETIRE_MAX
+wrong ones retired a day, the list stays under LESSONS_CHARS_MAX characters (Wai,
+2026-11-16: "we should allow as many lessons as Claude can handle"), and every lesson
+passes `check_lesson`. The file is committed only when the
 mates checkout is on main and that file is its only change. Proposals go to the
 checkout's gitignored OPEN-QUESTIONS.md. Nothing else is changed.
 
@@ -49,9 +51,12 @@ CLAUDE_TIMEOUT_S = 600
 _PRE, _POST = cli.ASK_SUFFIX.split("{worktree}/")
 ASK_FOOTER = re.compile("(?:" + re.escape(_PRE) + r"(?:\S+/)?" + re.escape(_POST) + r"\s*)+$")
 LAST_RETROS = 7
-LESSON_MAX = 200
-LESSONS_MAX = 20
+LESSON_MAX = 300  # characters in one lesson (a merge of two needs the room)
+# The whole list, in characters: about 10K tokens of every lead's system prompt (cached), a
+# guard against runaway growth rather than a target. Merges keep the list free of repeats.
+LESSONS_CHARS_MAX = 40000
 RETIRE_MAX = 3  # current lessons one retro may retire; the rest wait for the next day's retro
+MERGE_MAX = 5  # merges one retro may make; the rest wait for the next day's retro
 LESSONS_REL = "mates/lead-lessons.md"
 NO_LESSONS = "None yet. The daily retro adds to this list.\n"
 LOG_HEADER = "## Log lines"
@@ -240,14 +245,44 @@ def sort_lessons(lessons, names, have=()):
         why = check_lesson(lesson, names)
         if why is None and (lesson in have or lesson in kept):
             why = "already in the list"
-        if why is None and len(have) + len(kept) >= LESSONS_MAX:
-            why = f"over the {LESSONS_MAX}-lesson cap"
+        if why is None and sum(map(len, [*have, *kept, lesson])) > LESSONS_CHARS_MAX:
+            why = f"over the {LESSONS_CHARS_MAX}-character list cap"
         (rejected.append((lesson, why)) if why else kept.append(lesson))
     return kept, rejected
 
 
 def current_lessons(text):
     return [l[2:] for l in text.splitlines() if l.startswith("- ")]
+
+
+def _number(raw, current):
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= len(current) else None
+
+
+def pick_merges(merge, current, retired, names):
+    """Merges to make: [(numbers, merged lesson)], each of 2+ current lessons not retired or
+    used by another merge, at most MERGE_MAX, the merged text passing `check_lesson`; and a
+    note on each merge not taken."""
+    taken, used, notes = [], set(retired), []
+    for m in merge:
+        nums = m.get("lessons") if isinstance(m, dict) else None
+        text = " ".join(str(m.get("into") or "").split()) if isinstance(m, dict) else ""
+        ns = [_number(x, current) for x in nums] if isinstance(nums, list) else []
+        why = None
+        if len(ns) < 2 or None in ns or len(set(ns)) != len(ns):
+            why = "needs two or more different lesson numbers"
+        elif used & set(ns):
+            why = "uses a lesson already retired or merged"
+        elif len(taken) >= MERGE_MAX:
+            why = f"over the {MERGE_MAX}-a-day merge cap, kept for now"
+        else:
+            why = check_lesson(text, names)
+        if why:
+            notes.append(f"{nums!r} into {text!r}: {why}")
+            continue
+        taken.append((ns, text))
+        used |= set(ns)
+    return taken, notes
 
 
 def pick_retired(retire, current):
@@ -333,10 +368,10 @@ def ask_claude(prompt):
     except ValueError:
         raise RetroError("claude's answer is not JSON")
     if not (isinstance(d, dict) and isinstance(d.get("findings_md"), str)
-            and all(isinstance(d.get(k, []), list) for k in ("add", "retire", "proposals"))):
-        raise RetroError("claude's answer lacks findings_md, or add, retire or proposals is not a list")
+            and all(isinstance(d.get(k, []), list) for k in ("add", "merge", "retire", "proposals"))):
+        raise RetroError("claude's answer lacks findings_md, or add, merge, retire or proposals is not a list")
     proposals = [" ".join(str(p).split()) for p in d.get("proposals") or [] if str(p).strip()]
-    return d["findings_md"], d.get("add") or [], d.get("retire") or [], proposals
+    return d["findings_md"], d.get("add") or [], d.get("merge") or [], d.get("retire") or [], proposals
 
 
 def _git(*a):
@@ -392,10 +427,14 @@ def run_day(day, lines, names, chats):
     lessons_path = SRC / LESSONS_REL
     old = lessons_path.read_text() if lessons_path.exists() else ""
     prior = sorted(p for p in _retros_dir().glob("*.md") if p.stem < day)[-LAST_RETROS:]
-    findings, add, retire, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
+    findings, add, merge, retire, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
     current = current_lessons(old)
     taken, notes = pick_retired(retire, current)
-    have = [l for i, l in enumerate(current, 1) if i not in taken]
+    merges, merge_notes = pick_merges(merge, current, taken, names)
+    notes += merge_notes
+    first = {ns[0]: text for ns, text in merges}
+    gone = set(taken) | {n for ns, _ in merges for n in ns[1:]}
+    have = [first.get(i, l) for i, l in enumerate(current, 1) if i not in gone]
     added, rejected = sort_lessons(add, names, have)
     kept = have + added
     new = old if kept == current else \
@@ -405,19 +444,24 @@ def run_day(day, lines, names, chats):
     committed = commit_lessons(day, new != old)
     append_proposals(day, proposals)
     out = [f"# Retro {day}\n", findings.strip() + "\n",
-           f"## Lessons\n\nAdded {len(added)}, retired {len(taken)}; {len(kept)} in {LESSONS_REL}; {committed}.\n"]
+           f"## Lessons\n\nAdded {len(added)}, merged {len(merges)}, retired {len(taken)}; {len(kept)} in "
+           f"{LESSONS_REL}; {committed}.\n"]
     if added:
         out.append("Added:\n\n" + "".join(f"- {l}\n" for l in added))
+    if merges:
+        out.append("Merged:\n\n" + "".join(f"- {' + '.join(current[n - 1] for n in ns)} -> {text}\n"
+                                            for ns, text in merges))
     if taken:
         out.append("Retired:\n\n" + "".join(f"- {current[n - 1]}\n" for n in taken))
     if notes:
-        out.append("Not retired:\n\n" + "".join(f"- {x}\n" for x in notes))
+        out.append("Not applied:\n\n" + "".join(f"- {x}\n" for x in notes))
     if rejected:
         out.append("Rejected:\n\n" + "".join(f"- {l} ({why})\n" for l, why in rejected))
     out.append("## Proposals (in OPEN-QUESTIONS.md, not applied)\n\n"
                + ("".join(f"- {p}\n" for p in proposals) if proposals else "None.\n"))
     _write(_retros_dir() / f"{day}.md", "\n".join(out))
-    print(f"retro {day}: {len(lines)} log lines, {len(added)} lessons added, {len(taken)} retired, "
+    print(f"retro {day}: {len(lines)} log lines, {len(added)} lessons added, {len(merges)} merged, "
+          f"{len(taken)} retired, "
           f"{len(rejected)} rejected, {len(proposals)} proposals; {committed}")
 
 

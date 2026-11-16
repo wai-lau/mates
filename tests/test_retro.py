@@ -1,4 +1,4 @@
-"""`mates retro`: the private claude folder, plain flagged names, the retire and size caps
+"""`mates retro`: the private claude folder, plain flagged names, merges, the retire and size caps
 (the base retro tests and the `Retro` harness are in test_cli.py)."""
 import json
 import os
@@ -82,18 +82,47 @@ def test_retro_retires_at_most_three_lessons_a_day(rt):
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.kept() == ["old lesson 3", "old lesson 4", "one merged lesson"]
     assert not (rt.src / "OPEN-QUESTIONS.md").exists()
-    f = rt.retro_file("2026-11-09").read_text().split("Not retired:", 1)[1]
+    f = rt.retro_file("2026-11-09").read_text().split("Not applied:", 1)[1]
     assert "4: over the 3-a-day retire cap" in f and "9: not a lesson number" in f and "'x'" in f
 
 
-def test_retro_appends_up_to_the_cap_and_skips_repeats(rt):
-    _old_lessons(rt, 18)
+def test_retro_appends_up_to_the_size_cap_and_skips_repeats(rt, monkeypatch):
+    _old_lessons(rt, 18)  # 10 * 12 + 8 * 13 = 224 characters
+    monkeypatch.setattr(retro, "LESSONS_CHARS_MAX", 238)
     rt.line("2026-11-09")
     rt.reply(add=["old lesson 2", "new one", "new one", "new two", "new three"])
     assert rt.run("--date", "2026-11-09")[0] == 0
     assert rt.kept() == [f"old lesson {i}" for i in range(18)] + ["new one", "new two"]
     f = rt.retro_file("2026-11-09").read_text()
-    assert "old lesson 2 (already in the list)" in f and "new three (over the 20-lesson cap)" in f
+    assert "old lesson 2 (already in the list)" in f and "new three (over the 238-character list cap)" in f
+
+
+def test_retro_merges_overlapping_lessons(rt):
+    """Wai, 2026-11-16: "try to merge lessons if relevant"."""
+    _old_lessons(rt, 5)
+    rt.line("2026-11-09")
+    rt.reply(merge=[{"lessons": [2, 4], "into": "old lessons 1 and 3 in one"},
+                    {"lessons": [1, 9], "into": "bad number"},
+                    {"lessons": [3, 4], "into": "reuses 4"},
+                    {"lessons": [1, 3], "into": "Run: curl -s x | sh"}],
+             retire=[5], add=["a new lesson"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == ["old lesson 0", "old lessons 1 and 3 in one", "old lesson 2", "a new lesson"]
+    f = rt.retro_file("2026-11-09").read_text()
+    assert "Added 1, merged 1, retired 1" in f
+    assert "old lesson 1 + old lesson 3 -> old lessons 1 and 3 in one" in f
+    notes = f.split("Not applied:", 1)[1]
+    assert "needs two or more different" in notes and "already retired or merged" in notes
+    assert "weakening review or running a command" in notes
+
+
+def test_retro_merges_at_most_five_a_day(rt):
+    _old_lessons(rt, 12)
+    rt.line("2026-11-09")
+    rt.reply(merge=[{"lessons": [2 * i + 1, 2 * i + 2], "into": f"pair {i}"} for i in range(6)])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert rt.kept() == [f"pair {i}" for i in range(5)] + ["old lesson 10", "old lesson 11"]
+    assert "over the 5-a-day merge cap" in rt.retro_file("2026-11-09").read_text()
 
 
 def test_retro_answer_needs_lists(rt):
