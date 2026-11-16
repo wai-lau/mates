@@ -36,6 +36,10 @@ brief reached OpenCode as an ordinary text part.
 
 ### discard leaves a working Qwen running on the reset worktree
 
+**Fixed (2026-11-16):** discard presses Escape twice on a busy pane and waits up to
+DISCARD_STOP_S (20 s) for two not-busy readings; if Qwen keeps replying it refuses and
+changes nothing (restart the pane with `mates remove N`, then `mates add`).
+
 `mates discard N` resets the worktree to the lead's HEAD but does not stop
 OpenCode. A Qwen still in its turn goes on editing the reset tree from its old
 context, and the next `send` reads the pane as busy. One Escape does not stop it:

@@ -1051,6 +1051,42 @@ def test_discard_keeps_snapshot_ref(m):
     assert [r["outcome"] for r in m.log()] == ["escalated"]
 
 
+# --- discard stops a busy Qwen first (docs/bugs.md, 2026-11-12: a Qwen still in its turn went on
+# editing the reset worktree for three hours). OpenCode needs two Escapes (the first only arms
+# the interrupt); discard presses them and waits for the reply to stop, or refuses.
+
+def _busy_pane(m):
+    m.send()
+    (m.t / "capture").write_text(_used_screen(EMPTY_BOX, SPIN_FOOTER))
+
+
+def test_discard_stops_a_busy_pane_first(m):
+    _busy_pane(m)
+    hook = m.t / "on-enter"  # tmux send-keys: once both Escapes are in, the spinner goes
+    hook.write_text(f"""#!/bin/sh
+[ "$(grep -c 'send-keys -t %1 Escape' '{m.t}/tmux.log')" -ge 2 ] && printf '%s' '{_used_screen(EMPTY_BOX, IDLE_FOOTER)}' > '{m.t}/capture'
+exit 0
+""")
+    hook.chmod(0o755)
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 600
+    session.save(str(m.root), st)
+    (m.wt / "a.txt").write_text("half done\n")
+    code, out, err = m.run("discard", 1)
+    assert code == 0, err
+    assert len([c for c in m.tmux_calls() if c == "send-keys -t %1 Escape"]) == 2
+    assert (m.wt / "a.txt").read_text() == "a\n" and m.task() is None
+
+
+def test_discard_refuses_a_pane_that_keeps_replying(m, monkeypatch):
+    monkeypatch.setattr(cli, "DISCARD_STOP_S", 0.5)
+    _busy_pane(m)
+    (m.wt / "a.txt").write_text("half done\n")
+    code, _, err = m.run("discard", 1)
+    assert code != 0 and "still replying" in err and "mates remove 1" in err
+    assert (m.wt / "a.txt").read_text() == "half done\n" and m.task() is not None
+
+
 def test_discard_failed_logs_failed(m):
     m.send()
     assert m.run("discard", 1, "--failed")[0] == 0

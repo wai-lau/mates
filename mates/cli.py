@@ -1255,6 +1255,35 @@ def keep_work(root, n, task, why="discarded"):
     return ref
 
 
+DISCARD_STOP_S = 20  # after two Escapes, how long discard waits for OpenCode to stop replying
+
+
+def _stop_reply(root, state, q, n):
+    """Stop a busy Qwen before its worktree is reset (docs/bugs.md: one kept editing the reset
+    tree for hours): two Escapes, since OpenCode's first only arms the interrupt, then two
+    not-busy readings in a row. Dies, changing nothing, if it keeps replying."""
+    hit = _find(root, state, q)
+    if hit is None or hit[1] == "failed":
+        return
+    pane = hit[0]
+    if _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() != "1":
+        return
+    db = _db(root)
+    if not busy(q, db, pane):
+        return
+    for _ in range(2):
+        _tmux_out("send-keys", "-t", pane, "Escape")
+        time.sleep(0.3)
+    end, quiet = time.time() + DISCARD_STOP_S, 0
+    while time.time() < end:
+        quiet = 0 if busy(q, db, pane) else quiet + 1
+        if quiet >= 2:
+            return
+        time.sleep(0.5)
+    die(f"Qwen pane {n} is still replying after two Escapes; restart it (mates remove {n}, then "
+        f"mates add) before discarding")
+
+
 def discard(args):
     p = _parser("discard", "mates discard N [--failed]")
     p.add_argument("n", type=int)
@@ -1264,6 +1293,7 @@ def discard(args):
     state = _load(root)
     q = _qentry(state, a.n)
     task = q.get("task")
+    _stop_reply(root, state, q, a.n)
     try:
         keep_work(root, a.n, task)
         _reset_worktree(root, a.n, q["branch"], _lead_head(root))
