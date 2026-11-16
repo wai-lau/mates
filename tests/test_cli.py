@@ -2823,3 +2823,90 @@ def test_snapshot_keeps_a_link_as_a_link(m):
     assert code == 0, err
     tree = m.task()["checked_tree"]
     assert m.git("cat-file", "-p", f"{tree}:link") == "/etc/hostname"
+
+
+
+
+# --- at most QWEN_TASK_CAP (3) open Qwen tasks machine-wide (Wai, 2026-11-13: "A" = cap 3:
+# with 5 panes on the one model slot each reply waited ~7.5 min). Open = a task sent by a lead
+# (not Wai's direct work) on a pane that is not closed, in any repo's saved state. A send past
+# the cap is refused and names the panes holding tasks as <repo folder>:<n>; re-sending a
+# task that is already open does not count twice.
+
+def _other_task(m, name, n=1, **task):
+    root = str(m.t / name)
+    st = session.new_state(root)
+    st["qwens"] = [_q(root, n, task={"id": uuid.uuid4().hex[:12], "direct": False, **task})]
+    session.save(root, st)
+
+
+def test_cap_default():
+    assert getattr(cli, "QWEN_TASK_CAP", None) == 3
+
+
+def test_send_refused_past_the_machine_wide_cap(m):
+    for name in ("alpha", "beta", "gamma"):
+        _other_task(m, name)
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "cap" in err and m.buffers() == []
+    assert "alpha:1" in err and "beta:1" in err and "gamma:1" in err
+
+
+def test_cap_ignores_direct_work_and_closed_panes(m):
+    _other_task(m, "alpha")
+    _other_task(m, "beta", direct=True)  # Wai's own work with Qwen
+    root = str(m.t / "gamma")
+    st = session.new_state(root)
+    st["qwens"] = [_q(root, 1, closed=True, task={"id": "t", "direct": False})]
+    session.save(root, st)
+    m.send("task")
+    assert m.buffers()
+
+
+def test_cap_lets_an_open_task_be_resent(m):
+    _other_task(m, "alpha")
+    _other_task(m, "beta")
+    m.send("first")  # this repo's task is the third
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 60
+    session.save(str(m.root), st)
+    m.send("again")  # attempt 2 of the same task: still three
+    assert m.task()["attempts"] == 2
+
+
+# --- per-task Qwen numbers across every session in the worktree (Wai, 2026-11-13: keep the
+# 64K context and count compactions per task for a week). A pane restart gives the task a new
+# OpenCode session, so tokens and compactions are summed over every top-level session whose
+# directory is the worktree, for messages since the attempt began (the retro saw
+# worker_tokens 0 on 8 rows that ran for hours).
+
+def _usage_msg(m, sid, created, tokens=None, compaction=False):
+    data = {"role": "assistant", "time": {"created": int(created * 1000), "completed": int((created + 1) * 1000)},
+            "finish": "stop"}
+    if tokens:
+        data["tokens"] = {"input": tokens[0], "output": tokens[1], "reasoning": 0, "cache": {"read": 0, "write": 0}}
+    if compaction:
+        data.update(mode="compaction", agent="compaction", summary=True)
+    con = sqlite3.connect(m.db)
+    con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, sid, int(created * 1000), int((created + 1) * 1000), json.dumps(data)))
+    con.commit()
+    con.close()
+
+
+def test_log_counts_tokens_and_compactions_across_sessions(m):
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    t = time.time()
+    _usage_msg(m, "ses_1", t + 1, tokens=(100, 10))
+    _usage_msg(m, "ses_1", t + 2, compaction=True)
+    _usage_msg(m, "ses_1", t + 2.5)  # OpenCode always carries on after a compaction
+    m.ses("ses_2", updated_s=t + 3)  # the pane restarted: a new session in the same worktree
+    _usage_msg(m, "ses_2", t + 4, compaction=True)
+    _usage_msg(m, "ses_2", t + 5, tokens=(50, 5))
+    m.ses("ses_x", updated_s=t + 3, directory=m.t / "elsewhere")
+    _usage_msg(m, "ses_x", t + 4, tokens=(999, 999))  # another worktree: not counted
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0
+    rec = m.log()[-1]
+    assert rec["worker_tokens"] == 165 and rec["compactions"] == 2
