@@ -83,6 +83,9 @@ def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     env = [f"QWEN_ROOT={shlex.quote(str(worktree))}", "QWEN_GIT_RO=1"]
     if runtime_dir:
         env.append(f"QWEN_RUNTIME={shlex.quote(str(runtime_dir))}")
+    proofs_dir = Path(root) / ".mates" / "proofs"
+    if proofs_dir.is_dir():
+        env.append(f"QWEN_PROOFS={shlex.quote(str(proofs_dir))}")
     run = [*env, shlex.quote(session._qwen())]
     if opencode_session:
         run += ["-s", shlex.quote(opencode_session)]
@@ -170,13 +173,21 @@ def launch_plan(state, root, fresh, claude_args, runtime_dir=None):
     warnings = []
     restore = state is not None and not fresh
     st = copy.deepcopy(state) if state is not None else session.new_state(root)
-    st["runtime"] = str(runtime_dir) if runtime_dir else None
+    st.setdefault("runtime", None)  # an older saved state may lack the key
+    if runtime_dir:
+        st["runtime"] = str(runtime_dir)
+    elif st.get("runtime"):
+        if not Path(st["runtime"]).exists():
+            warnings.append(f"mates: saved runtime {st['runtime']} is gone; panes start without it (the lead runs mates runtime --reason ... to rebuild)")
+            st["runtime"] = None
+        else:
+            warnings.append(f"mates: keeping saved runtime {st['runtime']} (no built runtime given); use .mates/runtime.sh + mates runtime --reason ... to make it stick after restarts")
     session_args = _claude_plan(st, root, restore, warnings)
     qwens = []
     for q in _qwen_entries(st, root, restore, warnings):
         q["runtime"] = st["runtime"]  # what this pane runs on (mates runtime restarts the stale ones)
         qwens.append({"n": q["n"], "worktree": q["worktree"],
-                      "cmd": qwen_cmd(q["worktree"], q["opencode_session"], runtime_dir, root)})
+                      "cmd": qwen_cmd(q["worktree"], q["opencode_session"], st["runtime"], root)})
     return {"claude_argv": _claude_argv(root, session_args, claude_args), "qwens": qwens,
             "warnings": warnings, "state": st}
 
@@ -993,6 +1004,7 @@ def check(args):
         cmd = (task or {}).get("send_check") or (task or {}).get("check_cmd")
         if task is None or task.get("direct") or not cmd:
             die(f"usage: mates check {n} -- <cmd> (this task has no check to reuse)")
+    proofs_dir = Path(root) / ".mates" / "proofs"
     # Qwen can edit the files mid-check only while qwen runs in its pane: a crashed, failed or
     # closed pane's work stays checkable (a lead checked a pane that died of a segfault).
     hit = _find(root, state, q)
@@ -1006,9 +1018,11 @@ def check(args):
             base = git_lead(root, "merge-base", "HEAD", f"refs/heads/{q['branch']}").stdout.strip()
             task = q["task"] = _task(base, direct=True)
         tree = snapshot(root, n, task["base"])
-        env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO")}
+        env = {k: v for k, v in os.environ.items() if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO", "QWEN_PROOFS")}
         if state.get("runtime"):
             env["QWEN_RUNTIME"] = state["runtime"]
+        if proofs_dir.is_dir():
+            env["QWEN_PROOFS"] = str(proofs_dir)
         with _unpacked(root, n, tree, task["base"]) as folder:
             env["QWEN_CHECK_DIR"] = str(folder)
             r = subprocess.run([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd="/", env=env,
@@ -1320,6 +1334,22 @@ def runtime_cmd(args):
     return 0
 
 
+def parallel_cmd(args):
+    p = _parser("parallel", 'mates parallel on|off --reason "<why>"')
+    p.add_argument("mode", choices=["on", "off"])
+    p.add_argument("--reason", required=True)
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    state["parallel"] = a.mode == "on"
+    save_state(root, state)
+    logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
+                        "route": "parallel", "summary": f"parallel {a.mode}", "reason": a.reason,
+                        "outcome": "accepted"})
+    print(f"parallel {a.mode}: {a.reason}")
+    return 0
+
+
 def retro(args):
     import retro as r  # imported here: retro reads cli's constants at import
     return r.main(args)
@@ -1433,7 +1463,8 @@ def start_reaper(root):
 
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
-            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd, "reap": reap}
+            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd,
+            "parallel": parallel_cmd, "reap": reap}
 
 
 def main(argv=None):

@@ -95,26 +95,6 @@ blocking `answer`, the only way out was discard, `/new`, then send again.
 
 ## 2026-11-11, from the spire mates lead
 
-### A restart drops a runtime set by hand
-
-Restarting mates resets the saved `runtime` to None, so a runtime the lead set
-by hand disappears without a warning. After that, checks run without it (in
-spire, without `$SPIRE_PROOFS` and the browser-test tools).
-
-- **Cause:** `launch_plan()` (`mates/cli.py:165`) always sets `st["runtime"]`
-  from the runtime built for HEAD's `.mates/runtime.sh`, or None when there is
-  none. A runtime already in the saved state is never kept.
-- **To decide:** keep a runtime the saved state already has when no
-  `.mates/runtime.sh` is built (and warn), or make `.mates/runtime.sh` plus
-  `mates runtime` the only supported way and warn when a restart drops a
-  runtime.
-- **Hit again** in spire after the 2026-11-12 00:30 crash; re-set by hand.
-- **Hit a third time** after the WSL 3.0.5 restart. The hand re-set itself
-  failed first: it imported `session.py` from an old path, so pane 1 restarted
-  with no runtime. `mates/session.py` has never moved in git, so the old path
-  was likely another checkout. A runtime built from `.mates/runtime.sh` with
-  `mates runtime` comes back on restart; one set by hand does not.
-
 ### No way to re-brief a pane with a dirty worktree
 
 mates has no way to send a pane back its work or give it a new brief when its
