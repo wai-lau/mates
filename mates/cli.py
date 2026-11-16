@@ -220,20 +220,24 @@ def snapshot(root, n, base):
     """The tree of Qwen worktree n as it is now: a temp index seeded with `base`, then
     every change outside `.mates/` added (untracked files too). Tracked `.mates/*`
     keep their `base` version; Qwen's edits there and untracked `.mates/*` never
-    reach the tree."""
+    reach the tree. New objects go to a private quarantine store and reach the shared
+    one (which Qwen panes can read) only after `_verify_snapshot` passes."""
     with tempfile.TemporaryDirectory(prefix="mates-snap-") as tmp:
         idx = Path(tmp) / "index"
-        git_safe(root, n, "read-tree", base, index=idx, attrs=base)
+        objs = Path(tmp) / "objects"
+        objs.mkdir()
+        q = {"index": idx, "attrs": base, "objects": objs}
+        git_safe(root, n, "read-tree", base, **q)
         # Not `add -A -- . ':!.mates'`: git exits 1 when an excluded path is also ignored
         # (info/exclude lists .mates/). Add everything, then put .mates back as it was at base.
-        git_safe(root, n, "add", "-A", "--", ".", index=idx, attrs=base)
-        git_safe(root, n, "rm", "-r", "-f", "-q", "--cached", "--ignore-unmatch", "--", ".mates", index=idx, attrs=base)
-        kept = git_safe(root, n, "ls-tree", "-r", "-z", "--full-tree", base, "--", ".mates", index=idx,
-                        attrs=base).stdout
+        git_safe(root, n, "add", "-A", "--", ".", **q)
+        git_safe(root, n, "rm", "-r", "-f", "-q", "--cached", "--ignore-unmatch", "--", ".mates", **q)
+        kept = git_safe(root, n, "ls-tree", "-r", "-z", "--full-tree", base, "--", ".mates", **q).stdout
         if kept:
-            git_safe(root, n, "update-index", "-z", "--index-info", index=idx, input=kept, attrs=base)
-        tree = git_safe(root, n, "write-tree", index=idx, attrs=base).stdout.strip()
-    _verify_snapshot(root, n, base, tree)
+            git_safe(root, n, "update-index", "-z", "--index-info", input=kept, **q)
+        tree = git_safe(root, n, "write-tree", **q).stdout.strip()
+        _verify_snapshot(root, n, base, tree, objs)
+        gitsafe.promote(root, objs)
     return tree
 
 
@@ -259,14 +263,15 @@ def _read_nofollow(top, rel):
         os.close(fd)
 
 
-def _verify_snapshot(root, n, base, tree):
+def _verify_snapshot(root, n, base, tree, objects=None):
     """Refuse a snapshot that differs from the worktree read again with no link followed.
     `git add` runs as the owner while sandbox processes may still run: one that swaps a file
     for a link to an owner file while git reads it would put that file in the snapshot, then
     the diff, then main (security audit, 2026-11-13). Qwen can't read owner files, so it can't
     make the re-read match."""
     _, _, wt = gitsafe.dirs(root, n)
-    out = git_safe(root, n, "diff-tree", "-r", "-z", "--no-renames", base, tree, attrs=base).stdout
+    out = git_safe(root, n, "diff-tree", "-r", "-z", "--no-renames", base, tree, attrs=base,
+                   objects=objects).stdout
     fields = out.split("\0")
     for meta, path in zip(fields[0::2], fields[1::2], strict=False):
         if not meta.startswith(":"):

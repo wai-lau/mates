@@ -12,6 +12,7 @@ and every filter driver is blanked, so no clean/smudge/process program runs.
 """
 import contextlib
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -95,10 +96,12 @@ def _filter_blanks(root):
     return flags
 
 
-def git_safe(root, n, *args, index=None, check=True, input=None, attrs=None):
+def git_safe(root, n, *args, index=None, check=True, input=None, attrs=None, objects=None):
     """Run git on Qwen worktree n. `index` is the index file to use (default: a fresh
     temp file, deleted afterwards). `attrs` is the trusted tree-ish attributes are read
     from (default: the lead's HEAD); Qwen's `.gitattributes` files are never read.
+    `objects`: a private quarantine folder new objects go to (the shared store is still
+    read, as an alternate); `promote` moves them over once they are trusted.
     Returns the CompletedProcess (text mode); `check=True` raises GitError(stderr) on
     a non-zero exit."""
     common, admin, wt = dirs(root, n)
@@ -111,5 +114,36 @@ def git_safe(root, n, *args, index=None, check=True, input=None, attrs=None):
             index = Path(tmp) / "index"
         env = dict(_env(), GIT_DIR=str(admin), GIT_COMMON_DIR=str(common), GIT_WORK_TREE=str(wt),
                    GIT_INDEX_FILE=str(index))
+        if objects is not None:
+            env.update(GIT_OBJECT_DIRECTORY=str(objects), GIT_ALTERNATE_OBJECT_DIRECTORIES=str(common / "objects"))
         argv = _argv(args)
         return _run(argv[:1] + pre + argv[1:], wt, env, check, input)
+
+
+def promote(root, objects):
+    """Move the objects in quarantine folder `objects` into the shared store (loose objects
+    and packs, as `git add` writes them), skipping any the store has. Each file is copied
+    under a temp name and renamed, so a reader never sees half an object."""
+    common = Path(git_lead(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+    dest = common / "objects"
+    src = Path(objects)
+    for f in sorted(src.rglob("*")):
+        if not f.is_file() or f.is_symlink():
+            continue
+        rel = f.relative_to(src)
+        if rel.parts[0] not in ("pack",) and not (len(rel.parts) == 2 and len(rel.parts[0]) == 2):
+            continue  # loose objects are <2 hex>/<rest>; anything else is not an object
+        out = dest / rel
+        if out.exists():
+            continue
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".mates-")
+        try:
+            with os.fdopen(fd, "wb") as w, open(f, "rb") as r:
+                shutil.copyfileobj(r, w)
+            os.chmod(tmp, 0o444)
+            os.replace(tmp, out)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise

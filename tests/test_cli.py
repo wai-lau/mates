@@ -2825,6 +2825,28 @@ def test_snapshot_keeps_a_link_as_a_link(m):
     assert m.git("cat-file", "-p", f"{tree}:link") == "/etc/hostname"
 
 
+def test_refused_snapshot_leaves_no_object_in_the_shared_store(m, monkeypatch):
+    """Qwen panes can read the shared git objects. A refused snapshot's blobs (perhaps an
+    owner file git read through a swapped link) must never reach them: the snapshot writes
+    to a private quarantine store and moves objects over only once verified."""
+    m.send()
+    secret = b"OWNER-SECRET-0d9f3a\n"
+    (m.wt / "a.txt").write_bytes(secret)
+    real = cli.git_safe
+
+    def racing(root, n, *args, **kw):
+        r = real(root, n, *args, **kw)
+        if args[:1] == ("add",):
+            (m.wt / "a.txt").write_text("b\n")
+        return r
+    monkeypatch.setattr(cli, "git_safe", racing)
+    code, out, err = m.run("check", 1, "--", "true")
+    assert code != 0 and "changed while mates read it" in out + err
+    sha = subprocess.run(["git", "hash-object", "--stdin"], input=secret, capture_output=True,
+                         cwd=m.root, check=True).stdout.decode().strip()
+    assert subprocess.run(["git", "cat-file", "-e", sha], cwd=m.root).returncode != 0
+
+
 
 
 # --- at most QWEN_TASK_CAP (3) open Qwen tasks machine-wide (Wai, 2026-11-13: "A" = cap 3:
