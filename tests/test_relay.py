@@ -234,3 +234,19 @@ def test_model_relay_one_request_per_connection(model_relay):
 def test_model_relay_refuses_ambiguous_requests(model_relay, raw):
     sock, got = model_relay
     assert _http(sock, raw).startswith(b"HTTP/1.1 4") and got == []
+
+
+# --- the clipboard relay (security audit 2026-11-13, finding 7): Qwen can set Wai's Windows
+# clipboard, so a later paste into a terminal could run what Qwen chose. Escape sequences
+# (an early end-of-bracketed-paste lets the rest run), other control characters, carriage
+# returns, and the bidi and zero-width characters that hide text are removed; tabs and
+# newlines stay, so copied code keeps its shape.
+
+def test_clip_text_drops_controls_and_hiding_characters():
+    raw = ("ls\x1b[201~rm -rf ~\r\n\tok\x07\x00\x9b31m" "‮evil‬" "zero​width⁦x⁩\n").encode()
+    assert relay.clip_text(raw) == b"ls[201~rm -rf ~\n\tok31mevilzerowidthx\n"
+
+
+def test_clip_text_keeps_plain_text_and_bad_bytes_safe():
+    assert relay.clip_text("def f():\n\treturn 1\n".encode()) == b"def f():\n\treturn 1\n"
+    assert relay.clip_text(b"caf\xc3\xa9 \xff") == "café �".encode()

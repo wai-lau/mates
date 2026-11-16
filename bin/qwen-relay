@@ -28,6 +28,16 @@ import subprocess
 import sys
 
 CLIP_MAX = 1 << 20  # a copy bigger than 1 MiB is cut off
+# Removed from clipboard text (Qwen sets Wai's clipboard; a paste into a terminal could run it):
+# control characters but tab and newline (escape sequences, carriage returns, bells), C1
+# controls, and the bidi and zero-width characters that hide or reorder text.
+CLIP_DROP = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+
+
+def clip_text(data):
+    """Clipboard bytes made safe to paste: decoded as UTF-8 (bad bytes become U+FFFD),
+    CLIP_DROP characters removed, encoded again."""
+    return CLIP_DROP.sub("", data.decode("utf-8", "replace")).encode()
 EGRESS_PORT = 443
 # The package registries a runtime build may download from: exact names, no subdomains.
 # Adding one is a code change here, which Wai sees; the lead cannot widen it on its own.
@@ -205,6 +215,7 @@ async def main():
             while len(data) < CLIP_MAX and (more := await r.read(CLIP_MAX - len(data))):
                 data += more
             w.close()
+            data = clip_text(data)
             if data:
                 await asyncio.to_thread(subprocess.run, [a.run], input=data,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
