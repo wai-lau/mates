@@ -55,6 +55,9 @@ hold, with a grep per moved piece for its structure, is a clear auditable outcom
   runs on a copy of the snapshot with no git repo around it: it must not use git.
 - Qwen's own "passed" is a claim; only `mates check` counts.
 - `mates merge N` needs `mates check`, then `mates diff N` on that same snapshot.
+- A diff flagged `owner-side`, `symlink`, `exec-bit` or `hook-path` holds a file
+  that runs as Wai (or instructs a lead) outside the sandbox once merged: read
+  each one, then name the kinds with `mates merge N --ack <kind>,...`.
 - One open task at a time, unless the state says `parallel`.
 
 ## The loop

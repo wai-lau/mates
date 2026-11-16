@@ -1140,9 +1140,10 @@ def commit_subject(n, summary):
 
 
 def merge(args):
-    p = _parser("merge", 'mates merge N [-m "<commit message>"]')
+    p = _parser("merge", 'mates merge N [-m "<commit message>"] [--ack kind,...]')
     p.add_argument("n", type=int)
     p.add_argument("-m", dest="summary")
+    p.add_argument("--ack", default="", help="flag kinds the lead read and accepts (owner-side, symlink, ...)")
     a = p.parse_args(args)
     root = _lead_root()
     state = _load(root)
@@ -1156,6 +1157,12 @@ def merge(args):
             f"({task['send_check']}); run mates check {a.n} to re-run it")
     if task.get("diffed_tree") != checked:
         die(f"run mates diff {a.n} first: the lead must read the diff of exactly what merges")
+    acked = {k.strip() for k in a.ack.split(",") if k.strip()}
+    unacked = [f for f in guard.needs_ack(task.get("flags") or []) if f.split(":", 1)[0] not in acked]
+    if unacked:
+        kinds = ",".join(sorted({f.split(":", 1)[0] for f in unacked}))
+        die("these files run as Wai (or instruct a lead) outside the sandbox once merged: "
+            + ", ".join(unacked[:20]) + f". Read each in the diff, then mates merge {a.n} --ack {kinds}")
     summary = a.summary.splitlines()[0] if a.summary else task.get("summary")
     if task.get("direct") and not a.summary:
         die(f"this is Wai's own work with Qwen: mates merge {a.n} -m \"<summary>\"")

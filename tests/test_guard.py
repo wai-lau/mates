@@ -80,3 +80,45 @@ def test_guard_quoted_paths():
             '--- "a/tests/test_\\"q\\".py"\n+++ "b/tests/test_\\"q\\".py"\n@@ -1 +1 @@\n+@pytest.mark.skip\n')
     f = guard.guard_flags(text, [])
     assert 'test-skipped:tests/test_"q".py' in f and 'unnamed-file:tests/test_"q".py' in f
+
+
+# --- files that run, or instruct a lead, outside the sandbox once merged (security audit
+# 2026-11-13, finding 4): Claude Code settings and instructions, direnv, build and test entry
+# points, CI, editor tasks, package-manager configs; plus links and exec bits, from the diff's
+# mode lines.
+
+def test_guard_flags_owner_side_files():
+    for path in (".claude/settings.json", ".claude/settings.local.json", ".claude/commands/x.md",
+                 ".mcp.json", "CLAUDE.md", "sub/CLAUDE.md", "CLAUDE.local.md", "AGENTS.md",
+                 ".envrc", "web/.envrc", "Makefile", "GNUmakefile", "lib/makefile", "justfile",
+                 "Taskfile.yml", "conftest.py", "tests/conftest.py", "setup.py", "noxfile.py", "tox.ini",
+                 ".pre-commit-config.yaml", ".github/workflows/ci.yml", ".gitlab-ci.yml",
+                 ".circleci/config.yml", ".vscode/tasks.json", ".idea/workspace.xml", ".npmrc",
+                 ".yarnrc.yml", ".pypirc", "pip.conf", "uv.toml"):
+        assert f"owner-side:{path}" in guard.guard_flags(d(path, ["x"]), [path]), path
+    for path in ("src/make.py", "docs/claude.md", "notes/agents.txt", "src/setup_db.py", "tests/test_conf.py"):
+        assert not [f for f in guard.guard_flags(d(path, ["x"]), [path]) if f.startswith("owner-side:")], path
+
+
+def _mode_diff(path, header):
+    return f"diff --git a/{path} b/{path}\n{header}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+x\n"
+
+
+def test_guard_flags_links_and_exec_bits():
+    f = guard.guard_flags(_mode_diff("tools/run", "new file mode 120000\nindex 0000000..1111111"), ["tools/run"])
+    assert "symlink:tools/run" in f
+    f = guard.guard_flags(_mode_diff("tools/run.sh", "new file mode 100755\nindex 0000000..1111111"), ["tools/run.sh"])
+    assert "exec-bit:tools/run.sh" in f
+    f = guard.guard_flags(f"diff --git a/x.sh b/x.sh\nold mode 100644\nnew mode 100755\n", ["x.sh"])
+    assert "exec-bit:x.sh" in f
+    f = guard.guard_flags(_mode_diff("a.txt", "new file mode 100644\nindex 0000000..1111111"), ["a.txt"])
+    assert f == []
+    # a hunk line that looks like a mode line is file content, not a mode
+    body = "diff --git a/n.txt b/n.txt\n--- a/n.txt\n+++ b/n.txt\n@@ -1 +1 @@\n-x\n+new file mode 120000\n"
+    assert guard.guard_flags(body, ["n.txt"]) == []
+
+
+def test_needs_ack():
+    assert guard.needs_ack(["owner-side:Makefile", "unnamed-file:Makefile", "symlink:l", "exec-bit:x",
+                            "hook-path:.githooks/pre-commit", "hook-path:sub/.gitignore", "runtime-input:uv.lock"]) \
+        == ["owner-side:Makefile", "symlink:l", "exec-bit:x", "hook-path:.githooks/pre-commit"]

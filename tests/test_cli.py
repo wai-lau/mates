@@ -839,6 +839,23 @@ def _checked_and_diffed(m, edit="b\n"):
     assert m.run("diff", 1)[0] == 0
 
 
+def test_merge_needs_ack_for_files_that_run_as_wai(m):
+    """A merged Makefile, Claude setting, CI file, link or exec bit runs (or instructs a lead)
+    outside the sandbox: merge refuses until the lead names each such flag kind in --ack."""
+    m.send("add a build step")
+    (m.wt / "Makefile").write_text("all:\n\ttrue\n")
+    (m.wt / "run.sh").write_text("#!/bin/sh\n")
+    (m.wt / "run.sh").chmod(0o755)
+    _checked_and_diffed(m)
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "--ack" in err and "owner-side:Makefile" in err and "exec-bit:run.sh" in err
+    code, _, err = m.run("merge", 1, "--ack", "owner-side")
+    assert code != 0 and "exec-bit:run.sh" in err and "owner-side:Makefile" not in err
+    code, _, err = m.run("merge", 1, "--ack", "owner-side,exec-bit")
+    assert code == 0, err
+    assert (m.root / "Makefile").exists()
+
+
 def test_merge_fast_forwards_and_resets(m):
     base = m.git("rev-parse", "HEAD")
     m.send("make a.txt say b")
@@ -1011,7 +1028,8 @@ def test_merge_ignores_tracked_hooks(m):
     assert m.run("check", 1, "--", "true")[0] == 0
     code, out, _ = m.run("diff", 1)
     assert "hook-path:.githooks/post-merge" in out
-    assert m.run("merge", 1)[0] == 0
+    assert m.run("merge", 1)[0] != 0  # hooks run as Wai: merge needs the lead's --ack
+    assert m.run("merge", 1, "--ack", "hook-path,exec-bit")[0] == 0
     assert (m.root / ".githooks" / "post-merge").exists()  # merged: the lead read the flag
     m.send("next")
     assert m.run("discard", 1)[0] == 0
@@ -1083,7 +1101,7 @@ def test_no_filter_runs_from_qwen_attributes(m):
     m.lead_commit("b.txt", "lead\n")
     assert m.run("sync", 1)[0] == 0
     _checked_and_diffed(m)
-    assert m.run("merge", 1)[0] == 0, "merge"
+    assert m.run("merge", 1, "--ack", "hook-path")[0] == 0, "merge"  # .gitattributes: a hook-path flag
     assert not canary.exists()
     m.send("next")
     (m.wt / "a.txt").write_text("again\n")
