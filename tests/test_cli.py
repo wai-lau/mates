@@ -25,6 +25,7 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))  # no ~/.claude/private.md
     monkeypatch.delenv("MATES_CLAUDE", raising=False)
     monkeypatch.delenv("MATES_LEAD", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)  # set when pytest runs from a Claude session
     oc = tmp_path / "oc"
     oc.mkdir()
     q = tmp_path / "qwen"
@@ -173,6 +174,85 @@ def test_private_md_appended_when_readable(tmp_path):
     p.write_text("PRIVATE-NOTE\n")
     plan = cli.launch_plan(None, _root(tmp_path), False, [])
     assert _after(plan["claude_argv"], "--append-system-prompt").endswith("PRIVATE-NOTE")
+
+
+# --- any Claude session can be the lead (Wai, 2026-11-16: "claude should be able to start mates
+# regardless if started by mates or by claude"). Claude Code sets CLAUDECODE=1 in its tools'
+# environment, so lead commands run from any Claude session, not only one `mates` launched;
+# `mates start` makes the session's tmux pane this repo's lead and prints the lead prompt.
+
+def test_lead_commands_run_from_any_claude_session(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    root = tmp_path / "r"
+    root.mkdir()
+    monkeypatch.setenv("MATES_ROOT", str(root))
+    session.save(str(root.resolve()), session.new_state(str(root.resolve())))
+    try:
+        cli.main(["parallel", "on", "--reason", "test"])
+    except SystemExit:
+        pass
+    assert "MATES_LEAD" not in capsys.readouterr().err
+
+
+def _start_world(tmp_path, monkeypatch, panes=""):
+    root = _repo(tmp_path / "repo")
+    tm = tmp_path / "tmux"
+    (tmp_path / "panes").write_text(panes)
+    tm.write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" >> '{tmp_path}/tmux.log'
+case $1 in list-panes) cat '{tmp_path}/panes' ;; esac
+exit 0
+""")
+    tm.chmod(0o755)
+    monkeypatch.setattr(layout, "TMUX", str(tm))
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    monkeypatch.setenv("MATES_ROOT", str(root))
+    started = []
+    monkeypatch.setattr(cli, "start_reaper", lambda r: started.append(r))
+    monkeypatch.setattr(cli, "_claude_pid", lambda: 4242)
+    return root, started
+
+
+def test_start_makes_a_plain_claude_session_the_lead(tmp_path, monkeypatch, capsys):
+    root, started = _start_world(tmp_path, monkeypatch)
+    assert cli.main(["start"]) == 0
+    out = capsys.readouterr().out
+    log = (tmp_path / "tmux.log").read_text()
+    key = session.repo_key(str(root))
+    assert f"set-option -p -t %7 @mates {key}:lead" in log and f"@mates-window {key}" in log
+    assert "set-option -p -t %7 @mates-lead-pid 4242" in log  # bin/mates: live while that claude runs
+    assert session.load(str(root)) is not None and started == [str(root)]
+    assert "# You are the mates lead" in out and "mates add" in out
+
+
+def test_start_refuses_when_another_pane_is_the_lead(tmp_path, monkeypatch, capsys):
+    root, started = _start_world(tmp_path, monkeypatch)
+    (tmp_path / "panes").write_text(f"%3\t{session.repo_key(str(root))}:lead\t\n")
+    with pytest.raises(SystemExit) as e:
+        cli.main(["start"])
+    assert e.value.code != 0 and "%3" in capsys.readouterr().err and started == []
+
+
+def test_start_needs_a_claude_above_it(tmp_path, monkeypatch, capsys):
+    _start_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_claude_pid", lambda: None)
+    with pytest.raises(SystemExit):
+        cli.main(["start"])
+    assert "Claude Code session" in capsys.readouterr().err
+
+
+def test_claude_pid_finds_this_claude():
+    pid = cli._claude_pid()
+    assert pid is None or Path(f"/proc/{pid}/comm").read_text().strip() == "claude"
+
+
+def test_start_needs_tmux(tmp_path, monkeypatch, capsys):
+    _start_world(tmp_path, monkeypatch)
+    monkeypatch.delenv("TMUX_PANE")
+    with pytest.raises(SystemExit):
+        cli.main(["start"])
+    assert "tmux" in capsys.readouterr().err
 
 
 def test_subcommand_refused_without_lead_env(capsys, tmp_path, monkeypatch):

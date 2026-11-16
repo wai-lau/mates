@@ -164,6 +164,24 @@ check "failed qwen: not marked @mates-qwen-live (send refuses the shell)" \
 check "failed qwen: the entry is not closed" \
   'python3 -c "import json,sys; s=json.load(open(sys.argv[1])); sys.exit(not [q for q in s[\"qwens\"] if q[\"n\"] == 1 and not q[\"closed\"]])" "$HOME/.claude/mates/sessions/$K6.json"'
 
+# --- a lead made by `mates start` (a plain claude session) is never respawned while it runs ---
+# It has no @mates-lead-live (bin/mates did not start it); @mates-lead-pid names its claude.
+mkrepo r8; K8=$(key r8)
+mkdir -p "$T/fakebin"; cp "$(command -v sleep)" "$T/fakebin/claude"
+"$T/fakebin/claude" 600 & CPID=$!
+tx new-session -d -s t8 -x 200 -y 50 -c "$T/r8" "exec sleep 600"
+P8=$(tx display -p -t t8 '#{pane_id}')
+tx set-option -p -t "$P8" @mates "$K8:lead"; tx set-option -p -t "$P8" @mates-lead-pid "$CPID"
+tx set-option -w -t "$P8" @mates-window "$K8"
+tx new-session -d -s t8b -x 200 -y 50 -c "$T/r8" "$MATES > '$T/t8.out' 2>&1; echo \$? > '$T/t8.rc'; exec sleep 600"
+waitfor '[ -s "$T/t8.rc" ]'
+check "started lead: a second mates switches to it" 'grep -q "already running" "$T/t8.out" && [ "$(count r8 claude)" = 0 ]'
+check "started lead: its pane is not respawned" '[ "$(tx display -p -t "$P8" "#{pane_current_command}")" = sleep ]'
+kill "$CPID"; wait "$CPID" 2>/dev/null
+tx new-session -d -s t8c -x 200 -y 50 -c "$T/r8" "$MATES; exec sleep 600"
+check "started lead gone: mates restarts the lead in its pane" 'waitfor "[ \"\$(count r8 claude)\" = 1 ]"'
+check "started lead gone: the stale pid is cleared" 'waitfor "[ -z \"\$(tx show-options -pqv -t $P8 @mates-lead-pid)\" ]"'
+
 # --- bin/mates refuses inside a Qwen worktree ------------------------------------------
 QWT=$T/r1/.claude/worktrees/mates-qwen-1
 out=$(cd "$QWT" && "$MATES" 2>&1); rc=$?

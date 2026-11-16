@@ -3,7 +3,9 @@
 `bin/mates` picks the tmux window and runs `cli.py launch` in the lead's pane:
 that starts the Qwen panes, saves the state and prints the lead's `claude` argv
 NUL-separated, which `bin/mates` runs as its child. The other subcommands are
-the lead's tools and refuse unless MATES_LEAD=1 (except list, log and retro).
+the lead's tools and refuse unless MATES_LEAD=1 or the caller is a Claude Code session
+(CLAUDECODE=1), except list, log and retro. `mates start` makes a Claude session that was
+started as plain `claude` the lead.
 """
 import argparse
 import contextlib
@@ -51,7 +53,7 @@ ASK_SUFFIX = ("(If any name, file or expected result above is not stated exactly
 HERE = Path(__file__).resolve().parent
 LEAD_PROMPT = (HERE / "lead.md", HERE / "lead-lessons.md")
 QWEN_LIVE = "@mates-qwen-live"  # set on a Qwen pane while its qwen runs (qwen_cmd)
-OPEN_COMMANDS = {"launch", "list", "log", "retro"}  # the rest run only from the lead (MATES_LEAD=1)
+OPEN_COMMANDS = {"launch", "list", "log", "retro"}  # the rest run only from a lead (see _is_lead)
 
 
 def die(msg, code=2):
@@ -372,6 +374,59 @@ def _split_qwens(root, lead, plan, warnings):
     return ids
 
 
+def _is_lead():
+    """A `mates`-launched lead (MATES_LEAD=1) or any Claude Code session (Claude Code sets
+    CLAUDECODE=1 for its tools; Wai, 2026-11-16: "claude should be able to start mates
+    regardless if started by mates or by claude"). Not Wai's shell, not Qwen's OpenCode."""
+    return os.environ.get("MATES_LEAD") == "1" or os.environ.get("CLAUDECODE") == "1"
+
+
+def _claude_pid():
+    """The pid of the claude process this command runs under (the nearest ancestor named
+    claude), or None."""
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            stat_ = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return None
+        if comm == "claude":
+            return pid
+        pid = int(stat_.rsplit(")", 1)[1].split()[1])  # field 4, after the (comm)
+    return None
+
+
+def start(args):
+    """Make this Claude session (started as plain `claude`, in tmux) the repo's mates lead:
+    tag its pane, mark its window, save a state if there is none, start the idle-pane
+    reaper, and print the lead prompt (lead.md, the lessons) for the session to follow."""
+    _parser("start", "mates start").parse_args(args)
+    pane = os.environ.get("TMUX_PANE") or die("mates needs tmux: start claude inside a tmux pane, then mates start")
+    root = _lead_root()
+    lead = session.find_lead(root)
+    if lead and lead != pane:
+        die(f"this repo already has a mates lead in tmux pane {lead}: work from that session, or close it first")
+    claude = _claude_pid()
+    if claude is None:
+        die("mates start runs from a Claude Code session (no claude process above this one)")
+    state = session.load(root) or session.new_state(root)
+    session.tag_pane(pane, root, "lead")
+    # bin/mates treats the lead as live while this claude runs, so it never restarts the pane
+    # under the session (it would otherwise read a lead it did not start as one that exited)
+    for argv in (("set-option", "-p", "-t", pane, "@mates-lead-pid", str(claude)),
+                 ("set-option", "-w", "-t", pane, "@mates-window", session.repo_key(root))):
+        r = subprocess.run([layout.TMUX, *argv], capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"tmux {' '.join(argv[:2])} {argv[4]} failed: {r.stderr.strip()}", 1)
+    save_state(root, state)
+    start_reaper(root)
+    print(_lead_prompt())
+    print(f"\nmates: this session is now the mates lead for {root}. Open a Qwen pane with `mates add`; "
+          "the rules above apply from here on.")
+    return 0
+
+
 def launch(args):
     fresh, lead_only, claude_args = _parse_launch(args)
     lead = os.environ.get("TMUX_PANE") or die("launch runs in the lead's tmux pane (start it with bin/mates)")
@@ -462,7 +517,7 @@ def _int(s, what="N"):
 def _load(root):
     state = session.load(root)
     if state is None:
-        die("no mates state for this repo (start it with mates)")
+        die("no mates state for this repo (run mates start from this Claude session, or start it with mates)")
     return state
 
 
@@ -1534,7 +1589,7 @@ def start_reaper(root):
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
             "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd,
-            "parallel": parallel_cmd, "reap": reap}
+            "parallel": parallel_cmd, "reap": reap, "start": start}
 
 
 def main(argv=None):
@@ -1542,8 +1597,8 @@ def main(argv=None):
     if not argv:
         die("usage: cli.py <command> ...")
     cmd, args = argv[0], argv[1:]
-    if cmd not in OPEN_COMMANDS and os.environ.get("MATES_LEAD") != "1":
-        die(f"`mates {cmd}` runs only from the mates lead (MATES_LEAD=1)")
+    if cmd not in OPEN_COMMANDS and not _is_lead():
+        die(f"`mates {cmd}` runs only from a Claude session (CLAUDECODE=1) or the mates lead (MATES_LEAD=1)")
     if cmd not in COMMANDS:
         die(f"unknown command {cmd!r}")
     try:

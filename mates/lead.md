@@ -59,6 +59,8 @@ hold, with a grep per moved piece for its structure, is a clear auditable outcom
   that runs as Wai (or instructs a lead) outside the sandbox once merged: read
   each one, then name the kinds with `mates merge N --ack <kind>,...`.
 - One open task at a time, unless the state says `parallel`.
+- A Claude session started as plain `claude` (in tmux, in the repo) becomes the
+  lead with `mates start`, which prints these rules; lead commands then work from it.
 
 ## The loop
 

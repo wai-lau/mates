@@ -56,7 +56,8 @@ def add(args):
     cli._parser("add", "mates add").parse_args(args)
     root = cli._lead_root()
     state = cli._load(root)
-    lead = session.find_lead(root) or cli.die("there is no mates lead pane for this repo (start it with mates)")
+    lead = session.find_lead(root) or cli.die("there is no mates lead pane for this repo (run mates start from this Claude session, "
+                                                     "or start it with mates)")
     found = _open_panes(root, state)
     try:  # the Qwen panes left to right, so the new one opens right of the rightmost
         order = [w["pane"] for w in layout.pane_widths(found)]

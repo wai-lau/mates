@@ -8,7 +8,8 @@
 #       conversation and one Qwen pane (worktrees and their work are kept).
 #       A live mates window for this repo is switched to instead. Outside tmux
 #       it opens a tmux session; in a window with other panes, a new window.
-#   mates <command> ...   the lead's tools (mates/cli.py); most need MATES_LEAD=1
+#   mates <command> ...   the lead's tools (mates/cli.py); most run only from a Claude session
+#   mates start           make this Claude session (started as plain claude, in tmux) the lead
 #
 # env: MATES_CLAUDE (default claude), MATES_QWEN (default the qwen next to this script)
 set -uo pipefail
@@ -17,7 +18,7 @@ MATES_DIR=$(dirname "$(dirname "$SELF")")/mates
 CLI=$MATES_DIR/cli.py
 die() { echo "mates: $*" >&2; exit 1; }
 
-case "${1:-}" in -h|--help) sed -n '2,13p' "$SELF"; exit 0 ;; esac
+case "${1:-}" in -h|--help) sed -n '2,14p' "$SELF"; exit 0 ;; esac
 
 # Never from a Qwen worktree: its files (CLAUDE.md, .claude/settings.json hooks) are Qwen's,
 # and mates or claude started there would run them as Wai. Checked on the path before git runs.
@@ -51,7 +52,17 @@ self_cmd() { # this script again as a tmux pane command (a new pane gets the ser
 }
 tagged_window() { tm list-windows -a -F $'#{window_id}\t#{@mates-window}' | awk -F'\t' -v k="$KEY" '$2 == k { print $1; exit }'; }
 lead_pane() { tm list-panes -a -F $'#{pane_id}\t#{@mates}' | awk -F'\t' -v k="$KEY:lead" '$2 == k { print $1; exit }'; }
-lead_live() { [ -n "$1" ] && [ "$(tm display -p -t "$1" '#{pane_dead}#{@mates-lead-live}')" = 01 ]; }
+# A live lead: bin/mates started it (@mates-lead-live while its claude runs), or `mates start`
+# made a plain claude session the lead (@mates-lead-pid: that claude, live while it runs).
+lead_live() {
+  [ -n "$1" ] || return 1
+  local pid; pid=$(tm display -p -t "$1" '#{@mates-lead-pid}')
+  if [ -n "$pid" ]; then
+    [ "$(tm display -p -t "$1" '#{pane_dead}')" = 0 ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = claude ]
+    return
+  fi
+  [ "$(tm display -p -t "$1" '#{pane_dead}#{@mates-lead-live}')" = 01 ]
+}
 go_to() { # show window $1 and stop; $2 says why
   local s; s=$(tm display -p -t "$1" '#{session_name}')
   tm select-window -t "$1"
@@ -69,6 +80,7 @@ run_lead() { # this pane becomes the lead: cli.py starts the Qwen panes, then cl
   fi
   mapfile -d '' -t argv < "$out"; rm -f "$out"
   cd "$ROOT" || die "cannot cd to $ROOT"
+  tm set-option -p -u -t "$TMUX_PANE" @mates-lead-pid  # a lead `mates start` made, now gone
   tm set-option -p -t "$TMUX_PANE" @mates-lead-live 1
   "${argv[@]}"; rc=$?
   tm set-option -p -u -t "$TMUX_PANE" @mates-lead-live
