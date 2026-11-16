@@ -776,6 +776,7 @@ def send(args):
     db = _db(root)
     if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
+    _refuse_narrow(a.n, pane)
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
     if not state.get("parallel"):
@@ -940,6 +941,7 @@ def answer(args):
     db = _db(root)
     if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
+    _refuse_narrow(a.n, pane)
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
     question = _unsafe(read_protocol, q["worktree"], "question.md")
@@ -1269,6 +1271,18 @@ def _log_runtime(root, base, reason, h, outcome, restarted):
     logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12], "route": "runtime",
                         "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, base))}",
                         "reason": reason, "outcome": outcome, "runtime": h, "restarted": restarted})
+
+
+def _refuse_narrow(n, pane):
+    """A pane under layout.MIN_COLS cannot draw OpenCode, so its input box is unreadable and
+    the typing guard would misreport it (human-music, 2026-11-16: a 1-column pane)."""
+    try:
+        width = int(_tmux_out("display", "-p", "-t", pane, "#{pane_width}").strip())
+    except (RuntimeError, ValueError):
+        return  # width unknown: the input-box guard still fails closed
+    if width < layout.MIN_COLS:
+        die(f"Qwen pane {n} is {width} columns wide, too narrow for OpenCode (needs {layout.MIN_COLS}); "
+            f"widen it (tmux resize-pane -t {pane} -x 60) or close another pane")
 
 
 def _not_restartable(q, pane, db):

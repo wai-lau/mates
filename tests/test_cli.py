@@ -325,7 +325,7 @@ case $1 in
   list-panes) case "$*" in *window_width*) cat "$T/widths" 2>/dev/null ;; *) cat "$T/panes" 2>/dev/null ;; esac ;;
   split-window) [ -f "$T/noroom" ] && {{ echo "no space for new pane" >&2; exit 1; }}; cat "$T/split-id" ;;
   kill-pane) sed -i "/^$3\t/d" "$T/panes" ;;
-  display) cat "$T/live" 2>/dev/null ;;
+  display) case "$*" in *pane_width*) cat "$T/pane-width" 2>/dev/null || echo 80 ;; *) cat "$T/live" 2>/dev/null ;; esac ;;
   capture-pane) cat "$T/capture" 2>/dev/null ;;
   load-buffer) {{ cat; printf '\\n<<END>>\\n'; }} >> "$T/buffers" ;;
   send-keys) [ -x "$T/on-enter" ] && "$T/on-enter" ;;
@@ -513,6 +513,18 @@ def test_send_refuses_nonempty_input(m):
     m.input("┃  half a sentence Wai is typ\n")
     code, _, err = m.run("send", 1, "--reason", "r", "task")
     assert code != 0 and "input box" in err and m.buffers() == []
+
+
+def test_send_refuses_a_too_narrow_pane(m):
+    """A 1-column pane (human-music, 2026-11-16: `mates add` squeezed by panes mates does not
+    own) cannot draw OpenCode; send must say the pane is too narrow, not that Wai is typing."""
+    (m.t / "pane-width").write_text("1\n")
+    m.input("n\nn\ne\nc\n")  # what OpenCode draws at width 1: no readable input box
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "1 columns wide" in err and "input box" not in err and m.buffers() == []
+    (m.t / "pane-width").write_text("60\n")
+    m.input("┃  Ask anything… \"Fix a TODO in the codebase\"\n")
+    assert m.run("send", 1, "--reason", "r", "task")[0] == 0
 
 
 def test_send_refuses_missing_pane(m):
@@ -2403,6 +2415,39 @@ def test_add_lead_never_below_a_third_and_warns(m):
     assert _resizes(m) == ["resize-pane -t %0 -x 40", "resize-pane -t %1 -x 19",
                            "resize-pane -t %2 -x 19", "resize-pane -t %3 -x 19"]  # ceil(120 / 3) = 40
     assert "under 40" in out + err and "mates remove" in out + err
+
+
+def test_add_evens_only_the_qwen_panes(m):
+    """Panes mates does not own (a Claude session, a shell) right of the Qwen panes keep their
+    width: the Qwen panes even out over the columns they already span (human-music,
+    2026-11-16: evening over the whole window squeezed the new pane and a Claude pane to 1)."""
+    _lead_window(m, "%2", ["%0 0 100 300", "%1 101 59 300", "%2 161 60 300", "%9 222 78 300"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert _resizes(m) == ["resize-pane -t %1 -x 59"]  # (59 + 1 + 60 - 1) // 2; %9 untouched
+    assert "under 40" not in out + err
+
+
+def test_add_shrinks_the_lead_into_the_qwen_span_only(m):
+    """Under 40 each, the lead still gives up columns, which go to the Qwen span, never to the
+    other panes: the Qwen budget grows by exactly what the lead gives."""
+    _lead_window(m, "%2", ["%0 0 100 250", "%1 101 23 250", "%2 125 24 250",
+                           "%9 150 50 250", "%8 201 49 250"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    # span 48; 40 each needs 81, so the lead would give 33 but stops at ceil(250 / 3) = 84
+    assert _resizes(m) == ["resize-pane -t %0 -x 84", "resize-pane -t %1 -x 31"]
+    assert "31 columns" in out + err and "under 40" in out + err
+
+
+def test_add_leaves_scattered_qwen_panes_alone(m):
+    """With a pane mates does not own between Qwen panes, resizing one would take columns from
+    that pane: nothing is resized, and a pane under 40 is reported."""
+    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 40 200", "%9 142 40 200", "%2 183 17 200"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert _resizes(m) == []
+    assert "17 columns" in out + err and "under 40" in out + err
 
 
 def test_wait_idle_needs_two_readings_in_a_row(m):
