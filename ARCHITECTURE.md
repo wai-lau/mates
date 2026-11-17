@@ -7,7 +7,7 @@ local Qwen workers in panes stacked on its right. Each Qwen pane runs OpenCode
 check can prove, checks and reads what comes back, and merges it. Wai can type
 into any pane herself.
 
-This file describes the code as of main at `e464496`. Each mechanism names the
+This file describes the code as of main at `255474c`. Each mechanism names the
 `file:function` (or constant) that implements it, so you can check it. Where
 this file and the code disagree, the code is right.
 
