@@ -183,6 +183,7 @@ def test_private_md_appended_when_readable(tmp_path):
 
 def test_lead_commands_run_from_any_claude_session(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(cli, "LOG", tmp_path / "log.jsonl")  # never the real audit log
     root = tmp_path / "r"
     root.mkdir()
     monkeypatch.setenv("MATES_ROOT", str(root))
@@ -1533,6 +1534,9 @@ def test_log_line_has_cost_fields(m):
         (m.t / "host").unlink()
         m.on_enter_creates_session("ses_2")  # the next task's session: ses_1's tokens are not counted again
         m.send("next")
+        st = m.state()  # the next attempt starts after the first one's (fake, future-dated) replies
+        st["qwens"][0]["task"]["attempt_ts"] = t0 + 10
+        session.save(str(m.root), st)
         assert m.run("discard", 1)[0] == 0
         rec2 = m.log()[-1]
         assert rec2["answered_by"] is None and (rec2["lead_tokens"], rec2["lead_cache_read"]) == (0, 0)

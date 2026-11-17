@@ -579,6 +579,22 @@ def _db(root):
 
 PASTE_GRACE_S = 30  # after mates' own paste, the spinner takes a moment: the database counts
 PANE_STAGGER_S = 5  # a launch starts a repo's panes this far apart (OpenCode's database race)
+QWEN_TASK_CAP = 3  # at most this many open Qwen tasks machine-wide
+
+
+def _open_qwen_tasks():
+    """`<repo folder>:<n>` of every open lead task (not direct, pane not closed) in every
+    repo's saved state."""
+    out = []
+    for f in sorted(Path(session.STATE_DIR).glob("*.json")):
+        try:
+            st = json.loads(f.read_text())
+            name = Path(st["root"]).name
+            out += [f"{name}:{q['n']}" for q in st.get("qwens") or []
+                    if q.get("task") and not q["task"].get("direct") and not q.get("closed")]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return out
 
 
 def _box_border(lines):
@@ -783,21 +799,20 @@ def answered_by():
 def _costs(root, entry, t):
     """The cost fields of the attempt on entry's task `t` that just finished."""
     now = time.time()
-    sid = t.get("opencode_session") or entry.get("opencode_session")
-    tokens = last = None
-    if sid:
-        try:
-            tokens, last = session.opencode_usage(sid, session.opencode_db(root), t["attempt_ts"])
-        except (OSError, subprocess.CalledProcessError, sqlite3.Error) as e:
-            print(f"mates: cannot read Qwen's tokens: {e}", file=sys.stderr)
+    tokens = compactions = last = None
+    try:  # every session in the worktree: a pane restart or a lost session id still counts
+        tokens, compactions, last = session.opencode_usage(entry["worktree"], session.opencode_db(root),
+                                                           t["attempt_ts"])
+    except (OSError, subprocess.CalledProcessError, sqlite3.Error) as e:
+        print(f"mates: cannot read Qwen's tokens: {e}", file=sys.stderr)
     # finish: Qwen's last reply in this attempt; with none (Wai's own work), now
     rec = {"worker_wall_s": round(max(0.0, (last or now) - t["attempt_ts"]), 1), "worker_tokens": tokens,
-           "answered_by": answered_by(), "lead_tokens": None, "lead_cache_read": None}
+           "compactions": compactions, "answered_by": answered_by(), "lead_tokens": None, "lead_cache_read": None}
     state = session.load(root) or {}
     transcript = session.transcript_path(root, state)
     if transcript:
         rec["lead_tokens"], rec["lead_cache_read"] = session.lead_tokens(transcript, entry["n"],
-                                                                         entry.get("lead_since") or 0)
+                                                                          entry.get("lead_since") or 0)
     entry["lead_since"] = now  # the next attempt's lead tokens start here (the caller saves)
     return rec
 
@@ -847,6 +862,14 @@ def send(args):
     db = _db(root)
     if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
+    # At most QWEN_TASK_CAP open Qwen tasks machine-wide (Wai, 2026-11-13: "A" = 3; the one model
+    # slot made each reply wait ~7.5 min with 5 panes). Open: a lead's task (not Wai's direct
+    # work) on a pane not closed, in any repo's saved state. Re-sending an open task is free.
+    if not q.get("task") or q["task"].get("direct"):
+        holding = _open_qwen_tasks()
+        if len(holding) >= QWEN_TASK_CAP:
+            die(f"the Qwen task cap is reached ({QWEN_TASK_CAP} open tasks: {', '.join(holding)}); "
+                "merge or discard one first")
     _refuse_narrow(a.n, pane)
     if not input_empty(pane):
         die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
@@ -1490,13 +1513,10 @@ def retro(args):
 
 
 def _newest_message_time(q, db):
-    """Epoch seconds of the newest OpenCode reply in entry q's session, 0 with none, or
+    """Epoch seconds of the newest OpenCode reply in entry q's worktree, 0 with none, or
     None when the database can't be read (the reaper then leaves the pane alone)."""
-    sid = session.opencode_session(q["worktree"], db)
-    if not sid:
-        return 0
     try:
-        _, last_reply = session.opencode_usage(sid, db, 0)
+        _, _, last_reply = session.opencode_usage(q["worktree"], db, 0)
     except (OSError, sqlite3.Error) as e:
         print(f"mates reap: cannot read Qwen pane {q['n']}'s sessions: {e}", file=sys.stderr)
         return None

@@ -289,16 +289,19 @@ def opencode_chats(repo, db, day):
     return out
 
 
-def opencode_usage(session, db, since):
-    """(tokens, last_reply_s) of OpenCode `session`'s assistant messages created at or
-    after `since` (epoch s): tokens is the sum of `tokens.input + tokens.output`,
-    last_reply_s the newest `time.completed` (epoch s) or None."""
-    tokens, last = 0, None
+def opencode_usage(worktree, db, since):
+    """(tokens, compactions, last_reply_s) summed over all top-level OpenCode sessions
+    in `worktree` for assistant messages created at or after `since` (epoch s).
+    tokens = sum of `tokens.input + tokens.output`; compactions = count of messages
+    with `summary` true or `mode`/`agent` "compaction"; last_reply_s = newest
+    `time.completed` (epoch s) or None."""
+    tokens, compactions, last = 0, 0, None
     if not Path(db).exists():
-        return tokens, last
+        return tokens, compactions, last
     with _ro(db) as con:
-        rows = con.execute("SELECT data FROM message WHERE session_id = ? AND time_created >= ?",
-                           (session, int(since * 1000))).fetchall()
+        rows = con.execute("SELECT m.data FROM session s JOIN message m ON m.session_id = s.id "
+                           "WHERE s.directory = ? AND s.parent_id IS NULL AND m.time_created >= ?",
+                           (str(worktree), int(since * 1000))).fetchall()
     for (raw,) in rows:
         try:
             data = json.loads(raw)
@@ -308,10 +311,12 @@ def opencode_usage(session, db, since):
             continue
         t = data.get("tokens") or {}
         tokens += int(t.get("input") or 0) + int(t.get("output") or 0)
+        if data.get("summary") or data.get("mode") == "compaction" or data.get("agent") == "compaction":
+            compactions += 1
         done = (data.get("time") or {}).get("completed")
         if done and (last is None or done / 1000 > last):
             last = done / 1000
-    return tokens, last
+    return tokens, compactions, last
 
 
 # --- Claude ---------------------------------------------------------------------------
