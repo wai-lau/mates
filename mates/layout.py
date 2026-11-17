@@ -1,9 +1,11 @@
-"""Side-by-side tmux panes for mates: Claude on the left, Qwen panes to its right.
+"""Stacked tmux panes for mates: Claude on the left, one column of Qwen panes to its right.
 
-A new pane splits off the lead (the first one, taking
-half the window) or off the rightmost Qwen pane; `even_qwen_panes` then evens out the
-Qwen panes after `mates add` over the columns they span (Wai's call, 2026-11-12). Otherwise Wai resizes by hand, and
-`pane_widths` / `restore_widths` carry those widths across a restore.
+The first Qwen pane splits off the lead (taking half the window); every next one splits the
+bottom-most Qwen pane downward, so the Qwen panes stack top to bottom in that one column
+(Wai, 2026-11-16: "I prefer splitting the qwen panes horizontally rather than vertically now";
+side-by-side columns kept getting too narrow for OpenCode). `even_qwen_panes` evens out their
+heights after `mates add` or a launch. `pane_widths` saves the pane order (and each pane's
+width) and `restore_widths` puts back the lead's width after a restore.
 """
 import itertools
 import math
@@ -17,12 +19,12 @@ class NoRoom(Exception):
 
 
 def split_qwen(lead_pane, qwen_panes, cwd, cmd):
-    """Full tmux argv for the next Qwen pane. `qwen_panes` are left to right."""
-    argv = ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}"]
+    """Full tmux argv for the next Qwen pane. `qwen_panes` are top to bottom: the first
+    one splits off the lead to the right, the rest split the bottom one downward."""
     if qwen_panes:
-        argv += ["-t", qwen_panes[-1]]
+        argv = ["tmux", "split-window", "-v", "-P", "-F", "#{pane_id}", "-t", qwen_panes[-1]]
     else:
-        argv += ["-t", lead_pane, "-l", "50%"]
+        argv = ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", lead_pane, "-l", "50%"]
     return argv + ["-c", cwd, cmd]
 
 
@@ -40,79 +42,100 @@ def split(argv):
     return r.stdout.strip()
 
 
-def pane_widths(panes):
-    """`panes` maps tmux pane id -> "lead" or Qwen number. Returns
-    [{"pane": label, "pct": int}] left to right, pct of the window width."""
-    if not panes:
-        return []
-    first = next(iter(panes))
-    r = _tmux("list-panes", "-t", first, "-F", "#{pane_id} #{pane_left} #{pane_width} #{window_width}")
+# One row per pane: id, left, width, window width, top, height.
+_LIST = "#{pane_id} #{pane_left} #{pane_width} #{window_width} #{pane_top} #{pane_height}"
+
+
+def _geometry(first):
+    """{pane id: (left, top, width, height)} for the window of pane `first`, and its width."""
+    r = _tmux("list-panes", "-t", first, "-F", _LIST)
     if r.returncode != 0:
         raise RuntimeError(f"tmux list-panes failed: {r.stderr.strip()}")
-    rows = []
+    geo, win_w = {}, 0
     for line in r.stdout.splitlines():
-        pid, left, width, win = line.split()
-        if pid in panes:
-            rows.append((int(left), panes[pid], round(int(width) * 100 / int(win))))
-    return [{"pane": label, "pct": pct} for _, label, pct in sorted(rows, key=lambda t: t[0])]
+        parts = line.split()
+        if len(parts) >= 6:
+            geo[parts[0]] = (int(parts[1]), int(parts[4]), int(parts[2]), int(parts[5]))
+            win_w = int(parts[3])
+    return geo, win_w
 
 
-def restore_widths(panes, widths):
-    """After all splits exist (`panes` ids left to right, matching `widths`), put back
-    each saved width except the last pane, which takes the rest."""
-    for pane, w in list(zip(panes, widths))[:-1]:
-        _tmux("resize-pane", "-t", pane, "-x", f"{w['pct']}%")
+def pane_widths(panes):
+    """`panes` maps tmux pane id -> "lead" or Qwen number. Returns
+    [{"pane": label, "pct": int}] top to bottom (then left to right), pct of the window
+    width. The order is what a restore reopens; only the lead's pct is put back."""
+    if not panes:
+        return []
+    geo, win_w = _geometry(next(iter(panes)))
+    rows = [(top, left, panes[pid], round(width * 100 / win_w))
+            for pid, (left, top, width, _) in geo.items() if pid in panes]
+    return [{"pane": label, "pct": pct} for _, _, label, pct in sorted(rows, key=lambda t: t[:2])]
+
+
+def restore_widths(lead, widths):
+    """After the splits exist, put the lead back to its saved width. Old saved states hold a
+    width per pane (side by side); the Qwen ones mean nothing in a stack and are ignored,
+    as is anything that is not a sane lead width (then the 50% split stands)."""
+    if not widths or widths[0].get("pane") != "lead":
+        return
+    pct = widths[0].get("pct")
+    if isinstance(pct, int) and 0 < pct < 100:
+        _tmux("resize-pane", "-t", lead, "-x", f"{pct}%")
 
 
 MIN_COLS = 40  # narrower, OpenCode cannot draw its input box
+# Shorter than this, OpenCode has too little to work in. Its screen is a one-row header, the
+# chat, the input box (a border, the text, a model/agent line, a border: about 4 rows) and a
+# one-row footer: 6 rows of chrome, so 12 leaves ~6 rows of chat, the least that shows one
+# reply with its tool lines. (A 4-pane stack in a 50-row window is 11 each: it warns.)
+MIN_ROWS = 12
 
 
 def even_qwen_panes(panes):
-    """Even out Qwen pane widths over the columns the Qwen panes already span, so panes mates
-    does not own (a Claude session, a shell) keep theirs. With k side-by-side Qwen panes
-    spanning S columns, each gets (S - (k - 1)) // k. Under MIN_COLS, a lead directly left of
-    them gives up just enough for MIN_COLS each, never going below ceil(W / 3) of the W-column
-    window and never growing. Qwen panes with another pane between them are left alone.
+    """Even out Qwen pane heights over the rows the stacked Qwen panes already span, so panes
+    mates does not own (a Claude session, a shell) keep theirs. With k stacked Qwen panes
+    spanning S rows, each gets (S - (k - 1)) // k. Qwen panes with another pane between them,
+    or not in one column, are left alone. If the column is under MIN_COLS wide, a lead
+    directly left of it gives up just enough, never going below ceil(W / 3) of the W-column
+    window and never growing. Warns about panes under MIN_COLS wide or MIN_ROWS tall.
     Returns (resize_commands, warning)."""
     first = next(iter(panes))
-    r = _tmux("list-panes", "-t", first, "-F", "#{pane_id} #{pane_left} #{pane_width} #{window_width}")
-    if r.returncode != 0:
-        raise RuntimeError(f"tmux list-panes failed: {r.stderr.strip()}")
-
-    cols, lefts, win_w = {}, {}, 0
-    for line in r.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 4:
-            pid, left, width, win = parts[0], int(parts[1]), int(parts[2]), int(parts[3])
-            if pid in panes:
-                cols[pid], lefts[pid] = width, left
-            win_w = win
-
-    lead = next((p for p, label in panes.items() if label == "lead" and p in cols), None)
-    qwens = sorted((p for p, label in panes.items() if label != "lead" and p in cols), key=lefts.get)
+    geo, win_w = _geometry(first)
+    lead = next((p for p, label in panes.items() if label == "lead" and p in geo), None)
+    qwens = sorted((p for p, label in panes.items() if label != "lead" and p in geo),
+                   key=lambda p: geo[p][1])
     k = len(qwens)
     if k == 0 or win_w == 0:
         return [], None
+    left = lambda p: geo[p][0]  # noqa: E731
+    top = lambda p: geo[p][1]  # noqa: E731
+    wid = lambda p: geo[p][2]  # noqa: E731
+    hei = lambda p: geo[p][3]  # noqa: E731
 
-    def warn(width):
-        return (f"Qwen panes are {width} columns wide (under {MIN_COLS}), too narrow for OpenCode; "
-                f"widen the window, close another pane, or `mates remove N`")
-
-    side_by_side = all(lefts[b] == lefts[a] + cols[a] + 1 for a, b in itertools.pairwise(qwens))
-    if not side_by_side:  # resizing would take columns from the pane in between
-        narrow = min(cols[p] for p in qwens)
-        return [], warn(narrow) if narrow < MIN_COLS else None
-
-    span = lefts[qwens[-1]] + cols[qwens[-1]] - lefts[qwens[0]]
-    target = (span - (k - 1)) // k
     resize = []
-    if target < MIN_COLS and lead is not None and lefts[lead] + cols[lead] + 1 == lefts[qwens[0]]:
-        need = k * MIN_COLS + (k - 1) - span  # what the lead must give for MIN_COLS each
-        lead_target = min(cols[lead], max(cols[lead] - need, math.ceil(win_w / 3)))
-        if lead_target != cols[lead]:
+    stacked = (len({left(p) for p in qwens}) == 1
+               and all(top(b) == top(a) + hei(a) + 1 for a, b in itertools.pairwise(qwens)))
+    if stacked:
+        width = min(wid(p) for p in qwens)
+        if (width < MIN_COLS and lead is not None and left(lead) + wid(lead) + 1 == left(qwens[0])
+                and wid(lead) > math.ceil(win_w / 3)):
+            lead_target = max(wid(lead) - (MIN_COLS - width), math.ceil(win_w / 3))
             resize.append(["resize-pane", "-t", lead, "-x", str(lead_target)])
-            span += cols[lead] - lead_target
-            target = (span - (k - 1)) // k
-    for qp in qwens[:-1]:
-        resize.append(["resize-pane", "-t", qp, "-x", str(target)])
-    return resize, warn(target) if target < MIN_COLS else None
+            width += wid(lead) - lead_target
+        span = top(qwens[-1]) + hei(qwens[-1]) - top(qwens[0])
+        target = (span - (k - 1)) // k
+        resize += [["resize-pane", "-t", qp, "-y", str(target)] for qp in qwens[:-1]]
+        heights = [target] * k if k > 1 else [hei(qwens[0])]
+    else:  # resizing would take rows from the pane in between
+        width = min(wid(p) for p in qwens)
+        heights = [hei(p) for p in qwens]
+
+    problems = []
+    if width < MIN_COLS:
+        problems.append(f"{width} columns wide (under {MIN_COLS})")
+    if min(heights) < MIN_ROWS:
+        problems.append(f"{min(heights)} rows tall (under {MIN_ROWS})")
+    if not problems:
+        return resize, None
+    return resize, (f"Qwen panes are {' and '.join(problems)}, too small for OpenCode; "
+                    f"widen or heighten the window, close another pane, or `mates remove N`")

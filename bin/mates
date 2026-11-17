@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# mates: Claude Code (the lead) on the left, sandboxed Qwen (OpenCode) panes side by side
-# on the right, each Qwen pane in its own worktree. Run it in a git repo.
+# mates: Claude Code (the lead) on the left, sandboxed Qwen (OpenCode) panes stacked
+# in one column on the right, each Qwen pane in its own worktree. Run it in a git repo.
 #
 #   mates [--fresh] [-- <claude args>]
 #       first run: one Claude and one Qwen. Later runs restore the same Claude

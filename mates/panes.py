@@ -59,17 +59,17 @@ def add(args):
     lead = session.find_lead(root) or cli.die("there is no mates lead pane for this repo (run mates start from this Claude session, "
                                                      "or start it with mates)")
     found = _open_panes(root, state)
-    try:  # the Qwen panes left to right, so the new one opens right of the rightmost
+    try:  # the Qwen panes top to bottom, so the new one opens below the bottom one
         order = [w["pane"] for w in layout.pane_widths(found)]
     except RuntimeError:
         order = sorted(found.values())
     by_n = {n: pid for pid, n in found.items()}
-    right = [by_n[n] for n in order if n in by_n]
+    column = [by_n[n] for n in order if n in by_n]
     closed = sorted((q for q in state["qwens"] if q.get("closed")), key=lambda q: q["n"])
     q = closed[0] if closed else cli._entry(root, max((x["n"] for x in state["qwens"]), default=0) + 1)
     cmd = cli.qwen_cmd(q["worktree"], None, state.get("runtime"), root)
     try:  # split first: on NoRoom nothing has changed (the pane starts in root; qwen_cmd cds)
-        pane = layout.split(layout.split_qwen(lead, right, root, cmd))
+        pane = layout.split(layout.split_qwen(lead, column, root, cmd))
     except layout.NoRoom:
         cli.die(NO_ROOM, 1)
     try:
@@ -85,7 +85,8 @@ def add(args):
         state["qwens"].append(q)
     cli.save_state(root, state)
 
-    # Even out the Qwen panes (Wai: "C", then up to 2/3 of the screen when there are many).
+    # Even out the Qwen panes' heights in their column (Wai, 2026-11-16: "I prefer splitting the
+    # qwen panes horizontally rather than vertically now").
     try:
         resizes, warning = layout.even_qwen_panes({lead: "lead", **found, pane: q["n"]})
     except RuntimeError as e:

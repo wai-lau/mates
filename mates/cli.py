@@ -353,8 +353,25 @@ def _parse_launch(args):
     return fresh, lead_only, []
 
 
+def _even_stack(lead, ids, warnings):
+    """Even the heights of the Qwen panes `ids` ((n, pane), top to bottom) in their column;
+    a warning (panes too small for OpenCode) is appended to `warnings`."""
+    if not ids:
+        return
+    try:
+        resizes, warning = layout.even_qwen_panes({lead: "lead", **{p: n for n, p in ids}})
+    except RuntimeError as e:
+        resizes, warning = [], f"mates: could not even out the Qwen panes: {e}"
+    for argv in resizes:
+        layout._tmux(*argv)
+    if warning:
+        warnings.append(warning)
+
+
 def _split_qwens(root, lead, plan, warnings):
-    """Step 4: worktree, split, tag, release, for each planned pane left to right."""
+    """Step 4: worktree, split, tag, release, for each planned pane top to bottom. Each
+    split halves the bottom pane, so the column is evened after every one: otherwise the
+    halves run out of rows before the panes do."""
     ids = []
     for q in plan["qwens"]:
         hit = session.find_pane(root, q["n"])
@@ -372,6 +389,8 @@ def _split_qwens(root, lead, plan, warnings):
         session.tag_pane(pane, root, q["n"])
         release_pane(pane)
         ids.append((q["n"], pane))
+        if len(ids) > 1:
+            _even_stack(lead, ids, [])
     return ids
 
 
@@ -461,10 +480,8 @@ def launch(args):
                         warnings.append(f"mates: {q['worktree']} has work not merged, kept as it is: "
                                         + ", ".join(dirty))
         ids = _split_qwens(root, lead, plan, warnings)
-        panes = [lead] + [p for _, p in ids]
-        saved = state.get("widths") or []
-        if [w["pane"] for w in saved] == ["lead"] + [n for n, _ in ids]:
-            layout.restore_widths(panes, saved)
+        layout.restore_widths(lead, state.get("widths") or [])
+        _even_stack(lead, ids, warnings)
     for w in warnings:
         print(w, file=sys.stderr)
     session.tag_pane(lead, root, "lead")
@@ -1417,15 +1434,19 @@ def _log_runtime(root, base, reason, h, outcome, restarted):
 
 
 def _refuse_narrow(n, pane):
-    """A pane under layout.MIN_COLS cannot draw OpenCode, so its input box is unreadable and
-    the typing guard would misreport it (human-music, 2026-11-16: a 1-column pane)."""
+    """A pane under layout.MIN_COLS wide or layout.MIN_ROWS tall cannot draw OpenCode, so its
+    input box is unreadable and the typing guard would misreport it (human-music, 2026-11-16:
+    a 1-column pane)."""
     try:
-        width = int(_tmux_out("display", "-p", "-t", pane, "#{pane_width}").strip())
+        width, height = map(int, _tmux_out("display", "-p", "-t", pane, "#{pane_width} #{pane_height}").split())
     except (RuntimeError, ValueError):
-        return  # width unknown: the input-box guard still fails closed
+        return  # size unknown: the input-box guard still fails closed
     if width < layout.MIN_COLS:
         die(f"Qwen pane {n} is {width} columns wide, too narrow for OpenCode (needs {layout.MIN_COLS}); "
             f"widen it (tmux resize-pane -t {pane} -x 60) or close another pane")
+    if height < layout.MIN_ROWS:
+        die(f"Qwen pane {n} is {height} rows tall, too short for OpenCode (needs {layout.MIN_ROWS}); "
+            f"heighten it (tmux resize-pane -t {pane} -y 20) or close another pane with `mates remove N`")
 
 
 def _not_restartable(q, pane, db):

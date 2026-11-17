@@ -348,21 +348,22 @@ def test_fresh_keeps_worktrees(tmp_path, monkeypatch, capsysbinary):
     assert f"set-option -w -t %0 @mates-window {session.repo_key(str(root))}" in calls
 
 
-def test_restore_reapplies_widths(tmp_path, monkeypatch, capsysbinary):
+def test_restore_reapplies_the_lead_width_and_stacks(tmp_path, monkeypatch, capsysbinary):
     root = _repo(tmp_path / "repo")
     log = _stub_tmux(tmp_path, monkeypatch)
     old = session.new_state(str(root))
     old["widths"] = [{"pane": "lead", "pct": 40}, {"pane": 2, "pct": 30}, {"pane": 1, "pct": 30}]
-    old["qwens"] = [_q(str(root), 1), _q(str(root), 2)]
+    old["qwens"] = [_q(str(root), 1), _q(str(root), 2)]  # the old side-by-side shape: must not crash
     session.save(str(root), old)
     monkeypatch.chdir(root)
     monkeypatch.setenv("TMUX_PANE", "%0")
     assert cli.main(["launch"]) == 0
     calls = log.read_text().splitlines()
     splits = [c for c in calls if c.startswith("split-window")]
-    assert "mates-qwen-2" in splits[0] and "-t %0 -l 50%" in splits[0]  # saved order: 2 then 1
-    assert "mates-qwen-1" in splits[1] and "-t %1 " in splits[1]
-    assert [c for c in calls if c.startswith("resize-pane")] == ["resize-pane -t %0 -x 40%", "resize-pane -t %1 -x 30%"]
+    assert "mates-qwen-2" in splits[0] and "-h" in splits[0] and "-t %0 -l 50%" in splits[0]  # saved order: 2 then 1
+    assert "mates-qwen-1" in splits[1] and splits[1].startswith("split-window -v ") and "-t %1 " in splits[1]
+    # only the lead's width is put back; the Qwen panes' heights are evened, not restored
+    assert [c for c in calls if c.startswith("resize-pane")] == ["resize-pane -t %0 -x 40%"]
 
 
 def test_qwen_cmd_marks_live_while_qwen_runs():
@@ -406,7 +407,7 @@ case $1 in
   list-panes) case "$*" in *window_width*) cat "$T/widths" 2>/dev/null ;; *) cat "$T/panes" 2>/dev/null ;; esac ;;
   split-window) [ -f "$T/noroom" ] && {{ echo "no space for new pane" >&2; exit 1; }}; cat "$T/split-id" ;;
   kill-pane) sed -i "/^$3\t/d" "$T/panes" ;;
-  display) case "$*" in *pane_width*) cat "$T/pane-width" 2>/dev/null || echo 80 ;; *) cat "$T/live" 2>/dev/null ;; esac ;;
+  display) case "$*" in *pane_width*) cat "$T/pane-width" 2>/dev/null || echo 80 40 ;; *) cat "$T/live" 2>/dev/null ;; esac ;;
   capture-pane) cat "$T/capture" 2>/dev/null ;;
   load-buffer) {{ cat; printf '\\n<<END>>\\n'; }} >> "$T/buffers" ;;
   send-keys) [ -x "$T/on-enter" ] && "$T/on-enter" ;;
@@ -599,12 +600,22 @@ def test_send_refuses_nonempty_input(m):
 def test_send_refuses_a_too_narrow_pane(m):
     """A 1-column pane (human-music, 2026-11-16: `mates add` squeezed by panes mates does not
     own) cannot draw OpenCode; send must say the pane is too narrow, not that Wai is typing."""
-    (m.t / "pane-width").write_text("1\n")
+    (m.t / "pane-width").write_text("1 30\n")
     m.input("n\nn\ne\nc\n")  # what OpenCode draws at width 1: no readable input box
     code, _, err = m.run("send", 1, "--reason", "r", "task")
     assert code != 0 and "1 columns wide" in err and "input box" not in err and m.buffers() == []
-    (m.t / "pane-width").write_text("60\n")
+    (m.t / "pane-width").write_text("60 30\n")
     m.input("┃  Ask anything… \"Fix a TODO in the codebase\"\n")
+    assert m.run("send", 1, "--reason", "r", "task")[0] == 0
+
+
+def test_send_refuses_a_too_short_pane(m):
+    """A stacked pane squeezed to a few rows cannot draw OpenCode either: say so."""
+    (m.t / "pane-width").write_text("100 5\n")
+    m.input("┃  Ask anything… \"Fix a TODO in the codebase\"\n")
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "5 rows tall" in err and "mates remove" in err and m.buffers() == []
+    (m.t / "pane-width").write_text("100 12\n")
     assert m.run("send", 1, "--reason", "r", "task")[0] == 0
 
 
@@ -1237,12 +1248,12 @@ def _lead_window(m, split_id, widths):
 
 
 def test_add_then_restore_has_two(m):
-    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 99 200"])
+    _lead_window(m, "%2", ["%0 0 100 200 0 50", "%1 101 99 200 0 50"])
     code, out, err = m.run("add")
     assert code == 0, err
     calls = m.tmux_calls()
     split = next(c for c in calls if c.startswith("split-window"))
-    assert split.startswith(f"split-window -h -P -F #{{pane_id}} -t %1 -c {m.root} ")  # right of the rightmost
+    assert split.startswith(f"split-window -v -P -F #{{pane_id}} -t %1 -c {m.root} ")  # below the bottom one
     assert f"QWEN_ROOT={_wt(str(m.root), 2)}" in split
     assert f"set-option -p -t %2 @mates {m.key}:2" in calls
     assert calls.index(f"set-option -p -t %2 @mates {m.key}:2") < calls.index("wait-for -S mates-go-%2")
@@ -1257,7 +1268,7 @@ def test_add_reuses_closed(m):
     st = m.state()
     st["qwens"] += [_q(str(m.root), 3, closed=True), _q(str(m.root), 2, closed=True)]
     session.save(str(m.root), st)
-    _lead_window(m, "%5", ["%0 0 100 200", "%1 101 99 200"])
+    _lead_window(m, "%5", ["%0 0 100 200 0 50", "%1 101 99 200 0 50"])
     assert m.run("add")[0] == 0
     by_n = {q["n"]: q["closed"] for q in m.state()["qwens"]}
     assert by_n == {1: False, 2: False, 3: True}
@@ -1265,7 +1276,7 @@ def test_add_reuses_closed(m):
     assert not (m.root / ".claude/worktrees/mates-qwen-3").exists()
     # a pane that is gone counts as closed: its entry is the one reused
     m.no_panes()
-    _lead_window(m, "%6", ["%0 0 100 200"])
+    _lead_window(m, "%6", ["%0 0 100 200 0 50"])
     assert m.run("add")[0] == 0
     calls = m.tmux_calls()
     assert [c for c in calls if c.startswith("split-window")][-1].startswith(
@@ -1275,7 +1286,7 @@ def test_add_reuses_closed(m):
 
 
 def test_add_no_room_message(m):
-    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 99 200"])
+    _lead_window(m, "%2", ["%0 0 100 200 0 50", "%1 101 99 200 0 50"])
     (m.t / "noroom").write_text("")
     before = m.state()
     code, out, err = m.run("add")
@@ -2531,77 +2542,84 @@ def test_pane_stagger_default():
     assert getattr(cli, "PANE_STAGGER_S", None) == 5  # the measured race window was ~2 s
 
 
-# --- `mates add` evens out the Qwen panes (Wai, 2026-11-12: "C", then "allow qwens to take up
-# to 2/3 of the screen if there are too many panes"). With k Qwen panes in a W-column window
-# and the lead L wide, each Qwen pane gets (W - L - k) // k columns (k pane borders). Under 40,
-# the lead shrinks just enough for 40 each, never below ceil(W / 3); still under 40, a warning
-# says how wide they are and to close one with `mates remove N`. Every Qwen pane but the last
-# is resized to that width (the last takes the rest); the lead is resized only when it shrinks.
+# --- `mates add` evens out the Qwen panes (Wai, 2026-11-16: "I prefer splitting the qwen panes
+# horizontally rather than vertically now": one column of stacked panes). list-panes rows are
+# `id left width window_width top height`. With k stacked Qwen panes spanning S rows, each gets
+# (S - (k - 1)) // k rows (k - 1 dividers); every Qwen pane but the last is resized (the last
+# takes the rest). Under MIN_ROWS (12) a warning says how tall they are and to close one with
+# `mates remove N`. A column under 40 wide makes a lead directly left of it give up columns,
+# never below ceil(W / 3), never growing.
 
 def _resizes(m):
     return [c for c in m.tmux_calls() if c.startswith("resize-pane")]
 
 
-def test_add_evens_out_qwen_panes(m):
-    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 70 200", "%2 172 28 200"])
+def test_add_evens_out_qwen_heights(m):
+    _lead_window(m, "%2", ["%0 0 100 200 0 50", "%1 101 99 200 0 30", "%2 101 99 200 31 19"])
     code, out, err = m.run("add")
     assert code == 0, err
-    assert _resizes(m) == ["resize-pane -t %1 -x 49"]  # (200 - 100 - 2) // 2; the lead keeps its 100
+    assert _resizes(m) == ["resize-pane -t %1 -y 24"]  # (50 - 1) // 2; the lead is not touched
+    assert "under" not in out + err
 
 
-def test_add_shrinks_the_lead_for_40_column_panes(m):
-    _lead_window(m, "%2", ["%0 0 150 200", "%1 151 24 200", "%2 176 24 200"])
-    code, out, err = m.run("add")
-    assert code == 0, err
-    assert _resizes(m) == ["resize-pane -t %0 -x 118", "resize-pane -t %1 -x 40"]  # 200 - 2 * 41
-    assert "under 40" not in out + err
-
-
-def test_add_lead_never_below_a_third_and_warns(m):
+def test_add_warns_when_the_stack_is_too_short(m):
     st = m.state()
     st["qwens"] += [_q(str(m.root), 2), _q(str(m.root), 3)]
     session.save(str(m.root), st)
     m.pane("%2", 2)
     m.pane("%3", 3)
-    _lead_window(m, "%4", ["%0 0 80 120", "%1 81 9 120", "%2 91 9 120", "%3 101 9 120", "%4 111 9 120"])
+    _lead_window(m, "%4", ["%0 0 100 200 0 50", "%1 101 99 200 0 13", "%2 101 99 200 14 11",
+                           "%3 101 99 200 26 11", "%4 101 99 200 38 12"])
     code, out, err = m.run("add")
     assert code == 0, err
-    assert _resizes(m) == ["resize-pane -t %0 -x 40", "resize-pane -t %1 -x 19",
-                           "resize-pane -t %2 -x 19", "resize-pane -t %3 -x 19"]  # ceil(120 / 3) = 40
-    assert "under 40" in out + err and "mates remove" in out + err
+    assert _resizes(m) == ["resize-pane -t %1 -y 11", "resize-pane -t %2 -y 11", "resize-pane -t %3 -y 11"]
+    assert "11 rows tall" in out + err and "under 12" in out + err and "mates remove" in out + err
 
 
 def test_add_evens_only_the_qwen_panes(m):
-    """Panes mates does not own (a Claude session, a shell) right of the Qwen panes keep their
-    width: the Qwen panes even out over the columns they already span (human-music,
-    2026-11-16: evening over the whole window squeezed the new pane and a Claude pane to 1)."""
-    _lead_window(m, "%2", ["%0 0 100 300", "%1 101 59 300", "%2 161 60 300", "%9 222 78 300"])
+    """A pane mates does not own (a Claude session, a shell) below the Qwen panes keeps its
+    height: the Qwen panes even out over the rows they already span."""
+    _lead_window(m, "%2", ["%0 0 100 200 0 50", "%1 101 99 200 0 20", "%2 101 99 200 21 9",
+                           "%9 101 99 200 31 19"])
     code, out, err = m.run("add")
     assert code == 0, err
-    assert _resizes(m) == ["resize-pane -t %1 -x 59"]  # (59 + 1 + 60 - 1) // 2; %9 untouched
-    assert "under 40" not in out + err
+    assert _resizes(m) == ["resize-pane -t %1 -y 14"]  # (30 - 1) // 2; %9 untouched
+    assert "under" not in out + err
 
 
-def test_add_shrinks_the_lead_into_the_qwen_span_only(m):
-    """Under 40 each, the lead still gives up columns, which go to the Qwen span, never to the
-    other panes: the Qwen budget grows by exactly what the lead gives."""
-    _lead_window(m, "%2", ["%0 0 100 250", "%1 101 23 250", "%2 125 24 250",
-                           "%9 150 50 250", "%8 201 49 250"])
+def test_add_shrinks_the_lead_for_a_40_column_stack(m):
+    _lead_window(m, "%2", ["%0 0 170 200 0 50", "%1 171 29 200 0 25", "%2 171 29 200 26 24"])
     code, out, err = m.run("add")
     assert code == 0, err
-    # span 48; 40 each needs 81, so the lead would give 33 but stops at ceil(250 / 3) = 84
-    assert _resizes(m) == ["resize-pane -t %0 -x 84", "resize-pane -t %1 -x 31"]
-    assert "31 columns" in out + err and "under 40" in out + err
+    assert _resizes(m) == ["resize-pane -t %0 -x 159", "resize-pane -t %1 -y 24"]  # 29 + 11 = 40
+    assert "under" not in out + err
+
+
+def test_add_lead_never_below_a_third_and_warns(m):
+    _lead_window(m, "%2", ["%0 0 45 60 0 50", "%1 46 14 60 0 25", "%2 46 14 60 26 24"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert _resizes(m)[0] == "resize-pane -t %0 -x 20"  # ceil(60 / 3)
+    assert "39 columns" in out + err and "under 40" in out + err
+
+
+def test_add_never_grows_a_narrow_lead(m):
+    _lead_window(m, "%2", ["%0 0 30 120 0 50", "%1 31 20 120 0 25", "%2 31 20 120 26 24", "%9 52 68 120 0 50"])
+    code, out, err = m.run("add")
+    assert code == 0, err
+    assert not any(c.startswith("resize-pane -t %0") for c in _resizes(m))  # 30 < a third: left alone
+    assert "20 columns" in out + err and "under 40" in out + err
 
 
 def test_add_leaves_scattered_qwen_panes_alone(m):
-    """With a pane mates does not own between Qwen panes, resizing one would take columns from
-    that pane: nothing is resized, and a pane under 40 is reported."""
-    _lead_window(m, "%2", ["%0 0 100 200", "%1 101 40 200", "%9 142 40 200", "%2 183 17 200"])
+    """With a pane mates does not own between Qwen panes, resizing one would take rows from
+    that pane: nothing is resized, and a pane under 12 rows is reported."""
+    _lead_window(m, "%2", ["%0 0 100 200 0 50", "%1 101 99 200 0 15", "%9 101 99 200 16 15",
+                           "%2 101 99 200 32 8"])
     code, out, err = m.run("add")
     assert code == 0, err
     assert _resizes(m) == []
-    assert "17 columns" in out + err and "under 40" in out + err
+    assert "8 rows" in out + err and "under 12" in out + err
 
 
 def test_wait_idle_needs_two_readings_in_a_row(m):
@@ -2627,20 +2645,6 @@ esac
 """)  # the hook runs before the fake prints the capture: read 1 idle, read 2 on the spinner
     hook.chmod(0o755)
     assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
-
-
-def test_add_never_grows_a_narrow_lead(m):
-    st = m.state()
-    st["qwens"] += [_q(str(m.root), 2), _q(str(m.root), 3)]
-    session.save(str(m.root), st)
-    m.pane("%2", 2)
-    m.pane("%3", 3)
-    _lead_window(m, "%4", ["%0 0 30 120", "%1 31 21 120", "%2 53 21 120", "%3 75 21 120", "%4 97 23 120"])
-    code, out, err = m.run("add")
-    assert code == 0, err
-    assert not any(c.startswith("resize-pane -t %0") for c in _resizes(m))  # 30 < a third: left alone
-    assert "under 40" in out + err
-
 
 
 # --- close unused Qwen panes (Wai, 2026-11-12: "close unused opencode panes after 30m") ---
@@ -2801,7 +2805,7 @@ def test_add_restarts_the_idle_clock_and_clears_the_mark(m):
     st["qwens"][0].update(closed=True, closed_idle=True, idle_since=1.0)
     session.save(str(m.root), st)
     m.no_panes()
-    _lead_window(m, "%6", ["%0 0 100 200", "%6 101 99 200"])
+    _lead_window(m, "%6", ["%0 0 100 200 0 50", "%6 101 99 200 0 50"])
     t0 = time.time()
     assert m.run("add")[0] == 0
     q = m.state()["qwens"][0]
