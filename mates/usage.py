@@ -21,6 +21,13 @@ RESERVE = 95.0  # the cap's reserve line: the last 5 % is spent only by a snooze
 WEEK = 7 * 86400
 DAY_SHARE = RESERVE / 7
 FIVE_HOUR_MAX = 75.0
+# The last ENDGAME_S before the weekly reset (Wai, 2026-11-17: "when there are 3 hours before
+# weekly usage refreshes, try to set a pace to reach 99% usage when the usage refreshes, don't
+# arbitrarily burn, but significantly downweight model costs during this time"): a pace line
+# rises from RESERVE at the window's start to ENDGAME_TARGET at the reset, and followers are on
+# while usage is under it. ~/.claude/hooks/pace-cap.py lets prompts through under the same line.
+ENDGAME_S = 3 * 3600
+ENDGAME_TARGET = 99.0
 STALE_S = 600  # the statusline refreshes the cache every 60 s; the cap ignores it past 10 min
 
 
@@ -37,8 +44,20 @@ def headroom(data, now):
     day = max(1, math.ceil(max(0.0, now - (reset - WEEK)) / 86400))
     allowed = min(day * RESERVE / 7, RESERVE)
     left = allowed - used
-    return {"on": left > DAY_SHARE and five <= FIVE_HOUR_MAX, "used": used, "day": day, "allowed": allowed,
-            "left": left, "five_hour": five}
+    to_reset = reset - now
+    h = {"used": used, "day": day, "allowed": allowed, "left": left, "five_hour": five,
+         "endgame": 0 < to_reset <= ENDGAME_S, "to_reset": to_reset}
+    if h["endgame"]:
+        h["line"] = endgame_line(to_reset)
+        h["on"] = used < h["line"] and five <= FIVE_HOUR_MAX
+    else:
+        h["on"] = left > DAY_SHARE and five <= FIVE_HOUR_MAX
+    return h
+
+
+def endgame_line(to_reset):
+    """The pace line `to_reset` seconds before the weekly reset, in the last ENDGAME_S."""
+    return RESERVE + (ENDGAME_TARGET - RESERVE) * (1 - to_reset / ENDGAME_S)
 
 
 def read(path=None, now=None):
@@ -58,6 +77,13 @@ def report(h):
     if "why" in h:
         return f"followers off: {h['why']}"
     state = "on" if h["on"] else "off"
+    if h.get("endgame"):
+        five = "under" if h["five_hour"] <= FIVE_HOUR_MAX else "over"
+        where = "under" if h["used"] < h["line"] else "at or over"
+        return (f"followers {state}: endgame, {h['to_reset'] / 3600:.1f} h to the weekly reset. 7-day usage "
+                f"{h['used']:.0f}% is {where} the pace line {h['line']:.1f}% (rising to {ENDGAME_TARGET:.0f}% at "
+                f"the reset); 5-hour usage {h['five_hour']:.0f}%, {five} the {FIVE_HOUR_MAX:.0f}% limit. Until the "
+                "reset Claude's cost counts low: real work only, no make-work")
     than = "more" if h["left"] > DAY_SHARE else "not more"
     five = "under" if h["five_hour"] <= FIVE_HOUR_MAX else "over"
     return (f"followers {state}: 7-day usage {h['used']:.0f}%, the pace cap allows {h['allowed']:.1f}% "

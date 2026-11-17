@@ -27,7 +27,7 @@ def _data(used, hours_to_reset, five=10):
     (75, 30, False, 6, 6.4),      # day 6: 81.4 allowed, 6.4 left
     (0, 150, False, 1, 13.6),     # day 1: exactly one day's share is not more than one
     (20, 80, True, 4, 34.3),      # day 4: 54.3 allowed
-    (90, 2, False, 7, 5.0),       # past the reserve line soon: 5 left
+    (90, 4, False, 7, 5.0),       # 4 h before the reset, past the endgame: 5 left of 95
 ])
 def test_headroom(used, hours, on, day, left):
     h = usage.headroom(_data(used, hours), NOW)
@@ -67,3 +67,30 @@ def test_followers_command(tmp_path, monkeypatch, capsys):
                                        "five_hour": {"utilization": 20, "resets_at": reset}}}))
     assert cli.main(["followers"]) == 1
     assert capsys.readouterr().out.startswith("followers off:")
+
+
+# --- the last 3 hours before the weekly reset (Wai, 2026-11-17: "when there are 3 hours before
+# weekly usage refreshes, try to set a pace to reach 99% usage when the usage refreshes, don't
+# arbitrarily burn, but significantly downweight model costs during this time"). A pace line rises
+# from the cap's 95% at 3 h out to 99% at the reset; followers are on while usage is under it
+# (and the 5-hour window allows), and the report says Claude's cost counts low.
+
+@pytest.mark.parametrize("used,hours,on,line", [
+    (88, 2.5, True, 95.67),   # 2.5 h left: the line is 95 + 4 * (0.5 / 3)
+    (95.5, 1.5, True, 97.0),  # past the old 95% reserve, still under the line
+    (97.5, 1.5, False, 97.0), # ahead of the pace: off until the line catches up
+    (98.5, 0.1, True, 98.87),     # 6 min left: the line is nearly 99
+    (88, 3.5, False, None),   # 3.5 h left: the normal day rule (7% left of 95) applies
+])
+def test_endgame_pace_line(used, hours, on, line):
+    h = usage.headroom(_data(used, hours), NOW)
+    assert h["on"] is on
+    if line is None:
+        assert not h["endgame"]
+    else:
+        assert h["endgame"] and round(h["line"], 2) == line
+        assert "counts low" in usage.report(h)
+
+
+def test_endgame_still_minds_the_five_hour_window():
+    assert usage.headroom(_data(88, 2, five=80), NOW)["on"] is False

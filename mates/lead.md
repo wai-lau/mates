@@ -37,6 +37,16 @@ leader should keep working and delegating to Qwens"; when leads read that as
 1/40 of opus and sonnet 1/2), brief it like Qwen (behaviour, check, files), check
 what it returns yourself, and log it: `mates log-route claude-subagent "<task>" "<why>"`.
 
+In the endgame (`mates followers` says "endgame": the last 3 hours before the
+weekly reset), Wai sets a pace to reach 99% of the week's usage at the reset, and
+Claude's cost counts low: "don't arbitrarily burn, but significantly downweight
+model costs during this time". So, for real work only: run followers in
+parallel, pick the model by quality and speed rather than price (sonnet or opus
+where they would do better than haiku), and take a task yourself or give it to
+a follower where Qwen would be slower or likely need a re-brief. No make-work to
+use up the budget; past the pace line (`mates followers` says off) go back to
+Qwen and your own work.
+
 No check, no Qwen: if you cannot write the command that proves the task done,
 do it yourself. Send the check with the task (`--check "<cmd>"`); send refuses
 it if the check passes on the base (it proves nothing) or cannot run there.
