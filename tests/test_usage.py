@@ -16,9 +16,10 @@ import usage
 NOW = 1_800_000_000.0
 
 
-def _data(used, hours_to_reset):
+def _data(used, hours_to_reset, five=10):
     reset = datetime.fromtimestamp(NOW + hours_to_reset * 3600, UTC).isoformat()
-    return {"usage": {"seven_day": {"utilization": used, "resets_at": reset}}}
+    return {"usage": {"seven_day": {"utilization": used, "resets_at": reset},
+                      "five_hour": {"utilization": five, "resets_at": reset}}}
 
 
 @pytest.mark.parametrize("used,hours,on,day,left", [
@@ -31,6 +32,13 @@ def _data(used, hours_to_reset):
 def test_headroom(used, hours, on, day, left):
     h = usage.headroom(_data(used, hours), NOW)
     assert (h["on"], h["day"], round(h["left"], 1)) == (on, day, left)
+
+
+def test_five_hour_window_over_75_turns_followers_off():
+    """Wai, 2026-11-16: "above 75% turn off followers"."""
+    assert usage.headroom(_data(20, 80, five=75), NOW)["on"] is True
+    h = usage.headroom(_data(20, 80, five=76), NOW)
+    assert h["on"] is False and "over the 75% limit" in usage.report(h)
 
 
 def _write(tmp_path, data, age_s=0):
@@ -49,11 +57,13 @@ def test_stale_missing_or_broken_usage_means_off(tmp_path):
 
 def test_followers_command(tmp_path, monkeypatch, capsys):
     reset = datetime.fromtimestamp(time.time() + 23 * 3600, UTC).isoformat()
-    p = _write(tmp_path, {"usage": {"seven_day": {"utilization": 50, "resets_at": reset}}})
+    p = _write(tmp_path, {"usage": {"seven_day": {"utilization": 50, "resets_at": reset},
+                                    "five_hour": {"utilization": 20, "resets_at": reset}}})
     monkeypatch.setattr(usage, "cache_path", lambda: p)
     assert cli.main(["followers"]) == 0  # an open command: Wai can run it too
     out = capsys.readouterr().out
     assert out.startswith("followers on:") and "50%" in out and "13.6%" in out
-    p.write_text(json.dumps({"usage": {"seven_day": {"utilization": 90, "resets_at": reset}}}))
+    p.write_text(json.dumps({"usage": {"seven_day": {"utilization": 90, "resets_at": reset},
+                                       "five_hour": {"utilization": 20, "resets_at": reset}}}))
     assert cli.main(["followers"]) == 1
     assert capsys.readouterr().out.startswith("followers off:")

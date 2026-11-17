@@ -23,8 +23,11 @@ runs with no code to write.
 Claude followers (subagents from your Agent tool) are for complex problems that
 need judgement, or for more throughput when Qwen's slot is full, and only while
 `mates followers` says on: more than one day of Claude usage left under Wai's
-pace cap (Wai, 2026-11-16). Run it before each one. Qwen still comes first when
-it pays off. Pick the cheapest model that can do the task (per token, haiku is
+pace cap, and the 5-hour window at most 75% used (Wai, 2026-11-16). Run it before
+each one. While it is on, be aggressive: run independent work in parallel
+followers rather than one at a time or by hand ("remember to be more aggressive
+with subagents when we have >1d worth of usage before hitting pace"). Qwen still
+comes first when it pays off. Pick the cheapest model that can do the task (per token, haiku is
 1/40 of opus and sonnet 1/2), brief it like Qwen (behaviour, check, files), check
 what it returns yourself, and log it: `mates log-route claude-subagent "<task>" "<why>"`.
 
