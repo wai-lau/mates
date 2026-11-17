@@ -3,6 +3,28 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-16, from the human-music lead
+
+### wait said idle while two panes were mid-reply
+
+**Fixed (2026-11-16):** without the spinner on screen, busy asks the database too. A
+chat whose newest assistant message is unfinished, or is a step that ended in tool
+calls (not on an Escape's abort error), reads busy, as long as the OpenCode now in
+the pane wrote it (the pane's process started before the chat's last write) within
+MID_REPLY_S (30 min). A killed pane's unfinished reply still reads idle (the spire
+bug of 2026-11-12 that made the screen decide alone).
+
+At about 23:40, `mates wait 1` and `mates wait 2` each printed `idle` while both
+panes were mid-reply: the footer showed the spinner, tool calls kept landing, and
+there was no done.md or question.md. Both read busy again soon after, so it did not
+reproduce on demand. With the input box on screen and the paste grace
+(PASTE_GRACE_S, 30 s) over, two screen reads 2 s apart that missed the spinner were
+enough: nothing asked the database.
+
+- **Not known:** why the reads missed a spinner the lead saw (a redraw gap between
+  steps, a footer cut on a narrow pane, or another footer while OpenCode waits for
+  the shared model slot).
+
 ## 2026-11-16, from the mates lead
 
 ### wait timed out on a finished task that OpenCode kept going

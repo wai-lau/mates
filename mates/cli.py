@@ -598,6 +598,7 @@ def _db(root):
 
 
 PASTE_GRACE_S = 30  # after mates' own paste, the spinner takes a moment: the database counts
+MID_REPLY_S = 1800  # a reply mid-step with no write for this long no longer reads busy without the spinner
 PANE_STAGGER_S = 5  # a launch starts a repo's panes this far apart (OpenCode's database race)
 QWEN_TASK_CAP = 3  # at most this many open Qwen tasks machine-wide
 
@@ -643,21 +644,37 @@ def screen_busy(pane):
     return _spinner(lines, _box_border(lines))
 
 
+def _pane_started(pane):
+    """When the process now in `pane` started (epoch s), or 0 when that cannot be read."""
+    try:
+        pid = int(_tmux_out("display", "-p", "-t", pane, "#{pane_pid}").strip())
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime "))
+        return boot + int(fields[19]) / os.sysconf("SC_CLK_TCK")  # field 22, starttime
+    except (RuntimeError, ValueError, OSError, IndexError, StopIteration):
+        return 0
+
+
 def busy(q, db, pane, since=0, sid=None, lines=None):
-    """The one busy rule (send, answer, check, wait). A readable screen decides: with the
-    input box on screen and mates' last paste over PASTE_GRACE_S old, busy means the
-    spinner shows, so a killed pane's unfinished reply or a stray write to an old session
-    no longer reads busy. Right after a paste, or with no box on screen, the database rule
-    counts too (messages since `since`). `lines`: a capture of the pane just taken."""
+    """The one busy rule (send, answer, check, wait). The spinner on screen means busy.
+    Without it, with the input box on screen and mates' last paste over PASTE_GRACE_S old,
+    busy means the chat is mid-reply in the database (session.opencode_mid_reply) by the
+    OpenCode now in the pane and within MID_REPLY_S: a screen read can miss the spinner
+    (human-music, 2026-11-16: wait said idle mid-reply), while a killed pane's unfinished
+    reply or a stray write to an old session must not read busy. Right after a paste, or
+    with no box on screen, the database rule decides (messages since `since`). `lines`: a
+    capture of the pane just taken."""
     lines = _screen(pane) if lines is None else lines
     border = _box_border(lines)
     if _spinner(lines, border):
         return True
     paste = (q.get("task") or {}).get("paste_ts")
-    if border is not None and not (paste and time.time() - paste < PASTE_GRACE_S):
-        return False
     if sid is None:
         sid = session.opencode_session(q["worktree"], db)
+    if border is not None and not (paste and time.time() - paste < PASTE_GRACE_S):
+        last = session.opencode_mid_reply(sid, db)
+        return last is not None and time.time() - last < MID_REPLY_S and last >= _pane_started(pane)
     if sid is None and not since:
         return False  # no session yet and no paste to wait for
     return session.opencode_state(sid, db, since) == "busy"

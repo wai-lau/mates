@@ -305,6 +305,36 @@ def auto_continued(worktree, db, since):
     return bool(own) and all(own)
 
 
+def opencode_mid_reply(session, db):
+    """When OpenCode last wrote to `session` (epoch s) if its newest assistant message is
+    mid-reply, else None. Mid-reply: not completed (streaming, or waiting for the model), or
+    a step that ended in tool calls, so more steps come, unless it stopped on an error (an
+    Escape aborts with one). A compaction summary is not mid-reply: after an automatic one
+    OpenCode starts a new reply, after a /compact by hand none comes."""
+    if session is None or not Path(db).exists():
+        return None
+    with _ro(db) as con:
+        newest = None
+        for (raw,) in con.execute("SELECT data FROM message WHERE session_id = ? "
+                                  "ORDER BY time_created DESC, id DESC", (session,)):
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(data, dict) and data.get("role") == "assistant":
+                newest = data
+                break
+        if newest is None:
+            return None
+        if (newest.get("time") or {}).get("completed") and \
+                not (newest.get("finish") == "tool-calls" and not newest.get("error")):
+            return None
+        last = con.execute("SELECT max(t) FROM (SELECT max(time_updated) t FROM message WHERE session_id = ? "
+                           "UNION ALL SELECT max(time_updated) FROM part WHERE session_id = ?)",
+                           (session, session)).fetchone()[0]
+    return last / 1000 if last else None
+
+
 def opencode_chats(repo, db, day):
     """All OpenCode messages in this repo's worktrees for `day` (ISO date).
     Returns a list of (message_id, created_ms, data_json, parts) for each message.

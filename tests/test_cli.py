@@ -407,7 +407,9 @@ case $1 in
   list-panes) case "$*" in *window_width*) cat "$T/widths" 2>/dev/null ;; *) cat "$T/panes" 2>/dev/null ;; esac ;;
   split-window) [ -f "$T/noroom" ] && {{ echo "no space for new pane" >&2; exit 1; }}; cat "$T/split-id" ;;
   kill-pane) sed -i "/^$3\t/d" "$T/panes" ;;
-  display) case "$*" in *pane_width*) cat "$T/pane-width" 2>/dev/null || echo 80 40 ;; *) cat "$T/live" 2>/dev/null ;; esac ;;
+  display) case "$*" in *pane_width*) cat "$T/pane-width" 2>/dev/null || echo 80 40 ;;
+                        *pane_pid*) cat "$T/pane-pid" 2>/dev/null || echo 0 ;;
+                        *) cat "$T/live" 2>/dev/null ;; esac ;;
   capture-pane) cat "$T/capture" 2>/dev/null ;;
   load-buffer) {{ cat; printf '\\n<<END>>\\n'; }} >> "$T/buffers" ;;
   send-keys) [ -x "$T/on-enter" ] && "$T/on-enter" ;;
@@ -1163,14 +1165,29 @@ def _busy_pane(m):
     session.save(str(m.root), st)
 
 
+ABORT_PY = """import json, sqlite3, sys, time
+con = sqlite3.connect(sys.argv[1])
+now = int(time.time() * 1000)
+for mid, raw in con.execute("SELECT id, data FROM message").fetchall():
+    d = json.loads(raw)
+    if d.get("role") == "assistant" and not (d.get("time") or {}).get("completed"):
+        d.setdefault("time", {})["completed"] = now
+        d["error"] = {"name": "MessageAbortedError"}
+        con.execute("UPDATE message SET data = ?, time_updated = ? WHERE id = ?", (json.dumps(d), now, mid))
+con.commit()
+"""
+
+
 def _escapes(m, arm_after=0.0, armed=False):
     """OpenCode's interrupt, as the tmux stub's send-keys hook. The first Escape arms it: after
     `arm_after` s the footer says "esc again to interrupt". An Escape once it is armed stops the
-    reply (the idle footer). One pressed before the armed footer shows is lost: on a real pane a
-    second Escape 0.3 s after the first did not take (2026-11-16). `armed`: armed already."""
+    reply: the idle footer, and the unfinished reply ends with an abort error in the database.
+    One pressed before the armed footer shows is lost: on a real pane a second Escape 0.3 s
+    after the first did not take (2026-11-16). `armed`: armed already."""
     t = m.t
     (t / "screen-armed").write_text(_used_screen(EMPTY_BOX, SPIN_AGAIN))
     (t / "screen-idle").write_text(_used_screen(EMPTY_BOX, IDLE_FOOTER))
+    (t / "abort.py").write_text(ABORT_PY)
     if armed:
         (t / "armed").touch()
         shutil.copy(t / "screen-armed", t / "capture")
@@ -1178,7 +1195,9 @@ def _escapes(m, arm_after=0.0, armed=False):
     hook.write_text(f"""#!/bin/sh
 T='{t}'
 case "$(tail -1 "$T/tmux.log")" in *Escape) ;; *) exit 0 ;; esac
-if [ -f "$T/armed" ]; then cp "$T/screen-idle" "$T/capture.new" && mv "$T/capture.new" "$T/capture"
+if [ -f "$T/armed" ]; then
+  '{sys.executable}' "$T/abort.py" '{m.db}'
+  cp "$T/screen-idle" "$T/capture.new" && mv "$T/capture.new" "$T/capture"
 elif [ ! -f "$T/arming" ]; then
   touch "$T/arming"
   (sleep {arm_after}; cp "$T/screen-armed" "$T/capture.new" && mv "$T/capture.new" "$T/capture"; touch "$T/armed") >/dev/null 2>&1 &
@@ -3272,3 +3291,76 @@ def test_wait_reports_done_when_the_stop_fails(m, monkeypatch):
     lines = out.splitlines()
     assert lines[0] == "done: a.txt: fixed"
     assert len(lines) == 2 and lines[1].startswith("mates: Qwen pane 1 is still running")
+
+
+# --- idle needs the database to agree (human-music, 2026-11-16 ~23:40: `mates wait 1` and `mates
+# wait 2` each printed idle while both panes were mid-reply, tool calls still landing: with the
+# input box on screen and the paste grace over, screen reads that missed the spinner decided
+# alone). A spinner seen is still busy at once. Without one, a reply mid-step in the task's chat
+# (its newest assistant message unfinished, or a step that ended in tool calls) is busy, unless
+# the OpenCode now in the pane did not write it (a killed pane's reply: 04e32d6) or it has been
+# quiet for MID_REPLY_S.
+
+SPIN_CUT = ["   ⬝⬝⬝⬝■■■■  esc"]  # a narrow pane cuts the footer: "interrupt" is not on screen
+
+
+def _mid_step(m, footer=IDLE_FOOTER, ago=60, completed_ago=None, **reply):
+    """A task sent 10 minutes ago whose newest reply row is `reply` (written `ago` s ago), with
+    the screen showing `footer` under the input box."""
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 600
+    session.save(str(m.root), st)
+    t = time.time()
+    m.msg("ses_1", "user", t - ago - 10)  # the brief
+    m.msg("ses_1", "assistant", t - ago, completed_s=None if completed_ago is None else t - completed_ago, **reply)
+    _capture(m, _used_screen(EMPTY_BOX, footer))
+
+
+def _q1(m):
+    return m.state()["qwens"][0]
+
+
+@pytest.mark.parametrize("footer", [IDLE_FOOTER, SPIN_CUT])
+def test_no_spinner_and_a_step_that_ended_in_tool_calls_reads_busy(m, footer):
+    _mid_step(m, footer, completed_ago=40, finish="tool-calls")
+    assert cli.screen_busy("%1") is False and cli.busy(_q1(m), m.db, "%1") is True
+    assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
+
+
+def test_no_spinner_and_an_unfinished_reply_reads_busy(m):
+    _mid_step(m)  # streaming, or queued for the shared model slot
+    assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
+    code, _, err = m.run("check", 1, "--", "true")
+    assert code != 0 and "busy" in err
+
+
+def test_no_spinner_and_a_finished_reply_reads_idle(m):
+    _mid_step(m, completed_ago=40, finish="stop")
+    assert cli.busy(_q1(m), m.db, "%1") is False
+    assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_a_step_stopped_by_escape_reads_idle(m):
+    _mid_step(m, completed_ago=40, finish="tool-calls", error={"name": "MessageAbortedError"})
+    assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_a_reply_a_killed_pane_left_reads_idle(m):
+    """spire, 2026-11-12: a killed pane's unfinished reply made send refuse the fresh pane."""
+    _mid_step(m)
+    assert cli.busy(_q1(m), m.db, "%1") is True  # the pane's process start unknown: the reply may be live
+    proc = subprocess.Popen(["sleep", "60"])  # the pane's process, started after the reply's last write
+    try:
+        (m.t / "pane-pid").write_text(f"{proc.pid}\n")
+        assert cli.busy(_q1(m), m.db, "%1") is False
+        assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_reply_quiet_for_half_an_hour_reads_idle(m):
+    _mid_step(m, ago=cli.MID_REPLY_S + 60)
+    assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"

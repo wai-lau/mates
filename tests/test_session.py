@@ -459,3 +459,48 @@ def test_auto_continued_tells_opencode_from_people(tmp_path, parts, own):
     _user(db, "m1", "ses_a", now - 30, [{"type": "compaction", "auto": True}])
     _user(db, "m2", "ses_a", now - 20, parts)
     assert session.auto_continued("/w/1", p, now - 50) is own
+
+
+# --- mid-reply in the database (human-music, 2026-11-16 ~23:40: two `mates wait` printed idle
+# while both panes were mid-reply; the screen read missed the spinner and nothing asked the
+# database). The newest assistant message says whether more is coming.
+
+def _asst(db, mid, created_s, **data):
+    data = {"role": "assistant", "time": {"created": int(created_s * 1000)}, **data}
+    db.execute("INSERT INTO message VALUES (?, 's', ?, ?, ?)",
+               (mid, int(created_s * 1000), int(created_s * 1000), json.dumps(data)))
+    db.commit()
+
+
+@pytest.mark.parametrize(("data", "mid"), [
+    ({}, True),                                                    # streaming: not completed
+    ({"finish": "tool-calls", "completed": True}, True),           # a step ended in tool calls: more come
+    ({"finish": "stop", "completed": True}, False),
+    ({"completed": True}, False),                                  # completed with no finish
+    ({"finish": "tool-calls", "completed": True, "error": {"name": "MessageAbortedError"}}, False),  # Escape
+    ({"finish": "stop", "completed": True, "summary": True, "mode": "compaction"}, False),  # a /compact
+])
+def test_mid_reply_reads_the_newest_assistant_message(tmp_path, data, mid):
+    now = time.time()
+    p = tmp_path / "opencode.db"
+    db = _oc_db(p)
+    _asst(db, "m1", now - 60)  # an older one, never completed: only the newest counts
+    data = dict(data)
+    if data.pop("completed", False):
+        data["time"] = {"created": int((now - 10) * 1000), "completed": int((now - 5) * 1000)}
+    _asst(db, "m2", now - 10, **data)
+    _part(db, "p1", "m2", "s", now - 3)  # the session's last write
+    got = session.opencode_mid_reply("s", p)
+    assert (got == pytest.approx(now - 3, abs=0.01)) if mid else got is None
+
+
+def test_mid_reply_ignores_user_messages_and_missing_data(tmp_path):
+    now = time.time()
+    p = tmp_path / "opencode.db"
+    db = _oc_db(p)
+    assert session.opencode_mid_reply("s", p) is None  # no messages
+    _asst(db, "m1", now - 20, finish="stop", time={"created": 1, "completed": 2})
+    _msg(db, "m2", "s", now - 10, "user")  # sent, no reply row yet: the screen and paste grace decide
+    assert session.opencode_mid_reply("s", p) is None
+    assert session.opencode_mid_reply(None, p) is None
+    assert session.opencode_mid_reply("s", tmp_path / "missing.db") is None
