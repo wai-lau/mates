@@ -1,6 +1,7 @@
 """mates housekeeping: open and remove Qwen panes, list them, and read or add to the log.
 
-`add` and `remove` are the lead's (MATES_LEAD=1); `list` and `log` also run for Wai.
+`add` and `remove` are the lead's (MATES_LEAD=1 or a Claude session, CLAUDECODE=1); `list` and
+`log` also run for Wai.
 `remove` is the only command that drops an entry from the state.
 """
 import argparse

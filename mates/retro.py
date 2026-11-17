@@ -62,7 +62,7 @@ MERGE_MAX = 5  # merges one retro may make; the rest wait for the next day's ret
 LESSONS_REL = "mates/lead-lessons.md"
 NO_LESSONS = "None yet. The daily retro adds to this list.\n"
 LOG_HEADER = "## Log lines"
-CHAT_MAX = 300000  # characters of chat lines per day; past this, oldest Qwen lines go first
+CHAT_MAX = 300000  # characters of chat lines per day; past this, the oldest lines go first
 CHAT_PER_LINE = 2000  # each chat line is at most this many characters
 # What the retro may see of a log line: the lead's (or Wai's) words and the numbers.
 # `detail` is left out: it holds check output tails, which Qwen's code wrote.
@@ -210,9 +210,9 @@ def _names(recs):
     return {n.lower() for n in names if n.strip()}
 
 
-# The retro reads Qwen's chat text, and the lessons load into every lead's system prompt, so a
-# lesson that weakens review or runs something is refused whatever its wording (security
-# audit, 2026-11-13): it may be a prompt-injected Qwen's words echoed back.
+# The lessons load into every lead's system prompt, so a lesson that weakens review or runs
+# something is refused whatever its wording (security audit, 2026-11-13). The retro no longer
+# reads Qwen's replies (26a3b10), but a brief or a log line can still quote Qwen's words.
 UNSAFE_LESSON = re.compile(
     r"\b(curl|wget|sudo|chmod|chown|ssh|scp|eval|base64|nc|netcat)\b|\|\s*(ba)?sh\b|\brm\s+-\w*r"
     r"|\bskip\w*\s+(\w+\s+){0,3}(diff|check|review|tests?|guard|flags?)"
@@ -392,7 +392,7 @@ def _write(path, text):
 
 def _chat_prompt(day, chats):
     """The chat section of the retro prompt. CHAT_MAX caps the day's chat lines across all
-    repos together; past it, the oldest Qwen lines go first (lead and Wai lines stay)."""
+    repos together; past it, the oldest lines go first."""
     rows = []  # (time, repo, unused, json line), every repo
     for repo, lines in chats.items():
         for l in lines:

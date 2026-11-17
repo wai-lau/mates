@@ -2,10 +2,9 @@
 
 Guard flags tell the lead when it must read the full diff: a file the brief
 did not name, a test touched, a test skipped, an assertion removed, anything
-under .mates/, text that names a model (which would also leak authorship
-to the blind verifier), a hooks or `.git*` file (git could run it as Wai), or
-a manifest or lockfile the next launch rebuilds the runtime from (as Wai, with
-network), a file that runs or instructs a lead outside the sandbox once merged
+under .mates/, text that names a model (authorship), a hooks or `.git*` file (git could run
+it as Wai), a manifest or lockfile a `mates runtime` build reads (in the build
+sandbox, with registry-only network), a file that runs or instructs a lead outside the sandbox once merged
 (`owner-side`), a link, or an exec bit. `needs_ack` names the flags merge refuses
 until the lead acknowledges their kind.
 """

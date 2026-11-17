@@ -254,6 +254,9 @@ flowchart TD
 
 ![pane layout](../../arch/mates-layout.svg)
 
+(Superseded 2026-11-16: Qwen panes now stack in one column right of the lead, at Wai's
+request; see ARCHITECTURE.md, "The tmux layout and pane tags".)
+
 - The lead pane is pinned to 50% of the window width, on the left.
 - Workers tile the right half in a grid of `c` columns by `r` rows (`c·r ≥ N`).
 - Terminal cells are about twice as tall as wide. A 9:19.5 portrait phone

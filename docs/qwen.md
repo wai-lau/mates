@@ -97,7 +97,7 @@ Limits worth knowing:
   you the next time you run it outside the sandbox. Review diffs before running
   them.
 - **It runs as you, not as a separate user.** A kernel-level escape from bwrap
-  would land as `wai`. (The mates workers also switch to user `claude`.)
+  would land as `wai`. (mates panes run the same way: as `wai`, inside bwrap.)
 - **Other repos are invisible,** even a parent repo (for example `exec-fn` when
   you work in its `spire` submodule).
 

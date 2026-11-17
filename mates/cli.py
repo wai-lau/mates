@@ -4,7 +4,7 @@
 that starts the Qwen panes, saves the state and prints the lead's `claude` argv
 NUL-separated, which `bin/mates` runs as its child. The other subcommands are
 the lead's tools and refuse unless MATES_LEAD=1 or the caller is a Claude Code session
-(CLAUDECODE=1), except list, log and retro. `mates start` makes a Claude session that was
+(CLAUDECODE=1), except launch, list, log, retro and followers. `mates start` makes a Claude session that was
 started as plain `claude` the lead.
 """
 import argparse

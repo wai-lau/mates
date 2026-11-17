@@ -516,6 +516,7 @@ one line:
 | `failed` | qwen exited with an error | 0 |
 | `question: <text>` | `question.md` exists and two polls in a row read not busy | 0 |
 | `done: <text>` | `done.md` exists, same rule | 0 |
+| `done: <text>` or `question: <text>`, then a `mates:` line | the file exists, the pane is still replying, and every user message since the file was written is OpenCode's own (after an automatic compaction it sends itself an empty message and "Continue if you have next steps, ..."): wait stops the pane first (`stop_pane`) and says whether it stopped | 0 |
 | `idle` | no protocol file, and no reply running since the paste, two polls in a row | 0 |
 | `timeout` | past `--timeout` (default 1800 s) | 1 |
 
@@ -525,11 +526,17 @@ until-loop keeps waiting.
 One busy rule, `mates/cli.py:busy`, is shared by send, answer, check, wait,
 discard, runtime and the reaper:
 
-1. OpenCode's "esc interrupt" spinner in the footer under the input box means
-   busy (`_box_border`, `_spinner`; the footer lines are joined, since a narrow
-   pane wraps the spinner).
-2. With the input box on screen and mates' last paste over 30 s old, no
-   spinner means not busy (`PASTE_GRACE_S`).
+1. OpenCode's spinner in the footer under the input box means busy: "esc
+   interrupt", or "esc again to interrupt" once one Escape has armed the
+   interrupt (`_box_border`, `_spinner`; the footer lines are joined, since a
+   narrow pane wraps the spinner).
+2. With the input box on screen and mates' last paste over 30 s old
+   (`PASTE_GRACE_S`), no spinner means not busy unless the database shows the
+   chat mid-reply (`session.py:opencode_mid_reply`: the newest assistant message
+   is not completed, or ended a step in tool calls without an error), written by
+   the OpenCode now in the pane (after its process started) and within the last
+   30 min (`MID_REPLY_S`). A screen capture can miss the spinner between steps;
+   a killed pane's unfinished reply must not read busy.
 3. Otherwise OpenCode's database decides (`session.py:opencode_state`): idle if
    the newest message since the paste is a finished assistant reply that does
    not end in tool calls and is not a compaction; idle if nothing in the session
@@ -656,9 +663,11 @@ check and diff again. If writing fails halfway, Qwen's work is kept on a ref.
 ### Discard
 
 `mates discard N [--failed]` (`mates/cli.py:discard`) first stops a busy Qwen
-(`_stop_reply`): two Escapes, since OpenCode's first only arms the interrupt,
-then two not-busy readings within 20 s. If Qwen keeps replying, discard refuses
-and changes nothing. (A Qwen once kept editing a reset worktree for hours; see
+(`stop_pane`, shared with `wait`): one Escape, then a second once the footer
+says "esc again to interrupt" (OpenCode's first press only arms the interrupt,
+and a second press sent too soon is lost) or after 3 s, then up to 20 s for two
+not-busy readings in a row. If Qwen keeps replying, discard refuses and changes
+nothing. (A Qwen once kept editing a reset worktree for hours; see
 [`docs/bugs.md`](docs/bugs.md).) Then it keeps the work on
 `refs/mates/discarded/<n>-<time>` (`keep_work`), resets the worktree to the
 lead's HEAD, and logs the task as `escalated`, or `failed` with `--failed`.

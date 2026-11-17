@@ -48,7 +48,10 @@ busy, so it timed out after four hours with the work long done.
 
 - 8 Qwen rows logged `worker_tokens: 0` after 1,000-9,200 s of wall time
   (likely the OpenCode session id changed mid-task, e.g. after a pane restart,
-  so the count read an empty session).
+  so the count read an empty session). **Fixed (31eebdc):** tokens and
+  compactions are summed over every top-level session in the worktree.
+- `answered_by` records the model the server has loaded when the line is
+  logged, not necessarily the one that answered.
 - `claude-self` rows carry no lead tokens, so a takeover's cost is invisible.
 - Probe checks are logged inline (about 10K characters each); a file path plus
   its sha would do.
