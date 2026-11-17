@@ -3,6 +3,23 @@
 Open bugs in `mates` (the lead/Qwen pane launcher), newest first. A bug that gets
 fixed leaves this list; its fix commit says what changed.
 
+## 2026-11-16, from the mates lead
+
+### wait timed out on a finished task that OpenCode kept going
+
+**Fixed (2026-11-16):** with done.md or question.md written, `mates wait` stops the
+pane when every user message in the worktree's OpenCode chats since the file's mtime
+is OpenCode's own (no text, or exactly its continue line), then reports the file as
+usual, plus a `mates:` line saying it stopped the pane (or that the pane still runs).
+A lead's or Wai's message after the file keeps the old behaviour: wait for the reply.
+
+Qwen wrote `.mates/done.md` at 19:22. At 19:27 OpenCode compacted its context and,
+as after every automatic compaction, sent itself two user messages: an empty one,
+then "Continue if you have next steps, or stop and ask for clarification if you are
+unsure how to proceed." Qwen kept working for three hours (two more compactions,
+the same pair each time). `mates wait` reports done only once the pane stops being
+busy, so it timed out after four hours with the work long done.
+
 ## 2026-11-13, from the 11-12 retro
 
 ### The audit log can't compare Qwen's cost with Claude's
@@ -37,8 +54,14 @@ brief reached OpenCode as an ordinary text part.
 ### discard leaves a working Qwen running on the reset worktree
 
 **Fixed (2026-11-16):** discard presses Escape twice on a busy pane and waits up to
-DISCARD_STOP_S (20 s) for two not-busy readings; if Qwen keeps replying it refuses and
+STOP_S (20 s) for two not-busy readings; if Qwen keeps replying it refuses and
 changes nothing (restart the pane with `mates remove N`, then `mates add`).
+
+**Second press fixed (2026-11-16):** on a real pane the second Escape, sent 0.3 s
+after the first, did not take, and the footer the first leaves ("esc again to
+interrupt") read as idle. Busy now reads that footer as busy, and the one stop
+(`stop_pane`, used by discard and wait) presses again only once it shows (or after
+STOP_ARM_S, 3 s).
 
 `mates discard N` resets the worktree to the lead's HEAD but does not stop
 OpenCode. A Qwen still in its turn goes on editing the reset tree from its old

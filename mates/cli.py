@@ -520,7 +520,10 @@ def shown(text):
 # opening quote of the example is part of the rule, so chat text that merely says
 # "Ask anything..." does not count as an empty box.
 INPUT_EMPTY = re.compile(r'Ask anything(…|\.\.\.) "')
-ESCAPE_INTERRUPT = re.compile(r'esc\s+interrupt')
+# The footer while a reply runs: "esc interrupt", then "esc again to interrupt" once one Escape
+# has armed the interrupt (the reply goes on until a second press).
+ESCAPE_INTERRUPT = re.compile(r'esc\s+(?:again\s+to\s+)?interrupt')
+ESCAPE_AGAIN = re.compile(r'esc\s+again\s+to\s+interrupt')
 PROTOCOL = ("done.md", "question.md")
 
 
@@ -619,27 +622,34 @@ def _box_border(lines):
     return max((i for i, line in enumerate(lines) if line.lstrip().startswith("╹▀")), default=None)
 
 
+def _footer(lines, border):
+    """The footer under the input box, its lines joined: in a narrow pane the spinner wraps
+    across two. Only the footer counts, so chat text that quotes the words does not."""
+    return " ".join(lines[border + 1:] if border is not None else lines[-3:])
+
+
 def _spinner(lines, border):
-    """OpenCode's "esc interrupt" spinner in the footer under the input box. Only the footer
-    counts, so chat text that quotes the words does not; the lines are joined, because in a
-    narrow pane the spinner wraps across two."""
-    footer = lines[border + 1:] if border is not None else lines[-3:]
-    return bool(ESCAPE_INTERRUPT.search(" ".join(footer)))
+    """OpenCode's spinner footer ("esc interrupt", or "esc again to interrupt" once armed)."""
+    return bool(ESCAPE_INTERRUPT.search(_footer(lines, border)))
+
+
+def _screen(pane):
+    return _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
 
 
 def screen_busy(pane):
     """True when the spinner shows: OpenCode is working whatever the database says."""
-    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
+    lines = _screen(pane)
     return _spinner(lines, _box_border(lines))
 
 
-def busy(q, db, pane, since=0, sid=None):
+def busy(q, db, pane, since=0, sid=None, lines=None):
     """The one busy rule (send, answer, check, wait). A readable screen decides: with the
     input box on screen and mates' last paste over PASTE_GRACE_S old, busy means the
     spinner shows, so a killed pane's unfinished reply or a stray write to an old session
     no longer reads busy. Right after a paste, or with no box on screen, the database rule
-    counts too (messages since `since`)."""
-    lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
+    counts too (messages since `since`). `lines`: a capture of the pane just taken."""
+    lines = _screen(pane) if lines is None else lines
     border = _box_border(lines)
     if _spinner(lines, border):
         return True
@@ -712,6 +722,12 @@ def _mates_fd(wt, create=False):
 
 def read_protocol(wt, name):
     """The text of `.mates/<name>` (cut at TEXT_MAX), or None if there is none."""
+    hit = read_protocol_file(wt, name)
+    return None if hit is None else hit[0]
+
+
+def read_protocol_file(wt, name):
+    """(text, mtime) of `.mates/<name>` (text cut at TEXT_MAX), or None if there is none."""
     d = _mates_fd(wt)
     if d is None:
         return None
@@ -723,14 +739,15 @@ def read_protocol(wt, name):
         except OSError as e:
             raise Unsafe(f".mates/{name} cannot be read safely ({e.strerror})") from e
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
                 raise Unsafe(f".mates/{name} is not a plain file")
             data = os.read(fd, TEXT_MAX * 4)
         finally:
             os.close(fd)
     finally:
         os.close(d)
-    return data.decode("utf-8", "replace").strip()[:TEXT_MAX]
+    return data.decode("utf-8", "replace").strip()[:TEXT_MAX], st.st_mtime
 
 
 def clear_protocol(wt):
@@ -1015,12 +1032,27 @@ def wait(args):
         # A protocol file counts once OpenCode is not replying right now (check's busy rule):
         # Qwen writes done.md and then keeps replying for a while, and check refuses meanwhile.
         # Without one, idle means no reply is running since the paste.
-        found = [(word, text) for name, word in (("question.md", "question"), ("done.md", "done"))
-                 if (text := _unsafe(read_protocol, q["worktree"], name)) is not None]
+        found = [(word, name, *f) for name, word in (("question.md", "question"), ("done.md", "done"))
+                 if (f := _unsafe(read_protocol_file, q["worktree"], name)) is not None]
         still = busy(q, db, hit[0]) if found else busy(q, db, hit[0], since, sid)
+        # Still replying after it, and only OpenCode spoke since (docs/bugs.md, 2026-11-16: after
+        # an automatic compaction it continues Qwen itself, and one ran on for three hours with
+        # its done.md written): stop the reply and report the file. A lead's or Wai's message
+        # since means Qwen is working on that, so wait on.
+        if found and still and _qwen_live(hit[0]) and session.auto_continued(q["worktree"], db, found[0][3]):
+            word, name, text, _ = found[0]
+            ok = stop_pane(q, db, hit[0])  # first: the lead may run check the moment it reads the result
+            print(f"{word}: {shown(text)}")
+            if ok:
+                print(f"mates: stopped Qwen pane {a.n}: it was replying after its {name} only because "
+                      f"OpenCode continued it after compacting its context")
+            else:
+                print(f"mates: Qwen pane {a.n} is still running: OpenCode continued it after compacting "
+                      f"its context, past its {name}, and two Escapes did not stop it")
+            return 0
         stopped = 0 if still else stopped + 1
         if stopped >= 2:
-            print(f"{found[0][0]}: {shown(found[0][1])}" if found else "idle")
+            print(f"{found[0][0]}: {shown(found[0][2])}" if found else "idle")
             return 0
         if time.time() >= deadline:
             print("timeout")
@@ -1359,33 +1391,53 @@ def keep_work(root, n, task, why="discarded"):
     return ref
 
 
-DISCARD_STOP_S = 20  # after two Escapes, how long discard waits for OpenCode to stop replying
+STOP_ARM_S = 3.0  # after the first Escape, how long to wait for "esc again to interrupt"
+STOP_S = 20  # after that, how long to wait for OpenCode to stop replying
+STOP_POLL_S = 0.25
+
+
+def _qwen_live(pane):
+    return _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() == "1"
+
+
+def stop_pane(q, db, pane):
+    """Stop the reply running in `pane` (discard, and wait after OpenCode's own continue);
+    True once it reads not busy twice in a row. OpenCode needs two Escapes: the first only
+    arms the interrupt (the footer then says "esc again to interrupt"), and a second press
+    0.3 s after the first did not take on a real pane. So the second goes in once that footer
+    shows, or after STOP_ARM_S, and only while the pane still reads busy (one press is
+    enough when it was armed already); then up to STOP_S for the reply to stop."""
+    _tmux_out("send-keys", "-t", pane, "Escape")
+    second, quiet = time.time() + STOP_ARM_S, 0
+    end = second + STOP_S
+    while time.time() < end:
+        lines = _screen(pane)
+        if not busy(q, db, pane, lines=lines):
+            quiet += 1
+            if quiet >= 2:
+                return True
+        else:
+            quiet = 0
+            if second and (ESCAPE_AGAIN.search(_footer(lines, _box_border(lines))) or time.time() >= second):
+                _tmux_out("send-keys", "-t", pane, "Escape")
+                second = None
+        time.sleep(STOP_POLL_S)
+    return False
 
 
 def _stop_reply(root, state, q, n):
     """Stop a busy Qwen before its worktree is reset (docs/bugs.md: one kept editing the reset
-    tree for hours): two Escapes, since OpenCode's first only arms the interrupt, then two
-    not-busy readings in a row. Dies, changing nothing, if it keeps replying."""
+    tree for hours). Dies, changing nothing, if it keeps replying."""
     hit = _find(root, state, q)
     if hit is None or hit[1] == "failed":
         return
     pane = hit[0]
-    if _tmux_out("display", "-p", "-t", pane, "#{" + QWEN_LIVE + "}").strip() != "1":
+    if not _qwen_live(pane):
         return
     db = _db(root)
-    if not busy(q, db, pane):
-        return
-    for _ in range(2):
-        _tmux_out("send-keys", "-t", pane, "Escape")
-        time.sleep(0.3)
-    end, quiet = time.time() + DISCARD_STOP_S, 0
-    while time.time() < end:
-        quiet = 0 if busy(q, db, pane) else quiet + 1
-        if quiet >= 2:
-            return
-        time.sleep(0.5)
-    die(f"Qwen pane {n} is still replying after two Escapes; restart it (mates remove {n}, then "
-        f"mates add) before discarding")
+    if busy(q, db, pane) and not stop_pane(q, db, pane):
+        die(f"Qwen pane {n} is still replying after two Escapes; restart it (mates remove {n}, then "
+            f"mates add) before discarding")
 
 
 def discard(args):

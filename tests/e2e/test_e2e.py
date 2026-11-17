@@ -142,6 +142,26 @@ def test_input_box_guard(w):
     w.mates("send", 1, "--reason", "e2e", "task")
 
 
+def test_wait_stops_a_qwen_only_opencode_kept_going(w):
+    """docs/bugs.md, 2026-11-16: done.md, then OpenCode compacted and continued Qwen itself;
+    wait reports done and stops the pane instead of waiting hours for it."""
+    w.add()
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Make a.txt say b. FAKE:continue")
+    out = w.mates("wait", 1, "--timeout", "60").stdout.splitlines()
+    assert out[0] == "done: a.txt: b" and out[-1].startswith("mates: stopped Qwen pane 1")
+    w.until(lambda: "interrupt" not in w.screen())
+    assert "check exit 0" in w.mates("check", 1, "--", "grep -qx b a.txt").stdout
+
+
+def test_discard_stops_a_reply_with_two_escapes(w):
+    """OpenCode's second Escape takes only once the first has armed the interrupt."""
+    w.add()
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Work forever. FAKE:hang")
+    w.until(lambda: "esc interrupt" in w.screen())
+    w.mates("discard", 1)
+    assert "interrupt" not in w.screen()
+
+
 def test_killed_pane_reads_dead(w):
     w.add()
     w.tmux("kill-pane", "-t", w.pane())

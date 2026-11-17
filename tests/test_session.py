@@ -384,3 +384,78 @@ def test_compaction_is_not_a_finished_reply(tmp_path):
                ("m2", "s", int((now - 10) * 1000), int((now - 5) * 1000), json.dumps(data)))
     db.commit()
     assert session.opencode_state("s", p, now - 30) == "busy"
+
+
+# --- OpenCode's own user messages (docs/bugs.md, 2026-11-16: Qwen wrote done.md, then OpenCode
+# compacted its context and continued it with two user messages of its own, an empty one and
+# its continue line; Qwen worked on for three hours and `mates wait` timed out).
+
+CONTINUE = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+
+
+def _user(db, mid, sid, created_s, parts):
+    _msg(db, mid, sid, created_s, "user")
+    for i, part in enumerate(parts):
+        db.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                   (f"{mid}-{i}", mid, sid, int(created_s * 1000), int(created_s * 1000),
+                    part if isinstance(part, str) else json.dumps(part)))
+    db.commit()
+
+
+def _compacted(tmp_path):
+    """/w/1 got the lead's brief, then (after `since`) OpenCode's compaction request and
+    continue line, with a compaction summary between."""
+    now = time.time()
+    p = tmp_path / "opencode.db"
+    db = _oc_db(p)
+    _ses(db, "ses_a", "/w/1", 1000)
+    _user(db, "m1", "ses_a", now - 100, [{"type": "text", "text": "[from Claude] fix a.txt"}])
+    _user(db, "m2", "ses_a", now - 40, [{"type": "compaction", "auto": True}])
+    _msg(db, "m3", "ses_a", now - 39, "assistant", completed_s=now - 35, finish="stop")
+    _user(db, "m4", "ses_a", now - 30, [{"type": "text", "text": CONTINUE, "synthetic": True}])
+    return now, p, db
+
+
+def test_auto_continued_after_a_compaction(tmp_path):
+    now, p, db = _compacted(tmp_path)
+    assert session.auto_continued("/w/1", p, now - 50) is True
+    assert session.auto_continued("/w/1", p, now - 200) is False   # the lead's brief is real
+    assert session.auto_continued("/w/1", p, now) is False         # nothing since: Qwen is finishing its reply
+    assert session.auto_continued("/w/2", p, now - 50) is False
+    assert session.auto_continued("/w/1", tmp_path / "missing.db", now - 50) is False
+    # a subagent's prompt and another worktree's chat are not messages to this Qwen
+    _ses(db, "ses_child", "/w/1", 2000, parent="ses_a")
+    _user(db, "c1", "ses_child", now - 20, [{"type": "text", "text": "Search the code for add()"}])
+    _ses(db, "ses_x", "/w/2", 2000)
+    _user(db, "x1", "ses_x", now - 20, [{"type": "text", "text": "[from Claude] other"}])
+    assert session.auto_continued("/w/1", p, now - 50) is True
+    # a message in another top-level chat in the same worktree (a /new by hand) is real
+    _ses(db, "ses_b", "/w/1", 3000)
+    _user(db, "b1", "ses_b", now - 10, [{"type": "text", "text": "and the README too"}])
+    assert session.auto_continued("/w/1", p, now - 50) is False
+
+
+@pytest.mark.parametrize(("parts", "own"), [
+    ([], True),                                                       # empty
+    ([{"type": "compaction", "auto": True}], True),                   # OpenCode's compaction request
+    ([{"type": "text", "text": ""}], True),
+    ([{"type": "text", "text": CONTINUE, "synthetic": True}], True),  # its continue line
+    ([{"type": "text", "text": "\n" + CONTINUE + "  "}], True),
+    ([{"type": "text", "text": "[from Claude] also fix b.txt"}], False),   # a lead's message
+    ([{"type": "text", "text": "stop, you are done"}], False),             # Wai typing
+    ([{"type": "text", "text": "Continue"}], False),
+    ([{"type": "text", "text": CONTINUE}, {"type": "text", "text": "and fix b.txt"}], False),
+    ([{"type": "file", "mime": "image/png", "url": "data:"}], False),      # a pasted image, no text
+    ([{"type": "text", "text": CONTINUE}, {"type": "file", "mime": "text/plain"}], False),
+    ([{"type": "agent", "name": "build"}], False),
+    ([{"type": "subtask", "prompt": "x"}], False),
+    (["not json"], False),
+])
+def test_auto_continued_tells_opencode_from_people(tmp_path, parts, own):
+    now = time.time()
+    p = tmp_path / "opencode.db"
+    db = _oc_db(p)
+    _ses(db, "ses_a", "/w/1", 1000)
+    _user(db, "m1", "ses_a", now - 30, [{"type": "compaction", "auto": True}])
+    _user(db, "m2", "ses_a", now - 20, parts)
+    assert session.auto_continued("/w/1", p, now - 50) is own

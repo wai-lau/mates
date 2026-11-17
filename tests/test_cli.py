@@ -477,8 +477,10 @@ esac
         con.commit()
         con.close()
 
-    def msg(self, sid, role, created_s, completed_s=None, finish=None, tokens=None):
-        data = {"role": role, "time": {"created": int(created_s * 1000)}}
+    def msg(self, sid, role, created_s, completed_s=None, finish=None, tokens=None, parts=None, **extra):
+        """A message row; a user message gets a text part (a lead's brief) unless `parts` says
+        otherwise: OpenCode's own user messages have no text or only its continue line."""
+        data = {"role": role, "time": {"created": int(created_s * 1000)}, **extra}
         if tokens:
             data["tokens"] = {"input": tokens[0], "output": tokens[1], "reasoning": 0,
                               "cache": {"read": 7, "write": 0}}
@@ -486,10 +488,16 @@ esac
             data["time"]["completed"] = int(completed_s * 1000)
         if finish:
             data["finish"] = finish
+        if parts is None:
+            parts = [{"type": "text", "text": "[from Claude] fix a.txt"}] if role == "user" else []
         up = int((completed_s or created_s) * 1000)
+        mid = uuid.uuid4().hex
         con = sqlite3.connect(self.db)
         con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)",
-                    (uuid.uuid4().hex, sid, int(created_s * 1000), up, json.dumps(data)))
+                    (mid, sid, int(created_s * 1000), up, json.dumps(data)))
+        for part in parts:
+            con.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+                        (uuid.uuid4().hex, mid, sid, int(created_s * 1000), int(created_s * 1000), json.dumps(part)))
         con.commit()
         con.close()
 
@@ -1150,28 +1158,87 @@ def test_discard_keeps_snapshot_ref(m):
 def _busy_pane(m):
     m.send()
     (m.t / "capture").write_text(_used_screen(EMPTY_BOX, SPIN_FOOTER))
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 600
+    session.save(str(m.root), st)
+
+
+def _escapes(m, arm_after=0.0, armed=False):
+    """OpenCode's interrupt, as the tmux stub's send-keys hook. The first Escape arms it: after
+    `arm_after` s the footer says "esc again to interrupt". An Escape once it is armed stops the
+    reply (the idle footer). One pressed before the armed footer shows is lost: on a real pane a
+    second Escape 0.3 s after the first did not take (2026-11-16). `armed`: armed already."""
+    t = m.t
+    (t / "screen-armed").write_text(_used_screen(EMPTY_BOX, SPIN_AGAIN))
+    (t / "screen-idle").write_text(_used_screen(EMPTY_BOX, IDLE_FOOTER))
+    if armed:
+        (t / "armed").touch()
+        shutil.copy(t / "screen-armed", t / "capture")
+    hook = t / "on-enter"
+    hook.write_text(f"""#!/bin/sh
+T='{t}'
+case "$(tail -1 "$T/tmux.log")" in *Escape) ;; *) exit 0 ;; esac
+if [ -f "$T/armed" ]; then cp "$T/screen-idle" "$T/capture.new" && mv "$T/capture.new" "$T/capture"
+elif [ ! -f "$T/arming" ]; then
+  touch "$T/arming"
+  (sleep {arm_after}; cp "$T/screen-armed" "$T/capture.new" && mv "$T/capture.new" "$T/capture"; touch "$T/armed") >/dev/null 2>&1 &
+fi
+exit 0
+""")
+    hook.chmod(0o755)
+
+
+def _escape_presses(m):
+    return len([c for c in m.tmux_calls() if c == "send-keys -t %1 Escape"])
+
+
+def _stopped(m):
+    return (m.t / "capture").read_text() == (m.t / "screen-idle").read_text()
 
 
 def test_discard_stops_a_busy_pane_first(m):
     _busy_pane(m)
-    hook = m.t / "on-enter"  # tmux send-keys: once both Escapes are in, the spinner goes
-    hook.write_text(f"""#!/bin/sh
-[ "$(grep -c 'send-keys -t %1 Escape' '{m.t}/tmux.log')" -ge 2 ] && printf '%s' '{_used_screen(EMPTY_BOX, IDLE_FOOTER)}' > '{m.t}/capture'
-exit 0
-""")
-    hook.chmod(0o755)
-    st = m.state()
-    st["qwens"][0]["task"]["paste_ts"] = time.time() - 600
-    session.save(str(m.root), st)
+    _escapes(m)
     (m.wt / "a.txt").write_text("half done\n")
     code, out, err = m.run("discard", 1)
     assert code == 0, err
-    assert len([c for c in m.tmux_calls() if c == "send-keys -t %1 Escape"]) == 2
+    assert _escape_presses(m) == 2 and _stopped(m)
     assert (m.wt / "a.txt").read_text() == "a\n" and m.task() is None
 
 
+def test_stop_presses_again_only_once_the_interrupt_is_armed(m):
+    """The fixed 0.3 s gap lost the second press on a real pane; the stop waits for "esc again
+    to interrupt" before pressing again."""
+    _busy_pane(m)
+    _escapes(m, arm_after=0.6)
+    code, _, err = m.run("discard", 1)
+    assert code == 0, err
+    assert _escape_presses(m) == 2 and _stopped(m)
+
+
+def test_stop_needs_one_press_when_the_interrupt_is_armed_already(m):
+    _busy_pane(m)
+    _escapes(m, armed=True)  # someone pressed Escape once already
+    code, _, err = m.run("discard", 1)
+    assert code == 0, err
+    assert _escape_presses(m) == 1 and _stopped(m)
+
+
+def test_busy_reads_the_armed_footer_as_busy(m):
+    """After the first Escape OpenCode's footer says "esc again to interrupt" while the reply
+    goes on; the spinner rule matched only "esc interrupt", so the pane read idle."""
+    m.ses("ses_1", updated_s=time.time() - 50)
+    m.msg("ses_1", "assistant", time.time() - 60, completed_s=time.time() - 50, finish="stop")
+    for footer in (SPIN_AGAIN, SPIN_AGAIN_WRAPPED):
+        _capture(m, _used_screen(EMPTY_BOX, footer))
+        assert cli.screen_busy("%1") is True
+        code, _, err = m.run("send", 1, "--reason", "r", "--continue", "task")
+        assert code != 0 and "busy" in err and m.buffers() == []
+
+
 def test_discard_refuses_a_pane_that_keeps_replying(m, monkeypatch):
-    monkeypatch.setattr(cli, "DISCARD_STOP_S", 0.5)
+    monkeypatch.setattr(cli, "STOP_S", 0.5, raising=False)
+    monkeypatch.setattr(cli, "STOP_ARM_S", 0.3, raising=False)
     _busy_pane(m)
     (m.wt / "a.txt").write_text("half done\n")
     code, _, err = m.run("discard", 1)
@@ -2082,6 +2149,9 @@ IDLE_FOOTER = ["   /home/u/src/x/.claude/     37.9K (5 ctrl+p",
                "   worktrees/mates-qwen-1                          commands"]
 SPIN_FOOTER = ["   ⬝⬝⬝⬝■■■■  esc interrupt       35.3K (54%)  ctrl+p commands"]
 SPIN_WRAPPED = ["   ⬝⬝⬝⬝■■■■  esc", "   interrupt       35.3K (54%)  ctrl+p", "   commands"]
+# after one Escape: the interrupt is armed and the reply goes on
+SPIN_AGAIN = ["   ⬝⬝⬝⬝■■■■  esc again to interrupt   35.3K (54%)  ctrl+p commands"]
+SPIN_AGAIN_WRAPPED = ["   ⬝⬝⬝⬝■■■■  esc again", "   to interrupt    35.3K (54%)", "   ctrl+p commands"]
 EMPTY_BOX = ["  ┃", "  ┃", "  ┃"]
 
 
@@ -3108,3 +3178,97 @@ def test_send_check_sees_the_proofs(m):
     (m.root / ".mates" / "proofs").mkdir(parents=True)
     code, out, err = _send_check(m, 'test -z "$QWEN_PROOFS"')  # red on base only when it is set
     assert code == 0 and "red on base" in out, err
+
+
+# --- wait stops a Qwen that only OpenCode kept going (docs/bugs.md, 2026-11-16: Qwen wrote done.md
+# at 19:22; at 19:27 OpenCode compacted its context and, as after every automatic compaction, sent
+# itself an empty user message and then its continue line. Qwen worked on for three hours, and
+# `mates wait` timed out after four with the work long done).
+
+OPENCODE_CONTINUE = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+
+
+def _replying_after(m, name="done.md", text="a.txt: fixed\n"):
+    """The task's chat: the lead's brief, then Qwen's protocol file (5 minutes ago), and the
+    reply still running with the spinner up. Returns now."""
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 600
+    session.save(str(m.root), st)
+    t = time.time()
+    m.msg("ses_1", "user", t - 590)  # the brief
+    m.msg("ses_1", "assistant", t - 589, completed_s=t - 400, finish="tool-calls")
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    f = m.wt / ".mates" / name
+    f.write_text(text)
+    os.utime(f, (t - 300, t - 300))
+    m.msg("ses_1", "assistant", t - 299)  # the turn that wrote it, still running
+    _capture(m, _used_screen(EMPTY_BOX, SPIN_FOOTER))
+    return t
+
+
+def _continued_after(m, name="done.md", text="a.txt: fixed\n"):
+    """... then OpenCode compacts and continues Qwen with its own two user messages."""
+    t = _replying_after(m, name, text)
+    m.msg("ses_1", "user", t - 240, parts=[{"type": "compaction", "auto": True}])
+    m.msg("ses_1", "assistant", t - 239, completed_s=t - 200, finish="stop", mode="compaction",
+          agent="compaction", summary=True)
+    m.msg("ses_1", "user", t - 199, parts=[{"type": "text", "text": OPENCODE_CONTINUE, "synthetic": True}])
+    m.msg("ses_1", "assistant", t - 198)  # Qwen works on
+    return t
+
+
+@pytest.mark.parametrize(("name", "word", "text"), [("done.md", "done", "a.txt: fixed\n"),
+                                                    ("question.md", "question", "Which function?\n")])
+def test_wait_stops_a_pane_only_opencode_kept_going(m, name, word, text):
+    _continued_after(m, name, text)
+    _escapes(m)
+    code, out, err = m.run("wait", 1, "--timeout", "5")
+    assert code == 0, err
+    lines = out.splitlines()
+    assert lines[0] == f"{word}: {text.strip()}"
+    assert len(lines) == 2 and lines[1].startswith("mates: stopped Qwen pane 1") and "compact" in lines[1]
+    assert _escape_presses(m) == 2 and _stopped(m)
+
+
+@pytest.mark.parametrize("parts", [
+    [{"type": "text", "text": "[from Claude] also fix b.txt"}],  # a lead's message
+    [{"type": "text", "text": "Wai typed this to Qwen"}],         # Wai's own
+    [{"type": "file", "mime": "image/png", "url": "data:x"}],     # a pasted image, no text
+])
+def test_wait_keeps_waiting_after_a_real_message(m, parts):
+    t = _continued_after(m)
+    m.msg("ses_1", "user", t - 100, parts=parts)
+    m.msg("ses_1", "assistant", t - 99)
+    _escapes(m)
+    code, out, err = m.run("wait", 1, "--timeout", "0.5")
+    assert (code, out) == (1, "timeout\n") and _escape_presses(m) == 0
+    assert "Wai typed" not in out + err  # a message's text is only classified, never printed
+
+
+def test_wait_keeps_waiting_while_qwen_finishes_its_reply(m):
+    """done.md and no user message since: Qwen is still in the turn that wrote it."""
+    _replying_after(m)
+    _escapes(m)
+    code, out, _ = m.run("wait", 1, "--timeout", "0.5")
+    assert (code, out) == (1, "timeout\n") and _escape_presses(m) == 0
+
+
+def test_wait_presses_nothing_into_a_pane_without_qwen(m):
+    _continued_after(m)
+    _escapes(m)
+    m.live(False)
+    code, out, _ = m.run("wait", 1, "--timeout", "0.5")
+    assert (code, out) == (1, "timeout\n") and _escape_presses(m) == 0
+
+
+def test_wait_reports_done_when_the_stop_fails(m, monkeypatch):
+    monkeypatch.setattr(cli, "STOP_S", 0.5, raising=False)
+    monkeypatch.setattr(cli, "STOP_ARM_S", 0.3, raising=False)
+    _continued_after(m)  # nothing stops the reply
+    code, out, err = m.run("wait", 1, "--timeout", "5")
+    assert code == 0, err
+    lines = out.splitlines()
+    assert lines[0] == "done: a.txt: fixed"
+    assert len(lines) == 2 and lines[1].startswith("mates: Qwen pane 1 is still running")

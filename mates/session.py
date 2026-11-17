@@ -262,6 +262,49 @@ def opencode_state(session, db, since):
     return "busy"
 
 
+# After an automatic compaction OpenCode sends itself two user messages: an empty one (only a
+# "compaction" part) that asks for the summary, then this line as a synthetic text part.
+OPENCODE_CONTINUE = "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+PEOPLE_PARTS = ("file", "agent", "subtask")  # parts only a person's message has (attachments, @mentions)
+
+
+def _opencode_own(parts):
+    """True for a user message OpenCode wrote itself: no text (its compaction request), or
+    exactly its continue line. A part that will not parse, or an attachment, is a person's."""
+    try:
+        parts = [json.loads(p) for p in parts]
+    except ValueError:
+        return False
+    if not all(isinstance(p, dict) for p in parts) or any(p.get("type") in PEOPLE_PARTS for p in parts):
+        return False
+    text = "".join(str(p.get("text") or "") for p in parts if p.get("type") == "text").strip()
+    return text in ("", OPENCODE_CONTINUE)
+
+
+def auto_continued(worktree, db, since):
+    """True when there are user messages in `worktree`'s top-level OpenCode sessions from
+    `since` (epoch s) on, and OpenCode sent every one itself (_opencode_own): Qwen is
+    replying only because OpenCode continued it after compacting. A message from a lead or
+    from Wai makes it False. Message text is only compared with OpenCode's line, never
+    returned. Subagent sessions do not count: their prompts come from Qwen."""
+    if not Path(db).exists():
+        return False
+    own = []
+    with _ro(db) as con:
+        rows = con.execute("SELECT m.id, m.data FROM session s JOIN message m ON m.session_id = s.id "
+                           "WHERE s.directory = ? AND s.parent_id IS NULL AND m.time_created >= ?",
+                           (str(worktree), int(since * 1000))).fetchall()
+        for mid, raw in rows:
+            try:
+                role = json.loads(raw).get("role")
+            except (ValueError, AttributeError):
+                return False
+            if role == "user":
+                parts = [p for (p,) in con.execute("SELECT data FROM part WHERE message_id = ?", (mid,))]
+                own.append(_opencode_own(parts))
+    return bool(own) and all(own)
+
+
 def opencode_chats(repo, db, day):
     """All OpenCode messages in this repo's worktrees for `day` (ISO date).
     Returns a list of (message_id, created_ms, data_json, parts) for each message.
