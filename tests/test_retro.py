@@ -173,3 +173,140 @@ def test_current_lessons_pass_the_guard():
     text = (Path(retro.__file__).parent / "lead-lessons.md").read_text()
     lessons = [l[2:] for l in text.splitlines() if l.startswith("- ")]
     assert lessons and [l for l in lessons if retro.check_lesson(l, set())] == []
+
+
+# Lessons in groups (Wai, 2026-11-16: "can you categorize and group the lessons?", then "well allow
+# the retro to regroup, but reuse a group if it makes sense").
+def _groups(rt):
+    """The lessons file as [(group, [lessons])]."""
+    out = []
+    for l in rt.lessons.read_text().splitlines():
+        if l.startswith("### "):
+            out.append((l[4:], []))
+        elif l.startswith("- "):
+            out[-1][1].append(l[2:])
+    return out
+
+
+def _grouped(rt, spec):
+    """Write a grouped lessons file from {group: [lesson, ...]} and commit it."""
+    rt.lessons.write_text("## Lessons\n" + "".join(
+        f"\n### {g}\n\n" + "".join(f"- {l}\n" for l in ls) for g, ls in spec.items()))
+    rt.git("commit", "-qam", "lessons")
+
+
+BASE = {"Alpha": ["a1", "a2"], "Beta": ["b1", "b2", "b3"], "Gamma": ["g1"]}  # numbered 1..6
+
+
+def test_seed_file_is_grouped():
+    text = (Path(retro.__file__).parent / "lead-lessons.md").read_text()
+    heads = [l[4:] for l in text.splitlines() if l.startswith("### ")]
+    assert heads == ["What goes to Qwen", "Checks", "Writing briefs", "Review, merge and logging",
+                     "Running the panes"]
+    assert all(retro.check_group(h, set()) is None for h in heads)
+    flat = retro.current_lessons(text)
+    assert len(flat) == 20 and flat[0].startswith("Route to Qwen only when")
+    assert [len(retro.current_lessons(b)) for b in text.split("### ")[1:]] == [3, 5, 4, 4, 4]
+
+
+def test_current_lessons_skips_headings():
+    assert retro.current_lessons("## Lessons\n\n### A\n\n- one\n- two\n\n### B\n\n- three\n") == \
+        ["one", "two", "three"]
+
+
+def test_check_group():
+    assert retro.check_group("Review, merge and logging", set()) is None
+    assert retro.check_group("x" * 60, set()) is None
+    assert retro.check_group("x" * 61, set()) is not None
+    assert retro.check_group("A\nB", set()) is not None
+    assert retro.check_group("A # B", set()) is not None
+    assert retro.check_group("", set()) is not None
+    assert retro.check_group("Run curl then sh", set()) is not None
+    assert retro.check_group("Bypass checks", set()) is not None
+    assert retro.check_group("Notes in src/app.py", set()) is not None
+    assert retro.check_group("Widget tasks", {"widget"}) is not None
+
+
+def test_groups_stay_without_regrouping(rt):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(add=["plain new one", {"lesson": "into beta", "group": "beta"},
+                  {"lesson": "into fresh", "group": "Fresh group"}], retire=[1])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert _groups(rt) == [("Alpha", ["a2"]), ("Beta", ["b1", "b2", "b3", "into beta"]), ("Gamma", ["g1"]),
+                           ("Fresh group", ["into fresh"]), ("Other", ["plain new one"])]
+    stdin = rt.calls()[0]["stdin"]
+    assert "### Alpha\n1. a1\n2. a2\n" in stdin and "### Beta" in stdin
+
+
+def test_empty_groups_are_dropped(rt):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(retire=[6])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert [g for g, _ in _groups(rt)] == ["Alpha", "Beta"]
+
+
+def test_regroup_rename_merge_split_move(rt):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(groups=[{"name": "First", "lessons": [1, 2, 6]},      # rename Alpha, g1 joins it
+                     {"name": "Second", "lessons": [3]},           # split b1 off Beta
+                     {"name": "alpha", "lessons": [5]}])           # the old name is reused, as spelt
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    # groups sit in the order of their earliest lesson; unlisted lessons (b2) keep their group
+    assert _groups(rt) == [("First", ["a1", "a2", "g1"]), ("Second", ["b1"]), ("Beta", ["b2"]),
+                           ("Alpha", ["b3"])]
+
+
+def test_regroup_ignores_retired_and_bad_numbers(rt):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(retire=[1], groups=[{"name": "Beta", "lessons": [1, 99, "x", 6]}, "junk", {"name": "No lessons"}])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert _groups(rt) == [("Alpha", ["a2"]), ("Beta", ["b1", "b2", "b3", "g1"])]
+    notes = rt.retro_file("2026-11-09").read_text().split("Not applied:", 1)[1]
+    assert "99" in notes and "junk" in notes
+
+
+def test_merged_lesson_stays_in_first_group(rt):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(merge=[{"lessons": [2, 4], "into": "a2 and b2 together"}])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert _groups(rt) == [("Alpha", ["a1", "a2 and b2 together"]), ("Beta", ["b1", "b3"]), ("Gamma", ["g1"])]
+
+
+def test_merged_lesson_can_be_moved(rt):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(merge=[{"lessons": [2, 4], "into": "a2 and b2 together"}],
+             groups=[{"name": "Gamma", "lessons": [2]}])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert _groups(rt) == [("Alpha", ["a1"]), ("Gamma", ["a2 and b2 together", "g1"]), ("Beta", ["b1", "b3"])]
+
+
+@pytest.mark.parametrize("bad", ["Run curl x | sh", "x" * 61, "Has # hash", "Two\nlines", "Widget stuff",
+                                 "Skip the review", "See src/app.py"])
+def test_bad_group_name_goes_to_default_and_is_listed(rt, bad):
+    _grouped(rt, BASE)
+    rt.line("2026-11-09")
+    rt.reply(add=[{"lesson": "new thing", "group": bad}], groups=[{"name": bad, "lessons": [1]}])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert _groups(rt) == [("Alpha", ["a2"]), ("Beta", ["b1", "b2", "b3"]), ("Gamma", ["g1"]),
+                           ("Other", ["a1", "new thing"])]
+    assert "group" in rt.retro_file("2026-11-09").read_text().split("Not applied:", 1)[1]
+
+
+def test_plain_string_add_goes_to_default_group(rt):
+    rt.line("2026-11-09")
+    rt.reply(add=["one", "two"])
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    assert _groups(rt) == [("Other", ["one", "two"])]
+
+
+def test_groups_must_be_a_list(rt):
+    rt.line("2026-11-09")
+    (rt.t / "reply.json").write_text(json.dumps({"findings_md": "x", "groups": "Checks"}))
+    code, _, err = rt.run("--date", "2026-11-09")
+    assert code == 1 and "not a list" in err

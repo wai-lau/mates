@@ -1,22 +1,36 @@
 ## Lessons
 
+### What goes to Qwen
+
+- Route to Qwen only when the check fixes the outcome, not when Qwen must design the approach. For look-only work pin the asked values in the check; 'nothing else moved' lets wrong ones pass.
+- Behaviour plus lead-written failing tests gets Qwen's best work; exact code in a brief leaves it nothing to do, and a known diff of a few lines is faster to apply yourself.
+- Qwen misses what no test pins: an untested file in a brief comes back wrong, and its own fakes can hide real crashes. Leave untested parts out or add a test that loads the real file.
+
+### Checks
+
 - Send with the check attached so it runs on the untouched tree first; green there proves nothing. Keep other queued tasks' red tests off main, or no full-suite check can pass.
 - Make checks gate on exit status (no trailing pipe to tail, head or grep), keep them from modifying the tree they judge, and try them on a known-bad tree.
 - Before sending a contract that changes behaviour, run the whole suite against it and fix the old tests it breaks yourself; otherwise Qwen stops to ask and the task drags for hours.
 - Tests Qwen writes are not a check: it grades itself. Write the probe or failing tests first and send them as the spec; probe-first tasks passed review on the first try.
-- Behaviour plus lead-written failing tests gets Qwen's best work; exact code in a brief leaves it nothing to do, and a known diff of a few lines is faster to apply yourself.
-- Keep briefs for small checkable fixes lean: behaviour and check. Name every file the task may edit; allowing edits by pattern floods the flag for unnamed files, so it says nothing.
 - For a refactor, pin every moved piece in the check (one definition left, one grep each). Comments move with their code; fix any that name an old file, function or line, and drop none silently.
-- Route to Qwen only when the check fixes the outcome, not when Qwen must design the approach. For look-only work pin the asked values in the check; 'nothing else moved' lets wrong ones pass.
-- Qwen misses what no test pins: an untested file in a brief comes back wrong, and its own fakes can hide real crashes. Leave untested parts out or add a test that loads the real file.
-- Forbid edits to existing tests; if Qwen changes a test or skips a case to make it agree with its code, send it back.
-- Treat Qwen's done note as a claim and probe every accept against the spec. Merge only under the check that defines done; if it fails, send it back or finish it and log that.
-- After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
-- Before sending, confirm the pane has the runtime and can open the proof files its check needs; a missing runtime or mount looks like a worker stall.
-- Judge a stall by turns, not the clock. Stuck means no new tool call for 30 minutes or two failed re-briefs; after a pane restart, confirm the task resumed before waiting on it.
+
+### Writing briefs
+
+- Keep briefs for small checkable fixes lean: behaviour and check. Name every file the task may edit; allowing edits by pattern floods the flag for unnamed files, so it says nothing.
 - Size each task to fit Qwen's 64K context: one plan task, a few functions, plan sections by pointer, line ranges or grep patterns into big files. Each compaction loses detail.
 - Keep each brief in a file that survives a restart and send it once, whole, into a fresh chat; leftover context from the last task or a second paste leaves Qwen re-reading.
 - When Qwen writes docs or history, write the quotes, dates and numbers yourself; forbid author or credit lines in code and commits, and read those diffs line by line.
+
+### Review, merge and logging
+
+- Treat Qwen's done note as a claim and probe every accept against the spec. Merge only under the check that defines done; if it fails, send it back or finish it and log that.
+- Forbid edits to existing tests; if Qwen changes a test or skips a case to make it agree with its code, send it back.
+- After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
 - Record worker model id, lead tokens, the check and red-on-base on every attempt, claude-self rows included; log an outcome for every send and count each re-brief.
+
+### Running the panes
+
+- Before sending, confirm the pane has the runtime and can open the proof files its check needs; a missing runtime or mount looks like a worker stall.
+- Judge a stall by turns, not the clock. Stuck means no new tool call for 30 minutes or two failed re-briefs; after a pane restart, confirm the task resumed before waiting on it.
 - Wait on Qwen with long blocking waits, not frequent polls: lead cache reads grow with every turn spent checking a slow pane and were most of the lead's cost.
 - OpenCode needs Escape twice to stop a reply, and a new chat in a busy pane leaves the old one running unseen: stop the reply first, or restart the pane.

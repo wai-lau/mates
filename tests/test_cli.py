@@ -1598,10 +1598,11 @@ class Retro:
     def git(self, *a):
         return subprocess.run(["git", "-C", str(self.src), *a], check=True, capture_output=True, text=True).stdout
 
-    def reply(self, findings="All fine.", add=(), retire=(), proposals=(), merge=()):
+    def reply(self, findings="All fine.", add=(), retire=(), proposals=(), merge=(), groups=None):
         (self.t / "reply.json").write_text(json.dumps({"findings_md": findings, "add": list(add),
                                                        "merge": list(merge), "retire": list(retire),
-                                                       "proposals": list(proposals)}))
+                                                       "proposals": list(proposals),
+                                                       **({"groups": groups} if groups is not None else {})}))
 
     def line(self, day, **kw):
         import logrec

@@ -52,6 +52,8 @@ _PRE, _POST = cli.ASK_SUFFIX.split("{worktree}/")
 ASK_FOOTER = re.compile("(?:" + re.escape(_PRE) + r"(?:\S+/)?" + re.escape(_POST) + r"\s*)+$")
 LAST_RETROS = 7
 LESSON_MAX = 300  # characters in one lesson (a merge of two needs the room)
+GROUP_MAX = 60  # characters in a group name (a heading in every lead's prompt)
+DEFAULT_GROUP = "Other"  # where a lesson goes with no group, or with a group name that was refused
 # The whole list, in characters: about 10K tokens of every lead's system prompt (cached), a
 # guard against runaway growth rather than a target. Merges keep the list free of repeats.
 LESSONS_CHARS_MAX = 40000
@@ -237,6 +239,19 @@ def check_lesson(lesson, names):
     return None
 
 
+def check_group(name, names):
+    """None if `name` may head a group in lead-lessons.md, else why not. Group names come from the
+    retro's model output and load into every lead's prompt, so they pass `check_lesson` too."""
+    if not isinstance(name, str) or not name.strip():
+        return "empty"
+    if "\n" in name or "\r" in name or "#" in name:
+        return "has a newline or #"
+    name = name.strip()
+    if len(name) > GROUP_MAX:
+        return f"longer than {GROUP_MAX} characters"
+    return check_lesson(name, names)
+
+
 def sort_lessons(lessons, names, have=()):
     """Split new lessons into those that may be appended after `have` and (lesson, why) rejects."""
     kept, rejected = [], []
@@ -253,6 +268,71 @@ def sort_lessons(lessons, names, have=()):
 
 def current_lessons(text):
     return [l[2:] for l in text.splitlines() if l.startswith("- ")]
+
+
+def current_entries(text):
+    """[(group, lesson)] in file order; a lesson above any `### ` heading is in DEFAULT_GROUP."""
+    out, group = [], DEFAULT_GROUP
+    for l in text.splitlines():
+        if l.startswith("### "):
+            group = l[4:].strip() or DEFAULT_GROUP
+        elif l.startswith("- "):
+            out.append((group, l[2:]))
+    return out
+
+
+def arrange(entries, gone, first, regroup, adds, names):
+    """The new file's groups: ([(group, [lessons])], notes).
+    `entries` is the current [(group, lesson)] (numbered from 1); `gone` the numbers retired or
+    folded into another merge; `first` {number: merged text}; `regroup` the answer's `groups`
+    ([{"name": ..., "lessons": [numbers]}]); `adds` [(lesson, group or None)].
+    A lesson keeps its group unless `regroup` lists its number (a merged one is numbered as the
+    first lesson merged). A name that matches a known group ignoring case reuses its spelling; a
+    name `check_group` refuses sends its lessons to DEFAULT_GROUP. Groups sit in the order of
+    their earliest lesson, DEFAULT_GROUP last; empty ones are dropped."""
+    canon = {}
+    for g, _ in entries:
+        canon.setdefault(g.lower(), g)
+    canon.setdefault(DEFAULT_GROUP.lower(), DEFAULT_GROUP)
+    notes, refused = [], set()
+
+    def resolve(name):
+        why = check_group(name, names)
+        if why:
+            if name not in refused:
+                refused.add(name)
+                notes.append(f"group {name!r}: {why}; its lessons went to {DEFAULT_GROUP!r}")
+            return DEFAULT_GROUP
+        name = " ".join(name.split())
+        return canon.setdefault(name.lower(), name)
+
+    assign = {i: g for i, (g, _) in enumerate(entries, 1) if i not in gone}
+    for item in regroup:
+        nums = item.get("lessons") if isinstance(item, dict) else None
+        if not (isinstance(item, dict) and isinstance(item.get("name"), str) and isinstance(nums, list)):
+            notes.append(f"{item!r}: a group needs a name and a list of lesson numbers")
+            continue
+        g = resolve(item["name"])
+        for n in nums:
+            if _number(n, entries) is None or n in gone:
+                notes.append(f"group {item['name']!r}: {n!r} is not a lesson that stays")
+            else:
+                assign[n] = g
+    members = {}
+    for i, g in sorted(assign.items()):
+        members.setdefault(g, []).append((i, first.get(i, entries[i - 1][1])))
+    after = {}
+    for text, want in adds:
+        after.setdefault(resolve(want) if want is not None else DEFAULT_GROUP, []).append(text)
+    order = sorted(set(members) | set(after), key=lambda g: (g == DEFAULT_GROUP, min(
+        [i for i, _ in members.get(g, [])] or [len(entries) + 1]), list(after).index(g) if g in after else 0))
+    return [(g, [t for _, t in members.get(g, [])] + after.get(g, [])) for g in order], notes
+
+
+def render(groups):
+    if not any(ls for _, ls in groups):
+        return "## Lessons\n\n" + NO_LESSONS
+    return "## Lessons\n" + "".join(f"\n### {g}\n\n" + "".join(f"- {l}\n" for l in ls) for g, ls in groups if ls)
 
 
 def _number(raw, current):
@@ -339,9 +419,14 @@ def _chat_prompt(day, chats):
 
 
 def _prompt(day, lines, lessons_text, prior, chats):
-    current = current_lessons(lessons_text)
-    numbered = "".join(f"{i}. {l}\n" for i, l in enumerate(current, 1)) or "None yet.\n"
-    parts = [PROMPT.read_text(), "## Current lessons (numbered for `retire`)\n", numbered]
+    numbered, last = "", None
+    for n, (g, l) in enumerate(current_entries(lessons_text), 1):
+        if g != last:
+            numbered += f"### {g}\n"
+            last = g
+        numbered += f"{n}. {l}\n"
+    parts = [PROMPT.read_text(), "## Current lessons (by group, numbered for `retire`, `merge` and `groups`)\n",
+             numbered or "None yet.\n"]
     parts.append(f"## The last {LAST_RETROS} retros\n")
     parts += [p.read_text().strip() + "\n" for p in prior] or ["None yet.\n"]
     parts.append(f"{LOG_HEADER} for {day} (one JSON object per line)\n")
@@ -368,10 +453,10 @@ def ask_claude(prompt):
     except ValueError:
         raise RetroError("claude's answer is not JSON")
     if not (isinstance(d, dict) and isinstance(d.get("findings_md"), str)
-            and all(isinstance(d.get(k, []), list) for k in ("add", "merge", "retire", "proposals"))):
-        raise RetroError("claude's answer lacks findings_md, or add, merge, retire or proposals is not a list")
+            and all(isinstance(d.get(k, []), list) for k in ("add", "merge", "retire", "proposals", "groups"))):
+        raise RetroError("claude's answer lacks findings_md, or add, merge, retire, groups or proposals is not a list")
     proposals = [" ".join(str(p).split()) for p in d.get("proposals") or [] if str(p).strip()]
-    return d["findings_md"], d.get("add") or [], d.get("merge") or [], d.get("retire") or [], proposals
+    return d["findings_md"], d.get("add") or [], d.get("merge") or [], d.get("retire") or [], d.get("groups") or [], proposals
 
 
 def _git(*a):
@@ -423,22 +508,39 @@ def append_proposals(day, proposals):
     _write(path, text)
 
 
+def _group_list(entries):
+    out = []
+    for g, l in entries:
+        if out and out[-1][0] == g:
+            out[-1][1].append(l)
+        else:
+            out.append((g, [l]))
+    return out
+
+
 def run_day(day, lines, names, chats):
     lessons_path = SRC / LESSONS_REL
     old = lessons_path.read_text() if lessons_path.exists() else ""
     prior = sorted(p for p in _retros_dir().glob("*.md") if p.stem < day)[-LAST_RETROS:]
-    findings, add, merge, retire, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
-    current = current_lessons(old)
+    findings, add, merge, retire, regroup, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
+    entries = current_entries(old)
+    current = [l for _, l in entries]
     taken, notes = pick_retired(retire, current)
     merges, merge_notes = pick_merges(merge, current, taken, names)
     notes += merge_notes
     first = {ns[0]: text for ns, text in merges}
     gone = set(taken) | {n for ns, _ in merges for n in ns[1:]}
     have = [first.get(i, l) for i, l in enumerate(current, 1) if i not in gone]
-    added, rejected = sort_lessons(add, names, have)
-    kept = have + added
-    new = old if kept == current else \
-        "## Lessons\n\n" + ("".join(f"- {l}\n" for l in kept) if kept else NO_LESSONS)
+    where = {}  # new lesson text -> the group asked for, if any
+    for a in add:
+        if isinstance(a, dict):
+            where.setdefault(" ".join(str(a.get("lesson") or "").split()), a.get("group"))
+    added, rejected = sort_lessons([a.get("lesson") or "" if isinstance(a, dict) else a for a in add], names, have)
+    groups, group_notes = arrange(entries, gone, first, regroup,
+                                  [(l, where.get(l) if isinstance(where.get(l), str) else None) for l in added], names)
+    notes += group_notes
+    kept = [l for _, ls in groups for l in ls]
+    new = old if groups == _group_list(entries) else render(groups)
     if new != old:
         _write(lessons_path, new)
     committed = commit_lessons(day, new != old)
@@ -447,7 +549,8 @@ def run_day(day, lines, names, chats):
            f"## Lessons\n\nAdded {len(added)}, merged {len(merges)}, retired {len(taken)}; {len(kept)} in "
            f"{LESSONS_REL}; {committed}.\n"]
     if added:
-        out.append("Added:\n\n" + "".join(f"- {l}\n" for l in added))
+        home = {l: g for g, ls in groups for l in ls}
+        out.append("Added:\n\n" + "".join(f"- {l} (in {home[l]})\n" for l in added))
     if merges:
         out.append("Merged:\n\n" + "".join(f"- {' + '.join(current[n - 1] for n in ns)} -> {text}\n"
                                             for ns, text in merges))
