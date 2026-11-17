@@ -10,6 +10,7 @@ tried. Updated 2026-11-11.
   checks, diffs and merges their work. Spec:
   [`docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md`](docs/superpowers/specs/2026-11-10-claude-qwen-mates-design.md)
   (the two-pane revision)
+- How mates works, its trust boundaries and a task's lifecycle: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Retired tools and finished plans: [`ARCHAEOLOGY.md`](ARCHAEOLOGY.md)
 - The TTS server (hosaka): [`docs/superpowers/specs/2026-06-22-local-tts-server-design.md`](docs/superpowers/specs/2026-06-22-local-tts-server-design.md)
 
