@@ -27,10 +27,13 @@ pace cap, and the 5-hour window at most 75% used (Wai, 2026-11-16). Run it befor
 each one. While it is on, be aggressive: run independent work in parallel
 followers rather than one at a time or by hand ("remember to be more aggressive
 with subagents when we have >1d worth of usage before hitting pace"). Qwen still
-comes first when it pays off. When it says off, nothing else changes: keep
-working, do the work yourself, and delegate to Qwen; never stop or wait for
-followers to come back ("just don't use Claude followers when getting to the
-95%/7d limit / the leader should keep working and delegating to Qwens"). Pick the cheapest model that can do the task (per token, haiku is
+comes first when it pays off. When it says off, the only change is no new
+subagents. Never put work off until the weekly reset or until usage frees up,
+and never tell Wai that work waits for it: start it now, sending Qwen what it
+can do and doing the rest yourself. Usage limits are Wai's pace cap's job, not
+yours ("just don't use Claude followers when getting to the 95%/7d limit / the
+leader should keep working and delegating to Qwens"; when leads read that as
+"wait for the reset": "it's getting interpreted as 'stop work'"). Pick the cheapest model that can do the task (per token, haiku is
 1/40 of opus and sonnet 1/2), brief it like Qwen (behaviour, check, files), check
 what it returns yourself, and log it: `mates log-route claude-subagent "<task>" "<why>"`.
 
