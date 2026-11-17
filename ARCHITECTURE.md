@@ -390,70 +390,44 @@ run as soon as it can". [Section 6](#6-the-learning-loop) covers what it does.
 
 ## 3. A task's lifecycle
 
-The lead sends a brief with a check, waits, answers questions, checks a
-snapshot, reads its diff and merges it. Each step checks what the one before
-it recorded and refuses when that does not hold, so what merges is the tree
-that passed the check and that the lead read.
+Every task goes round the same loop, driven by the lead's `mates` commands:
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant L as Lead
-    participant M as mates, as Wai
-    participant C as Check sandbox
-    participant P as Qwen pane
-    participant Q as Qwen in OpenCode
-    L->>M: mates send N with --check and the brief
-    M->>C: run the check on the lead HEAD tree
-    C-->>M: fails, so the check is red on base
-    M->>M: reset the worktree to the lead HEAD, clear .mates
-    M->>P: paste /new, then the brief with the ask line
-    P->>Q: one message
-    L->>M: mates wait N, under a Monitor
-    opt Qwen is unsure
-        Q->>Q: write .mates/question.md and stop
-        M-->>L: question and its text
-        L->>M: mates answer N with the answer
-        M->>P: paste the answer
-    end
-    Q->>Q: edit the worktree, write .mates/done.md, stop
-    M->>P: read the screen and the OpenCode database
-    M-->>L: done and its text
-    L->>M: mates check N
-    M->>M: snapshot, quarantine, re-read with no links followed
-    M->>C: run the check on an unpacked copy
-    C-->>M: exit 0
-    L->>M: mates diff N
-    M-->>L: the diff and its guard flags
-    L->>M: mates merge N with a message and any acks
-    M->>M: commit the checked tree, fast-forward, log accepted, reset the worktree
+flowchart TD
+    send["mates send<br/>the brief and its check"]
+    work["Qwen works in its worktree"]
+    wait["mates wait"]
+    answer["mates answer"]
+    check["mates check"]
+    diff["mates diff<br/>the lead reads it"]
+    back["mates answer --sendback<br/>with what to fix"]
+    merge["mates merge"]
+    send --> work --> wait
+    wait -- "Qwen is done" --> check
+    wait -- "Qwen asks" --> answer
+    answer --> work
+    check -- passes --> diff
+    diff -- "looks right" --> merge
+    check -- fails --> back
+    diff -- "needs work" --> back
+    back --> work
 ```
 
-A task's states, as the task record in the state file holds them:
+| Step | Who | What happens |
+|---|---|---|
+| `mates send` | lead | mates runs the check on the lead's current code first and refuses if it already passes (it would prove nothing). Then it resets Qwen's worktree and pastes the brief into a fresh chat. |
+| Work | Qwen | Edits files in its worktree, inside the sandbox. Writes `.mates/question.md` to ask, or `.mates/done.md` when done, then stops. |
+| `mates wait` | lead | Blocks until Qwen asks, finishes or goes idle, reading the pane's screen and OpenCode's database. |
+| `mates answer` | lead | Pastes the answer into the same chat; Qwen goes on. |
+| `mates check` | lead | Takes a snapshot of the worktree and runs the check on a copy of it, in a sandbox. |
+| `mates diff` | lead | Shows that same snapshot's diff, with guard flags for anything risky. |
+| `mates merge` | lead | Commits exactly the snapshot that passed the check and that the lead read, then resets the worktree. |
 
-```mermaid
-stateDiagram-v2
-    [*] --> NoTask
-    NoTask --> Open: send
-    state Open {
-        [*] --> Replying
-        Replying --> Asking: Qwen writes question.md
-        Asking --> Replying: answer
-        Replying --> Stopped: done.md or idle
-        Stopped --> Checked: check exits 0
-        Checked --> Stopped: check fails, or sync
-        Checked --> Reviewed: diff of that same snapshot
-        Reviewed --> Stopped: check fails, or sync
-        Stopped --> Replying: sendback or send again
-        Checked --> Replying: sendback or send again
-        Reviewed --> Replying: sendback or send again
-    }
-    Open --> NoTask: merge from Reviewed, or discard
-```
-
-`merge` succeeds only from Reviewed (and refuses until the flags it needs are
-acknowledged). `discard`, or `remove --force`, closes the task from any open
-state.
+Each step checks what the step before it recorded. `merge` refuses unless the
+check passed on the snapshot that `diff` showed, and it refuses risky flags
+until the lead acknowledges them with `--ack`. Two more ways out: when the lead's
+branch has moved, `mates sync` moves Qwen's work onto it (then check and diff
+again); `mates discard` gives up on the task and keeps Qwen's work on a ref.
 
 ### Send
 
