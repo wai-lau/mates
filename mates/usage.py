@@ -72,20 +72,25 @@ def read(path=None, now=None):
         return {"on": False, "why": f"no usable usage data ({type(e).__name__})"}
 
 
+KEEP_WORKING = "No new subagents; keep working now: send Qwen what pays off, do the rest yourself"
+
+
 def report(h):
     """One line for the lead."""
     if "why" in h:
-        return f"followers off: {h['why']}"
+        return f"followers off: {h['why']}. {KEEP_WORKING}"
     state = "on" if h["on"] else "off"
     if h.get("endgame"):
         five = "under" if h["five_hour"] <= FIVE_HOUR_MAX else "over"
         where = "under" if h["used"] < h["line"] else "at or over"
         return (f"followers {state}: endgame, {h['to_reset'] / 3600:.1f} h to the weekly reset. 7-day usage "
                 f"{h['used']:.0f}% is {where} the pace line {h['line']:.1f}% (rising to {ENDGAME_TARGET:.0f}% at "
-                f"the reset); 5-hour usage {h['five_hour']:.0f}%, {five} the {FIVE_HOUR_MAX:.0f}% limit. Until the "
-                "reset Claude's cost counts low: real work only, no make-work")
+                f"the reset); 5-hour usage {h['five_hour']:.0f}%, {five} the {FIVE_HOUR_MAX:.0f}% limit. "
+                + ("Until the reset Claude's cost counts low: real work only, no make-work" if h["on"]
+                   else KEEP_WORKING))
     than = "more" if h["left"] > DAY_SHARE else "not more"
     five = "under" if h["five_hour"] <= FIVE_HOUR_MAX else "over"
     return (f"followers {state}: 7-day usage {h['used']:.0f}%, the pace cap allows {h['allowed']:.1f}% "
             f"(day {h['day']} of 7), so {h['left']:.1f}% is left, {than} than one day's share "
-            f"({DAY_SHARE:.1f}%); 5-hour usage {h['five_hour']:.0f}%, {five} the {FIVE_HOUR_MAX:.0f}% limit")
+            f"({DAY_SHARE:.1f}%); 5-hour usage {h['five_hour']:.0f}%, {five} the {FIVE_HOUR_MAX:.0f}% limit"
+            + ("" if h["on"] else f". {KEEP_WORKING}"))

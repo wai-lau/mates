@@ -954,9 +954,9 @@ def send(args):
         except fsutil.UnsafeDir as e:
             die(f"refusing to check: {e}")
         if code == 0:
-            die("the check passes on the base (it proves nothing); send without --check or fix the check")
+            die("the check passes on the base (it proves nothing); fix the check; with no red check, do it yourself")
         if code in (124, 126, 127) or "command not found" in err or "Executable doesn't exist" in err:
-            die(f"the check cannot run on the base ({err[-2000:]}); send without --check or fix the check")
+            die(f"the check cannot run on the base ({err[-2000:]}); fix the check; with no red check, do it yourself")
         print(f"check {a.check} failed on the base (exit {code}) — red on base; sending anyway")
     # Qwen cannot commit, so mates/qwen-N holds no work of its own: moving it to the lead
     # HEAD is the rebase. Anything on it the lead lacks is kept on a ref first.
@@ -1248,7 +1248,7 @@ def diff(args):
         hooks = str(Path(hooks).resolve().relative_to(Path(root)))  # an absolute path inside the repo
     flags = guard.guard_flags(full, task["files"], hooks_path=hooks,
                               runtime_files=runtime.runtime_files(root, base))
-    sys.stdout.write(full)
+    sys.stdout.write(shown(full))  # Qwen wrote these files: escapes made visible, as for check output
     print(stat_.rstrip("\n"))
     print("flags: " + (", ".join(flags) if flags else "none"))
     if task.get("checked_tree") and task["checked_tree"] != tree:
@@ -1731,10 +1731,10 @@ def main(argv=None):
         die(f"unknown command {cmd!r}")
     try:
         return COMMANDS[cmd](args)
-    except GitError as e:
-        die(f"git failed: {e}", 1)
+    except GitError as e:  # exit 3: 1 means wait's timeout, which a lead's loop reruns
+        die(f"git failed: {e}", 3)
     except RuntimeError as e:  # tmux failures (paste, display, capture-pane)
-        die(str(e), 1)
+        die(str(e), 3)
 
 
 if __name__ == "__main__":

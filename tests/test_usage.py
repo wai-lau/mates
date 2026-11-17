@@ -89,8 +89,19 @@ def test_endgame_pace_line(used, hours, on, line):
         assert not h["endgame"]
     else:
         assert h["endgame"] and round(h["line"], 2) == line
-        assert "counts low" in usage.report(h)
+        assert ("counts low" in usage.report(h)) is on
 
 
 def test_endgame_still_minds_the_five_hour_window():
     assert usage.headroom(_data(88, 2, five=80), NOW)["on"] is False
+
+
+def test_off_lines_say_keep_working():
+    """Leads read a bare "off" as "wait for the reset" (2026-11-17): every off line says the
+    only change is no new subagents, and an endgame off line drops "counts low"."""
+    off = usage.report(usage.headroom(_data(75, 30), NOW))
+    assert off.startswith("followers off") and "keep working" in off
+    end_off = usage.report(usage.headroom(_data(97.5, 1.5), NOW))
+    assert end_off.startswith("followers off") and "keep working" in end_off and "counts low" not in end_off
+    stale = usage.report({"on": False, "why": "the usage cache is over 10 minutes old"})
+    assert "keep working" in stale

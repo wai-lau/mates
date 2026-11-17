@@ -121,7 +121,7 @@ def test_guard_flags_links_and_exec_bits():
 def test_needs_ack():
     assert guard.needs_ack(["owner-side:Makefile", "unnamed-file:Makefile", "symlink:l", "exec-bit:x",
                             "hook-path:.githooks/pre-commit", "hook-path:sub/.gitignore", "runtime-input:uv.lock"]) \
-        == ["owner-side:Makefile", "symlink:l", "exec-bit:x", "hook-path:.githooks/pre-commit"]
+        == ["owner-side:Makefile", "symlink:l", "exec-bit:x", "hook-path:.githooks/pre-commit", "runtime-input:uv.lock"]
 
 
 # --- owner-quote: an added line that quotes or credits the owner is flagged, so the lead

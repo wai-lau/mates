@@ -792,6 +792,27 @@ def test_answer_sendback_counts_attempt(m):
     assert "discard 1" in err
 
 
+def test_diff_output_has_no_control_characters(m):
+    """The diff is what the lead reads to approve a merge, and Qwen wrote the files in it:
+    escape sequences and bells are made visible, as for check output (security review
+    2026-11-17)."""
+    m.send()
+    (m.wt / "a.txt").write_text("ok\x1b[2K\x07 hidden\n")
+    assert m.run("check", 1, "--", "true")[0] == 0
+    code, out, _ = m.run("diff", 1)
+    assert code == 0 and "\x1b" not in out and "\x07" not in out and "hidden" in out
+
+
+def test_errors_never_exit_1_which_means_timeout(m, monkeypatch):
+    """A lead loops on `mates wait` while it exits 1 (timeout): a git or tmux error must not
+    exit 1, or the loop reruns it forever (structure review 2026-11-17)."""
+    def boom(*a, **k):
+        raise RuntimeError("tmux capture-pane failed: no server")
+    monkeypatch.setattr(cli, "_tmux_out", boom)
+    code, _, err = m.run("wait", 1, "--timeout", "1")
+    assert code not in (0, 1) and "no server" in err
+
+
 def test_diff_includes_untracked(m):
     m.send()
     (m.wt / "a.txt").write_text("b\n")

@@ -83,7 +83,7 @@ hold, with a grep per moved piece for its structure, is a clear auditable outcom
   runs on a copy of the snapshot with no git repo around it: it must not use git.
 - Qwen's own "passed" is a claim; only `mates check` counts.
 - `mates merge N` needs `mates check`, then `mates diff N` on that same snapshot.
-- A diff flagged `owner-side`, `symlink`, `exec-bit` or `hook-path` holds a file
+- A diff flagged `owner-side`, `symlink`, `exec-bit`, `hook-path` or `runtime-input` holds a file
   that runs as Wai (or instructs a lead) outside the sandbox once merged: read
   each one, then name the kinds with `mates merge N --ack <kind>,...`.
 - One open task at a time, unless the state says `parallel`.
@@ -96,7 +96,8 @@ hold, with a grep per moved piece for its structure, is a clear auditable outcom
     (`--continue` keeps the OpenCode session, for a task that builds on what
     Wai and Qwen just discussed).
 2. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `dead`
-   or `failed` and exits 0; `timeout` exits 1, so an until-loop keeps waiting).
+   or `failed` and exits 0; `timeout` exits 1: rerun it only on exit 1; any other
+   non-zero exit is an error to read, not to retry).
    On `question:`, `mates answer N "<answer>"`.
 3. `mates check N` (reuses the check sent with `--check`), then `mates diff N`
     (the diff of what was checked).
