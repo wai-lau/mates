@@ -5,6 +5,7 @@
 - Route to Qwen only when the check fixes the outcome, not when Qwen must design the approach. For look-only work pin the asked values in the check; 'nothing else moved' lets wrong ones pass.
 - Behaviour plus lead-written failing tests gets Qwen's best work; exact code in a brief leaves it nothing to do, and a known diff of a few lines is faster to apply yourself.
 - Qwen misses what no test pins: an untested file in a brief comes back wrong, and its own fakes can hide real crashes. Leave untested parts out or add a test that loads the real file.
+- Route only when it cuts cost. If briefing, waiting and review cost more than doing the work (small or known changes, or follow-ups found in review), keep it with Claude.
 
 ### Checks
 
@@ -13,6 +14,7 @@
 - Before sending a contract that changes behaviour, run the whole suite against it and fix the old tests it breaks yourself; otherwise Qwen stops to ask and the task drags for hours.
 - Tests Qwen writes are not a check: it grades itself. Write the probe or failing tests first and send them as the spec; probe-first tasks passed review on the first try.
 - For a refactor, pin every moved piece in the check (one definition left, one grep each). Comments move with their code; fix any that name an old file, function or line, and drop none silently.
+- A contract can pass alone and still clash with old tests once code meets both. Try it with the whole suite on a rough sketch of the change, and settle every value (defaults, URLs, key presence) before the send; a wrong lead check costs a send-back.
 
 ### Writing briefs
 
