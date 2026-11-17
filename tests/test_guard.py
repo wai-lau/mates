@@ -122,3 +122,29 @@ def test_needs_ack():
     assert guard.needs_ack(["owner-side:Makefile", "unnamed-file:Makefile", "symlink:l", "exec-bit:x",
                             "hook-path:.githooks/pre-commit", "hook-path:sub/.gitignore", "runtime-input:uv.lock"]) \
         == ["owner-side:Makefile", "symlink:l", "exec-bit:x", "hook-path:.githooks/pre-commit"]
+
+
+# --- owner-quote: an added line that quotes or credits the owner is flagged, so the lead
+# checks it against the brief (a Qwen invented an owner quote and "owner-approved" relays in
+# an archaeology entry, 2026-11-12). Owner words: Wai, owner, approved, approval, decided.
+# Any file type; only added lines.
+
+def test_flag_owner_quote():
+    for line in ['Wai: "make the end screen fit"',
+                 '(Wai, 2026-11-11: "fewer escorts on each lane")',
+                 'All changes were owner-approved via the relay ("ok" for the HP).',
+                 "The owner decided 'raise per-unit HP'."]:
+        assert "owner-quote:docs/arch.md" in guard.guard_flags(d("docs/arch.md", [line]), ["docs/arch.md"]), line
+
+
+def test_owner_quote_needs_a_quote_and_an_owner_word():
+    for line in ['Wai prefers short names',          # an owner word, no quote
+                 'the label reads "Play again"']:     # a quote, no owner word
+        assert not any(f.startswith("owner-quote:") for f in
+                       guard.guard_flags(d("docs/arch.md", [line]), ["docs/arch.md"])), line
+
+
+def test_owner_quote_ignores_removed_lines():
+    diff = ("diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n"
+            "@@ -1 +1 @@\n-Wai: \"old words\"\n+plain line\n")
+    assert not any(f.startswith("owner-quote:") for f in guard.guard_flags(diff, ["docs/a.md"]))

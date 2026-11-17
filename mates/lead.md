@@ -55,6 +55,7 @@ hold, with a grep per moved piece for its structure, is a clear auditable outcom
   (`mates send` adds both):
   `(If any name, file or expected result above is not stated exactly, write your question to <worktree>/.mates/question.md and stop before editing. Do not edit tests unless told.)`
 - Read every `test-file` flag in a diff as a possible test bent to fit.
+- Read every `owner-quote` flag against the brief: Qwen has invented owner quotes and approvals.
 
 ## Rules
 

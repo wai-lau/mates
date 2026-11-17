@@ -34,6 +34,10 @@ LINK_MODE, EXEC_MODE = "120000", "100755"
 # Flag kinds merge refuses until `--ack` names them: each runs something as Wai. A
 # `.gitignore` keeps its hook-path flag (it is a `.git*` file) but runs nothing.
 ACK_KINDS = ("owner-side", "symlink", "exec-bit", "hook-path")
+# An added line that quotes or credits the owner: the lead checks it against the brief (a Qwen
+# invented an owner quote and "owner-approved" relays in an archaeology entry, 2026-11-12).
+OWNER_WORD = re.compile(r"\b(wai|owner|approved|approval|decided)\b", re.I)
+QUOTED = re.compile(r"\"[^\"]+\"|'[^']+'")
 AUTHORSHIP = re.compile(r"\b(qwen|claude|anthropic|gpt|llm|language model|ai[- ]generated|as an ai)\b", re.I)
 
 
@@ -150,6 +154,8 @@ def guard_flags(diff_text: str, brief_files: list[str], hooks_path=None, runtime
                 flags.append(f"test-skipped:{path}")
             if any(ASSERT.search(l) for l in removed):
                 flags.append(f"assertion-removed:{path}")
+        if any(OWNER_WORD.search(l) and QUOTED.search(l) for l in added):
+            flags.append(f"owner-quote:{path}")
         if any(AUTHORSHIP.search(l) for l in added):
             flags.append(f"authorship:{path}")
     return flags
