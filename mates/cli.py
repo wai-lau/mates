@@ -40,6 +40,7 @@ import logrec
 import panes
 import runtime
 import session
+import usage
 from gitsafe import GitError, git_lead, git_safe
 
 IDLE_CLOSE_S = 1800
@@ -53,7 +54,7 @@ ASK_SUFFIX = ("(If any name, file or expected result above is not stated exactly
 HERE = Path(__file__).resolve().parent
 LEAD_PROMPT = (HERE / "lead.md", HERE / "lead-lessons.md")
 QWEN_LIVE = "@mates-qwen-live"  # set on a Qwen pane while its qwen runs (qwen_cmd)
-OPEN_COMMANDS = {"launch", "list", "log", "retro"}  # the rest run only from a lead (see _is_lead)
+OPEN_COMMANDS = {"launch", "list", "log", "retro", "followers"}  # the rest run only from a lead (see _is_lead)
 
 
 def die(msg, code=2):
@@ -395,6 +396,14 @@ def _claude_pid():
             return pid
         pid = int(stat_.rsplit(")", 1)[1].split()[1])  # field 4, after the (comm)
     return None
+
+
+def followers(args):
+    """Whether Claude followers may run now (usage.py): prints why; exit 0 on, 1 off."""
+    _parser("followers", "mates followers").parse_args(args)
+    h = usage.read()
+    print(usage.report(h))
+    return 0 if h["on"] else 1
 
 
 def start(args):
@@ -1589,7 +1598,8 @@ def start_reaper(root):
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
             "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd,
-            "parallel": parallel_cmd, "reap": reap, "start": start}
+            "parallel": parallel_cmd, "reap": reap, "start": start,
+            "followers": followers}
 
 
 def main(argv=None):

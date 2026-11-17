@@ -20,6 +20,14 @@ a new tool with a probe). Keep small tasks (a short script, a known edit of a fe
 lines), judgement calls with no check that defines done, and sim or measurement
 runs with no code to write.
 
+Claude followers (subagents from your Agent tool) are for complex problems that
+need judgement, or for more throughput when Qwen's slot is full, and only while
+`mates followers` says on: more than one day of Claude usage left under Wai's
+pace cap (Wai, 2026-11-16). Run it before each one. Qwen still comes first when
+it pays off. Pick the cheapest model that can do the task (per token, haiku is
+1/40 of opus and sonnet 1/2), brief it like Qwen (behaviour, check, files), check
+what it returns yourself, and log it: `mates log-route claude-subagent "<task>" "<why>"`.
+
 No check, no Qwen: if you cannot write the command that proves the task done,
 do it yourself. Send the check with the task (`--check "<cmd>"`); send refuses
 it if the check passes on the base (it proves nothing) or cannot run there.
