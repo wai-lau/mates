@@ -198,15 +198,19 @@ def _grouped(rt, spec):
 BASE = {"Alpha": ["a1", "a2"], "Beta": ["b1", "b2", "b3"], "Gamma": ["g1"]}  # numbered 1..6
 
 
-def test_seed_file_is_grouped():
+def test_lessons_file_is_grouped():
+    """The live lessons file (seeded with Wai's five groups; the retro adds, merges, retires and
+    may regroup daily, so no count or group name is pinned): every lesson sits under a valid,
+    unique group heading and passes the lesson guard."""
     text = (Path(retro.__file__).parent / "lead-lessons.md").read_text()
-    heads = [l[4:] for l in text.splitlines() if l.startswith("### ")]
-    assert heads == ["What goes to Qwen", "Checks", "Writing briefs", "Review, merge and logging",
-                     "Running the panes"]
+    body = text.split("## Lessons", 1)[1]
+    before, *groups = body.split("\n### ")
+    assert not retro.current_lessons(before)  # no lesson outside a group
+    heads = [g.splitlines()[0] for g in groups]
+    assert heads and len(set(heads)) == len(heads)
     assert all(retro.check_group(h, set()) is None for h in heads)
-    flat = retro.current_lessons(text)
-    assert len(flat) == 20 and flat[0].startswith("Route to Qwen only when")
-    assert [len(retro.current_lessons(b)) for b in text.split("### ")[1:]] == [3, 5, 4, 4, 4]
+    assert all(retro.current_lessons(g) for g in groups)  # no empty group
+    assert all(retro.check_lesson(l, set()) is None for l in retro.current_lessons(text))
 
 
 def test_current_lessons_skips_headings():

@@ -2168,6 +2168,8 @@ IDLE_FOOTER = ["   /home/u/src/x/.claude/     37.9K (5 ctrl+p",
                "   worktrees/mates-qwen-1                          commands"]
 SPIN_FOOTER = ["   ⬝⬝⬝⬝■■■■  esc interrupt       35.3K (54%)  ctrl+p commands"]
 SPIN_WRAPPED = ["   ⬝⬝⬝⬝■■■■  esc", "   interrupt       35.3K (54%)  ctrl+p", "   commands"]
+# a 63-column pane (2026-11-17): OpenCode wraps the spinner's words mid-word, beside other columns
+SPIN_SPLIT = ["   ⬝⬝⬝⬝⬝⬝⬝⬝  esc   23.0K (3 ctrl+p", "             interr         commands", "             upt"]
 # after one Escape: the interrupt is armed and the reply goes on
 SPIN_AGAIN = ["   ⬝⬝⬝⬝■■■■  esc again to interrupt   35.3K (54%)  ctrl+p commands"]
 SPIN_AGAIN_WRAPPED = ["   ⬝⬝⬝⬝■■■■  esc again", "   to interrupt    35.3K (54%)", "   ctrl+p commands"]
@@ -2214,7 +2216,7 @@ def test_send_refuses_while_spinner(m):
     """Wai's own message to Qwen: OpenCode shows its spinner before the database has the reply."""
     m.ses("ses_1", updated_s=time.time() - 50)
     m.msg("ses_1", "assistant", time.time() - 60, completed_s=time.time() - 50, finish="stop")
-    for footer in (SPIN_FOOTER, SPIN_WRAPPED):
+    for footer in (SPIN_FOOTER, SPIN_WRAPPED, SPIN_SPLIT):
         _capture(m, _used_screen(EMPTY_BOX, footer))
         code, _, err = m.run("send", 1, "--reason", "r", "--continue", "task")
         assert code != 0 and "busy" in err and m.buffers() == []
@@ -2229,11 +2231,19 @@ def test_wait_spinner_is_not_idle(m):
     st["qwens"][0]["task"]["paste_ts"] = old
     session.save(str(m.root), st)
     m.msg("ses_1", "user", old + 1)  # quiet for longer than STALE_S
-    for footer in (SPIN_FOOTER, SPIN_WRAPPED):
+    for footer in (SPIN_FOOTER, SPIN_WRAPPED, SPIN_SPLIT):
         _capture(m, _used_screen(EMPTY_BOX, footer))
         assert m.run("wait", 1, "--timeout", "0.3")[1] == "timeout\n"
     _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
     assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_mid_reply_outlasts_opencodes_request_timeout():
+    """A request waits for the one shared model slot for up to OpenCode's headerTimeout with no
+    database write (2026-11-17: 30 min of queueing read as idle); only past that is a reply dead."""
+    import re as _re
+    ms = int(_re.search(r'"headerTimeout": (\d+)', (cli.HERE.parent / "bin" / "qwen").read_text()).group(1))
+    assert cli.MID_REPLY_S > ms / 1000
 
 
 def test_check_works_when_the_pane_is_gone(m):
@@ -3322,10 +3332,15 @@ def _q1(m):
     return m.state()["qwens"][0]
 
 
-@pytest.mark.parametrize("footer", [IDLE_FOOTER, SPIN_CUT])
-def test_no_spinner_and_a_step_that_ended_in_tool_calls_reads_busy(m, footer):
-    _mid_step(m, footer, completed_ago=40, finish="tool-calls")
+def test_no_spinner_and_a_step_that_ended_in_tool_calls_reads_busy(m):
+    _mid_step(m, IDLE_FOOTER, completed_ago=40, finish="tool-calls")
     assert cli.screen_busy("%1") is False and cli.busy(_q1(m), m.db, "%1") is True
+
+
+def test_a_cut_footer_still_shows_the_spinner_glyphs(m):
+    """A narrow pane cuts or wraps the words; the progress glyphs alone mark a running reply."""
+    _mid_step(m, SPIN_CUT, completed_ago=40, finish="tool-calls")
+    assert cli.screen_busy("%1") is True and cli.busy(_q1(m), m.db, "%1") is True
     assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
 
 

@@ -523,6 +523,7 @@ INPUT_EMPTY = re.compile(r'Ask anything(…|\.\.\.) "')
 # The footer while a reply runs: "esc interrupt", then "esc again to interrupt" once one Escape
 # has armed the interrupt (the reply goes on until a second press).
 ESCAPE_INTERRUPT = re.compile(r'esc\s+(?:again\s+to\s+)?interrupt')
+SPIN_GLYPHS = re.compile(r"[⬝■]{4,}")
 ESCAPE_AGAIN = re.compile(r'esc\s+again\s+to\s+interrupt')
 PROTOCOL = ("done.md", "question.md")
 
@@ -598,7 +599,10 @@ def _db(root):
 
 
 PASTE_GRACE_S = 30  # after mates' own paste, the spinner takes a moment: the database counts
-MID_REPLY_S = 1800  # a reply mid-step with no write for this long no longer reads busy without the spinner
+# A reply mid-step with no write for this long no longer reads busy without the spinner. A
+# request can wait for the one shared model slot up to OpenCode's headerTimeout (3600 s in
+# bin/qwen) writing nothing (2026-11-17: 30 min of queueing read as idle), so this is past it.
+MID_REPLY_S = 3900
 PANE_STAGGER_S = 5  # a launch starts a repo's panes this far apart (OpenCode's database race)
 QWEN_TASK_CAP = 3  # at most this many open Qwen tasks machine-wide
 
@@ -630,8 +634,12 @@ def _footer(lines, border):
 
 
 def _spinner(lines, border):
-    """OpenCode's spinner footer ("esc interrupt", or "esc again to interrupt" once armed)."""
-    return bool(ESCAPE_INTERRUPT.search(_footer(lines, border)))
+    """OpenCode's spinner footer: its progress glyphs (a run of ⬝ and ■; the idle footer shows
+    the folder there), or the words "esc interrupt" / "esc again to interrupt". The glyphs
+    count on their own because a narrow pane wraps the words mid-word beside other columns
+    (2026-11-17, 63 columns: "esc" / "interr" / "upt")."""
+    footer = _footer(lines, border)
+    return bool(SPIN_GLYPHS.search(footer) or ESCAPE_INTERRUPT.search(footer))
 
 
 def _screen(pane):
