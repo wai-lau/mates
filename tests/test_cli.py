@@ -607,6 +607,74 @@ def test_send_refuses_nonempty_input(m):
     assert code != 0 and "input box" in err and m.buffers() == []
 
 
+def test_send_refusal_prints_the_box_text_and_the_way_out(m):
+    """Wai, 2026-11-17: "if qwen input box has text, read, then either use or delete, do not
+    hold up prompts for qwen"."""
+    _capture(m, _used_screen(["  ┃", "  ┃  half a sentence\x1b[2K Wai is typ", "  ┃"], IDLE_FOOTER))
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and "half a sentence?[2K Wai is typ" in err and "\x1b" not in err
+    assert "--clear-box" in err and m.buffers() == []
+    assert not any(c.startswith("send-keys") for c in m.tmux_calls())
+
+
+def test_send_refusal_cuts_long_box_text(m):
+    _capture(m, _used_screen(["  ┃"] + ["  ┃  " + "x" * 50] * 60 + ["  ┃"], IDLE_FOOTER))
+    code, _, err = m.run("send", 1, "--reason", "r", "task")
+    assert code != 0 and 1500 < err.count("x") <= 2000
+
+
+def test_send_clear_box_deletes_the_text_then_pastes(m):
+    _capture(m, _used_screen(["  ┃", "  ┃  half a sentence", "  ┃"], IDLE_FOOTER))
+    # the stub's send-keys hook: once BSpace keys arrive, the box reads empty
+    (m.t / "on-any").write_text(
+        f"#!/bin/sh\ngrep -q BSpace '{m.t}/tmux.log' && "
+        f"cp '{m.t}/empty' '{m.t}/capture'\nexit 0\n")
+    (m.t / "on-any").chmod(0o755)
+    (m.t / "empty").write_text(_used_screen(EMPTY_BOX, IDLE_FOOTER))
+    code, _, err = m.run("send", 1, "--reason", "r", "--clear-box", "task")
+    assert code == 0, err
+    calls = m.tmux_calls()
+    keys = [c for c in calls if c.startswith("send-keys") and "BSpace" in c]
+    assert keys and sum(c.count("BSpace") for c in keys) >= len("half a sentence") + 10
+    assert m.buffers()[-1].startswith("[from Claude] task")
+    assert calls.index(keys[0]) < calls.index("load-buffer -b mates-1 -")
+
+
+def test_send_clear_box_refuses_when_the_text_stays(m):
+    _capture(m, _used_screen(["  ┃", "  ┃  half a sentence", "  ┃"], IDLE_FOOTER))  # the stub never deletes anything
+    code, _, err = m.run("send", 1, "--reason", "r", "--clear-box", "task")
+    assert code != 0 and "still" in err and m.buffers() == []
+
+
+def test_send_clear_box_leaves_a_busy_pane_alone(m):
+    _capture(m, _used_screen(["  ┃", "  ┃  half a sentence", "  ┃"], SPIN_FOOTER))
+    code, _, err = m.run("send", 1, "--reason", "r", "--clear-box", "task")
+    assert code != 0 and "busy" in err
+    assert not any(c.startswith("send-keys") for c in m.tmux_calls())
+
+
+def test_answer_refuses_with_text_and_clears_with_flag(m):
+    m.send()
+    _capture(m, _used_screen(["  ┃", "  ┃  half a sentence", "  ┃"], IDLE_FOOTER))
+    code, _, err = m.run("answer", 1, "yes")
+    assert code != 0 and "half a sentence" in err and "--clear-box" in err
+    n = len(m.buffers())
+    code, _, err = m.run("answer", 1, "--clear-box", "yes")
+    assert code != 0 and "still" in err and len(m.buffers()) == n
+    assert any(c.startswith("send-keys") and "BSpace" in c for c in m.tmux_calls())
+
+
+def test_input_text_reads_the_box(m):
+    _capture(m, _used_screen(["  ┃", "  ┃  line one", "  ┃  line two", "  ┃"], IDLE_FOOTER))
+    assert cli.input_text("%1") == "line one\nline two"
+    _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
+    assert cli.input_text("%1") == ""
+    m.input('┃  Ask anything… "Fix a TODO"\n')
+    assert cli.input_text("%1") == ""
+    m.input("n\nn\ne\nc\n")
+    assert cli.input_text("%1") is None
+
+
 def test_send_refuses_a_too_narrow_pane(m):
     """A 1-column pane (human-music, 2026-11-16: `mates add` squeezed by panes mates does not
     own) cannot draw OpenCode; send must say the pane is too narrow, not that Wai is typing."""

@@ -142,6 +142,16 @@ def test_input_box_guard(w):
     w.mates("send", 1, "--reason", "e2e", "task")
 
 
+def test_clear_box_deletes_typed_text_and_sends(w):
+    w.add()
+    w.tmux("send-keys", "-t", w.pane(), "-l", "half a sentence")
+    w.until(lambda: "half a sentence" in w.screen())
+    r = w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Make a.txt say b. FAKE:done", ok=False)
+    assert r.returncode != 0 and "half a sentence" in r.stderr and "--clear-box" in r.stderr
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "--clear-box", "Make a.txt say b. FAKE:done")
+    assert w.mates("wait", 1, "--timeout", "60").stdout.startswith("done: a.txt: b")
+
+
 def test_wait_stops_a_qwen_only_opencode_kept_going(w):
     """docs/bugs.md, 2026-11-16: done.md, then OpenCode compacted and continued Qwen itself;
     wait reports done and stops the pane instead of waiting hours for it."""

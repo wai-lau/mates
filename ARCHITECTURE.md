@@ -439,7 +439,8 @@ again); `mates discard` gives up on the task and keeps Qwen's work on a ref.
 3. this would be a new task and 3 lead tasks are already open across all repos
    (`QWEN_TASK_CAP`, `_open_qwen_tasks`);
 4. the pane is under 40 columns or 12 rows (`_refuse_narrow`);
-5. the input box holds text, since Wai may be typing (`input_empty`);
+5. the input box holds text (`input_text`): the refusal prints it, and the same
+   command with `--clear-box` deletes it (Backspace presses) and goes on;
 6. parallel is off and another pane in this repo has an open task;
 7. the worktree has work that is not merged (`worktree_dirty`);
 8. with `--check`: the check passes on the lead's HEAD (it proves nothing), or

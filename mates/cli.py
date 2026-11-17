@@ -688,28 +688,67 @@ def busy(q, db, pane, since=0, sid=None, lines=None):
     return session.opencode_state(sid, db, since) == "busy"
 
 
-def input_empty(pane):
-    """True when the OpenCode input box in `pane` holds no typed text. A fresh session
-    shows the placeholder. A used one shows only blank rows: the ┃ rows above the box's
-    status row, which sits on the box's bottom border. Past user messages higher up share
-    the ┃ gutter but end at a blank line. A screen with neither reads as not empty (fail
-    closed: never paste over what Wai is typing)."""
+def input_text(pane):
+    """The text in the OpenCode input box of `pane`: "" when empty, else the ┃ rows above
+    the box's status row (which sits on the box's bottom border), stripped and joined by
+    newlines; None when the screen cannot be read as a box. A fresh session shows the
+    placeholder (empty). A used one shows only blank rows. Past user messages higher up
+    share the ┃ gutter but end at a blank line."""
     lines = _tmux_out("capture-pane", "-p", "-t", pane).splitlines()
     if any(INPUT_EMPTY.search(line) for line in lines):
-        return True
+        return ""
     border = _box_border(lines)
     # Only the box's own columns: a wide pane prints a side column (path, branch) past the
     # end of the border.
     end = len(lines[border].rstrip()) if border is not None else 0
     if border is None or border < 1 or not lines[border - 1][:end].lstrip().startswith("┃"):
-        return False
+        return None
     rows = []
     for line in reversed(lines[:border - 1]):  # up from the status row
         s = line[:end].lstrip()
         if not s.startswith("┃"):
             break
         rows.append(s[1:].strip())
-    return bool(rows) and not any(rows)
+    if not rows:
+        return None
+    return "\n".join(reversed(rows)).strip()
+
+
+def input_empty(pane):
+    """True when the OpenCode input box in `pane` holds no typed text. An unreadable screen
+    reads as not empty (fail closed: never paste over what Wai is typing)."""
+    return input_text(pane) == ""
+
+
+BOX_TEXT_SHOWN = 2000  # characters of the box's text a refusal prints
+BSPACE_MARGIN = 20  # extra Backspaces past the text: the rows may hide spaces and newlines
+BSPACE_CHUNK = 200  # keys per tmux send-keys call
+
+
+def _box_guard(n, pane, clear):
+    """Die unless the input box of Qwen pane n is empty. With `clear`, delete its text first
+    (Backspace presses, as a typist would: OpenCode's kill-line and select-all keys are
+    version-dependent and Ctrl-C quits an empty prompt, while Backspace works the same on
+    every version and the e2e fake) and refuse if it is still not empty. Without, refuse
+    with the text, so the lead can carry what matters and run again with --clear-box."""
+    text = input_text(pane)
+    if text == "":
+        return
+    if text is not None and clear:
+        left = len(text) + BSPACE_MARGIN
+        while left > 0:
+            k = min(left, BSPACE_CHUNK)
+            _tmux_out("send-keys", "-t", pane, *["BSpace"] * k)
+            left -= k
+        if input_empty(pane):
+            return
+        die(f"Qwen pane {n} still has text in its input box after --clear-box; not pasting over it")
+    if text is None:
+        die(f"Qwen pane {n}: the input box cannot be read (not pasting over what may be typed); try again")
+    die(f"Qwen pane {n} has text in its input box (Wai may be typing); not pasting over it. "
+        f"Its text:\n{shown(text)[:BOX_TEXT_SHOWN]}\n"
+        "Carry anything that matters into your own message, then run the same command again "
+        "with --clear-box to delete the text and send. Do not wait on it.")
 
 
 def paste(pane, text):
@@ -905,12 +944,13 @@ def _parser(name, usage):
 # --- send, wait, answer ------------------------------------------------------------------
 
 def send(args):
-    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] "<text>"')
+    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] [--clear-box] "<text>"')
     p.add_argument("n", type=int)
     p.add_argument("--reason", required=True)
     p.add_argument("--files", default="")
     p.add_argument("--continue", dest="cont", action="store_true")
     p.add_argument("--check", default=None)
+    p.add_argument("--clear-box", action="store_true")
     p.add_argument("text", nargs="+")
     a = p.parse_args(args)
     text = " ".join(a.text)
@@ -930,8 +970,7 @@ def send(args):
             die(f"the Qwen task cap is reached ({QWEN_TASK_CAP} open tasks: {', '.join(holding)}); "
                 "merge or discard one first")
     _refuse_narrow(a.n, pane)
-    if not input_empty(pane):
-        die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
+    _box_guard(a.n, pane, a.clear_box)
     if not state.get("parallel"):
         others = [o["n"] for o in state["qwens"] if o["n"] != a.n and o.get("task") and not o.get("closed")]
         if others:
@@ -1086,9 +1125,10 @@ def wait(args):
 
 
 def answer(args):
-    p = _parser("answer", 'mates answer N [--sendback] "<text>"')
+    p = _parser("answer", 'mates answer N [--sendback] [--clear-box] "<text>"')
     p.add_argument("n", type=int)
     p.add_argument("--sendback", action="store_true")
+    p.add_argument("--clear-box", action="store_true")
     p.add_argument("text", nargs="+")
     a = p.parse_args(args)
     text = " ".join(a.text)
@@ -1103,8 +1143,7 @@ def answer(args):
     if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
     _refuse_narrow(a.n, pane)
-    if not input_empty(pane):
-        die(f"Qwen pane {a.n} has text in its input box (Wai may be typing); not pasting over it")
+    _box_guard(a.n, pane, a.clear_box)
     question = _unsafe(read_protocol, q["worktree"], "question.md")
     _unsafe(clear_protocol, q["worktree"])
     if question is not None or not a.sendback:

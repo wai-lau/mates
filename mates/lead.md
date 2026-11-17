@@ -50,6 +50,8 @@ Qwen and your own work.
 No check, no Qwen: if you cannot write the command that proves the task done,
 do it yourself. Send the check with the task (`--check "<cmd>"`); send refuses
 it if the check passes on the base (it proves nothing) or cannot run there.
+If send or answer refuses on text in Qwen's input box, read it, put what matters into
+your message, and run the command again with `--clear-box`; never wait on it.
 A clear auditable outcome means a check you wrote (tests or a probe) that is red
 on base: tests Qwen writes are not a check, since it grades itself. Docs, history
 with owner quotes, and look-only work stay with you unless the check pins the
