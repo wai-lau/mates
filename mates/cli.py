@@ -93,7 +93,9 @@ def sandbox_env(root, runtime):
 
 def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     """The command a Qwen pane runs. It waits for `release_pane` (so the pane is
-    tagged before qwen can fail), then runs qwen in the worktree with read-only git.
+    tagged before qwen can fail), then runs qwen in the worktree with read-only git,
+    but only if the go signal came AND the pane's `@mates` tag is set; otherwise it
+    says why and fails (the pane is marked failed), so no untagged qwen ever runs.
     While qwen runs the pane has `@mates-qwen-live=1` (`send` and `answer` need it:
     `#{pane_current_command}` would only ever show this wrapper's bash).
     Exit 0 closes the pane; any other exit marks it `@mates-failed=1` (the tag
@@ -106,9 +108,13 @@ def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     run = [*env, shlex.quote(session._qwen())]
     if opencode_session:
         run += ["-s", shlex.quote(opencode_session)]
-    script = ('timeout 30 tmux wait-for "mates-go-$TMUX_PANE"; '
+    script = ('if ! timeout 30 tmux wait-for "mates-go-$TMUX_PANE"; then '
+              'echo "mates: no go signal within 30s; qwen not started" >&2; rc=1; '
+              'elif [ -z "$(tmux display -p -t "$TMUX_PANE" \'#{@mates}\')" ]; then '
+              'echo "mates: this pane is not tagged; qwen not started" >&2; rc=1; '
+              'else '
               f'cd {shlex.quote(str(worktree))} && tmux set-option -p -t "$TMUX_PANE" {QWEN_LIVE} 1 && '
-              f'{" ".join(run)}; rc=$?; '
+              f'{" ".join(run)}; rc=$?; fi; '
               f'tmux set-option -p -u -t "$TMUX_PANE" {QWEN_LIVE}; '
               '[ "$rc" = 0 ] && exit 0; '
               'tmux set-option -p -t "$TMUX_PANE" @mates-failed 1; '

@@ -393,6 +393,47 @@ def test_qwen_cmd_marks_live_while_qwen_runs():
         < script.index("@mates-failed 1")
 
 
+def _run_wrapper(tmp_path, monkeypatch, go_rc, tag):
+    """Run the qwen_cmd wrapper under bash with a stub tmux (wait-for exits `go_rc`,
+    display prints `tag`) and a stub qwen that leaves a file. Returns (tmux calls, ran, stderr)."""
+    root = _root(tmp_path)
+    wt = Path(_wt(root, 1))
+    wt.mkdir(parents=True, exist_ok=True)
+    bindir = tmp_path / "wbin"
+    bindir.mkdir()
+    log = tmp_path / "wrapper-tmux.log"
+    (bindir / "tmux").write_text('#!/bin/sh\necho "$*" >> "$WLOG"\n'
+                                 '[ "$1" = wait-for ] && exit "$GO_RC"\n'
+                                 '[ "$1" = display ] && printf %s "$TAG"\nexit 0\n')
+    (bindir / "tmux").chmod(0o755)
+    (bindir / "qwen").write_text('#!/bin/sh\ntouch "$WRAN"\n')
+    (bindir / "qwen").chmod(0o755)
+    ran = tmp_path / "qwen-ran"
+    monkeypatch.setenv("MATES_QWEN", str(bindir / "qwen"))
+    cmd = cli.qwen_cmd(str(wt), None, None, root)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "WLOG": str(log), "WRAN": str(ran),
+           "GO_RC": str(go_rc), "TAG": tag, "TMUX_PANE": "%9", "SHELL": "/bin/true"}
+    p = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=60)
+    return log.read_text().splitlines(), ran.exists(), p.stderr
+
+
+def test_wrapper_starts_qwen_only_after_go_and_a_tag(tmp_path, monkeypatch):
+    calls, ran, err = _run_wrapper(tmp_path, monkeypatch, 0, "r:1")
+    assert ran and not any("@mates-failed" in c for c in calls)
+
+
+def test_wrapper_does_not_start_qwen_without_the_go_signal(tmp_path, monkeypatch):
+    calls, ran, err = _run_wrapper(tmp_path, monkeypatch, 124, "r:1")
+    assert not ran and "go signal" in err
+    assert any("set-option -p -t %9 @mates-failed 1" in c for c in calls)
+
+
+def test_wrapper_does_not_start_qwen_in_an_untagged_pane(tmp_path, monkeypatch):
+    calls, ran, err = _run_wrapper(tmp_path, monkeypatch, 0, "")
+    assert not ran and "not tagged" in err
+    assert any("set-option -p -t %9 @mates-failed 1" in c for c in calls)
+
+
 # --- delegation: send, wait, answer, check, diff, sync, merge, discard ---------------------
 # A real repo with Qwen worktree 1, a stub tmux whose answers come from files, a stub
 # `qwen` whose `exec` records how it was called and runs the command (no sandbox), and an
