@@ -122,6 +122,6 @@ def test_a_snoozed_pace_cap_means_work_through_it_but_followers_still_follow_the
     h = usage.headroom(_data(75, 30), NOW)  # day 6: over pace, followers off
     assert h["on"] is False and h["snoozed_until"] == NOW + 1800
     line = usage.report(h)
-    assert "snoozed" in line and "work through" in line and line.startswith("followers off")
+    assert line.startswith("pace cap snoozed") and "never wait for the allowance" in line and "followers off" in line
     snooze.write_text(str(int(NOW - 60)))  # an expired snooze says nothing
     assert "snoozed" not in usage.report(usage.headroom(_data(75, 30), NOW))

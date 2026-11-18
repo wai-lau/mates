@@ -95,8 +95,12 @@ def report(h):
     """One line for the lead (plus a note when Wai has snoozed the pace cap)."""
     line = _report(h)
     if h.get("snoozed_until"):
-        line += (f". Wai has snoozed the pace cap until {time.strftime('%H:%M', time.localtime(h['snoozed_until']))}: "
-                 "work through the paced limits; Claude followers still follow this switch")
+        # First, so the allowance figures after it never read as "wait" (Wai, 2026-11-18, to a lead
+        # that scheduled a later pickup while snoozed: "NO / pace-snooze is on, means keep working,
+        # just don't launch Claude followers").
+        line = (f"pace cap snoozed until {time.strftime('%H:%M', time.localtime(h['snoozed_until']))}: keep "
+                "working now through the paced limits, with Qwen and yourself; never wait for the allowance. "
+                "Claude followers still follow this switch: " + line)
     return line
 
 

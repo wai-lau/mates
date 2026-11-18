@@ -56,6 +56,8 @@ def _isolated(tmp_path, monkeypatch, request):
     import session
     monkeypatch.setattr(cli, "LOG", tmp_path / "audit-log.jsonl")
     monkeypatch.setattr(session, "STATE_DIR", tmp_path / "state-sessions")
+    import usage
+    monkeypatch.setattr(usage, "snooze_path", lambda: tmp_path / "no-pace-snooze")  # Wai's real snooze
     if "real_reaper" not in request.keywords:
         monkeypatch.setattr(cli, "start_reaper", lambda root: None)
     monkeypatch.setattr(cli, "PANE_STAGGER_S", 0)

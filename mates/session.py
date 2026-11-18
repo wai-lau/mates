@@ -209,7 +209,10 @@ def _qwen():
 
 
 def opencode_db(root):
-    out = subprocess.run([_qwen(), "opencode-dir"], cwd=root, check=True, capture_output=True, text=True).stdout
+    # QWEN_ROOT names the repo: run without it, bin/qwen takes a hand launch, which may mount
+    # only a project under ~/src
+    out = subprocess.run([_qwen(), "opencode-dir"], cwd=root, check=True, capture_output=True, text=True,
+                         env={**os.environ, "QWEN_ROOT": str(root)}).stdout
     return Path(out.strip()) / "opencode.db"
 
 

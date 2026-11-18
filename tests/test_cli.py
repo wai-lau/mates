@@ -4547,3 +4547,17 @@ def test_the_lead_runs_on_its_pane_theme_when_bin_mates_names_one(m, monkeypatch
     assert _after(argv, "--settings") == '{"theme": "custom:pane-4242"}'
     monkeypatch.setenv("MATES_PANE_THEME", 'x", "permissions": {}')
     assert "--settings" not in cli._claude_argv(m.root, [], [])
+
+
+def test_an_older_bin_mates_parent_gets_a_pane_theme_made(m, monkeypatch, tmp_path):
+    """A bin/mates started before it named a theme relaunches through this launch on /restart."""
+    monkeypatch.delenv("MATES_PANE_THEME", raising=False)
+    monkeypatch.setattr(cli.os, "getppid", lambda: 4243)
+    real = cli.Path.read_bytes
+    monkeypatch.setattr(cli.Path, "read_bytes", lambda self: b"bash\0/home/x/bin/mates\0"
+                        if str(self) == "/proc/4243/cmdline" else real(self))
+    argv = cli._claude_argv(m.root, [], [])
+    assert _after(argv, "--settings") == '{"theme": "custom:pane-4243"}'
+    assert (Path.home() / ".claude" / "themes" / "pane-4243.json").exists()
+    monkeypatch.setattr(cli.os, "getppid", lambda: 1)  # not bin/mates: no theme
+    assert "--settings" not in cli._claude_argv(m.root, [], [])

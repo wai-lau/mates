@@ -55,7 +55,9 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 - When Wai has snoozed the pace cap (`pace-snooze`; `mates followers` says so), work
   through the paced limits; Claude followers still follow the switch ("for pace-snooze,
   if I've toggled it on, it means work through paced limits / no Claude followers still
-  applies though").
+  applies though"). Being over the day's allowance is then never a reason to wait,
+  idle or schedule a later pickup ("NO / pace-snooze is on, means keep working, just
+  don't launch Claude followers").
 - Off: the only change is no new subagents. Keep working: start the work now,
   sending Qwen what it can do and doing the rest yourself. Never put work off
   until the weekly reset, and never tell Wai that work waits for it.

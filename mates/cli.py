@@ -250,11 +250,36 @@ def launch_plan(state, root, fresh, claude_args, runtime_dir=None):
             "warnings": warnings, "state": st}
 
 
+def _pane_theme():
+    """The lead's pane theme: MATES_PANE_THEME from bin/mates; else, when our parent is a bin/mates
+    started before it named one (its /restart relaunch runs this launch), pane-<its pid>, made here
+    so the statusline has a file to recolour."""
+    theme = os.environ.get("MATES_PANE_THEME", "")
+    if re.fullmatch(r"pane-\d+", theme):
+        return theme
+    ppid = os.getppid()
+    try:
+        args = Path(f"/proc/{ppid}/cmdline").read_bytes().split(b"\0")[:2]
+    except OSError:
+        return None
+    if not any(a.endswith(b"/bin/mates") for a in args):
+        return None
+    theme = f"pane-{ppid}"
+    f = Path.home() / ".claude" / "themes" / f"{theme}.json"
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        if not f.exists():
+            f.write_text(json.dumps({"name": theme, "base": "dark", "overrides": {}}) + "\n")
+    except OSError:
+        return None
+    return theme
+
+
 def _claude_argv(root, session_args, claude_args):
     # Prompt bar = title colour: bin/mates names a theme of its own (MATES_PANE_THEME, like the
     # claude() wrapper in ~/.zshrc does), which ~/.claude/statusline-command.sh recolours.
-    theme = os.environ.get("MATES_PANE_THEME", "")
-    settings = ["--settings", json.dumps({"theme": f"custom:{theme}"})] if re.fullmatch(r"pane-\d+", theme) else []
+    theme = _pane_theme()
+    settings = ["--settings", json.dumps({"theme": f"custom:{theme}"})] if theme else []
     return ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", _claude(), *settings,
             *session_args, "--append-system-prompt", _lead_prompt(), *claude_args]
 
