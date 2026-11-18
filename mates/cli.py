@@ -1182,12 +1182,29 @@ def _quiet_s(worktree, db, since):
     return 0.0 if last is None and not since else time.time() - max(last or 0, since)
 
 
+def wait_lock_path(root, n):
+    """The lock one `mates wait` holds on pane n of this repo while it waits."""
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "mates" / f"wait-{session.repo_key(str(root))}-{n}.lock"
+
+
 def wait(args):
     p = _parser("wait", "mates wait N [--timeout S]")
     p.add_argument("n", type=int)
     p.add_argument("--timeout", type=float, default=WAIT_DEFAULT_S)
     a = p.parse_args(args)
     root = _lead_root()
+    # One wait per pane (Wai, 2026-11-18: leads opened "a bunch of shells", two waits on one
+    # pane in the same minute). A second one steps aside at once with exit 0, so no rerun loop
+    # spins on it; the lock goes with this process.
+    lock = wait_lock_path(root, a.n)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock_f = open(lock, "w")  # noqa: SIM115 (held for the life of this wait)
+    try:
+        fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"already-waiting: another mates wait {a.n} is running on this pane; use its result")
+        return 0
     state = _load(root)
     q = _qentry(state, a.n)
     task = q.get("task")

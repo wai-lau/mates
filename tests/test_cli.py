@@ -4359,3 +4359,18 @@ def test_refusal_messages(m, monkeypatch, setup, args, message, code):
     got, out, err = m.run(*args)
     assert got == code and message in err, (got, out, err)
     assert "PRIVATE" not in out + err
+
+
+def test_a_second_wait_on_a_pane_steps_aside(m):
+    """One background wait per pane (Wai, 2026-11-18: leads opened "a bunch of shells", two
+    waits on the same pane in the same minute): a second `mates wait N` while one runs exits
+    at once with code 0 (so no rerun loop spins) and says so."""
+    import fcntl
+    m.send()
+    lock = cli.wait_lock_path(str(m.root), 1)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        t0 = time.time()
+        code, out, _ = m.run("wait", 1, "--timeout", "30")
+    assert code == 0 and out.startswith("already-waiting") and time.time() - t0 < 5

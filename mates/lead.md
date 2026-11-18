@@ -107,7 +107,10 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 1. `mates send N --reason "<why Qwen>" --files a,b --check "<cmd>" "<task + files>"`
    (`--continue` keeps the OpenCode session, for a task that builds on what
    Wai and Qwen just discussed).
-2. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `stalled`,
+2. One background wait per pane: `until mates wait N; [ $? -ne 1 ]; do :; done`
+   (never a second one for the same pane: it prints `already-waiting` and stops).
+   Other background shells only for real long jobs (a sim, a suite), one each,
+   stopped when done; no `sleep` polling loops. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `stalled`,
    `dead` or `failed` and exits 0; `timeout` exits 1: rerun it only on exit 1; any other
    non-zero exit is an error to read, not to retry). On `question:`,
    `mates answer N "<answer>"`.
