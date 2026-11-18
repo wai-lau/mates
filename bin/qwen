@@ -51,6 +51,8 @@
 #      a PATH= line goes in front of the sandbox PATH)
 #      QWEN_PROOFS=<dir> (the lead's proof files for checks: bound read-only at /opt/proofs,
 #      $MATES_PROOFS inside; never inside the repo, where Qwen can write)
+#      QWEN_BRIEF=<dir> (panes only, not exec: the lead's brief for OpenCode's side panel,
+#      bound read-only at /opt/mates-brief; never inside the repo)
 # shellcheck disable=SC2015  # `cond && [ -d x ] || die`: the die on either failure is the point
 set -euo pipefail
 
@@ -359,7 +361,7 @@ make_home() {
 run_sandboxed() {
   local host=$1; shift
   command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
-  local top="" gitdir="" ocdir="" cwd rt="" pf="" chk="" mnt
+  local top="" gitdir="" ocdir="" cwd rt="" pf="" bf="" chk="" mnt
   if [ -n "${QWEN_CHECK_DIR:-}" ]; then
     # A check (mates check): only this snapshot folder is mounted, at a neutral path, and
     # no repo at all. Its parents in the sandbox are /work and /, so no file Qwen wrote
@@ -392,6 +394,17 @@ run_sandboxed() {
     [ "$pf" != / ] || die "QWEN_PROOFS refused: /"
     refuse_secret "$pf" && die "QWEN_PROOFS refused (secret path): $pf"
     safe_ancestry "$pf" || die "QWEN_PROOFS refused (it or a folder above it is writable by another account): $pf"
+  fi
+  # The lead's brief, shown at the top of OpenCode's side panel by the mates-brief TUI plugin
+  # (Wai, 2026-11-18): read-only, so Qwen cannot change what the panel says it was asked. A
+  # check gets none.
+  if [ -n "${QWEN_BRIEF:-}" ] && [ "$host" != - ]; then
+    bf=$(readlink -f -- "$QWEN_BRIEF" 2>/dev/null) && [ -d "$bf" ] || die "QWEN_BRIEF is not a folder: $QWEN_BRIEF"
+    case "$HOME/" in "$bf"/*) die "QWEN_BRIEF refused (it holds your home folder): $bf" ;; esac
+    case "$mnt/" in "$bf"/*) die "QWEN_BRIEF refused (it holds the repo): $bf" ;; esac
+    case "$bf/" in "$mnt"/*) die "QWEN_BRIEF refused (it is inside the repo, where Qwen can write): $bf" ;; esac
+    refuse_secret "$bf" && die "QWEN_BRIEF refused (secret path): $bf"
+    safe_ancestry "$bf" || die "QWEN_BRIEF refused (it or a folder above it is writable by another account): $bf"
   fi
   RUN=$(mktemp -d "$STATE/run.XXXXXX")
   make_home "$RUN/home"
@@ -438,6 +451,7 @@ run_sandboxed() {
   fi
   [ -n "$rt" ] && A+=(--ro-bind "$rt" "$rt")
   [ -n "$pf" ] && A+=(--ro-bind "$pf" /opt/proofs --setenv MATES_PROOFS /opt/proofs)
+  [ -n "$bf" ] && A+=(--ro-bind "$bf" /opt/mates-brief)
   [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] && A+=(--ro-bind "$OPENCODE" /opt/opencode/opencode)
   local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
@@ -501,6 +515,9 @@ def write_probe(path):  # removes the probe again if the write got through
     os.remove(path)
 t("your home (~/.ssh)", lambda: os.listdir("/home/wai/.ssh"))
 t("claude login", lambda: open("/home/wai/.claude/.credentials.json").read(1))
+if os.path.isdir("/opt/mates-brief"):
+    t("brief read", lambda: open("/opt/mates-brief/brief.md").read(1))
+    t("brief write", lambda: write_probe("/opt/mates-brief/probe"))
 t("internet 1.1.1.1:443", lambda: socket.create_connection(("1.1.1.1", 443), 3))
 t("ollama via relay", lambda: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=5).read())
 t("clipboard write", lambda: subprocess.run(["xclip", "-selection", "clipboard"], input=b"qwen sandbox-test", check=True))

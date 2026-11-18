@@ -75,14 +75,42 @@ def _entry(root, n):
 
 # --- the Qwen pane wrapper ----------------------------------------------------------
 
-SANDBOX_VARS = ("QWEN_RUNTIME", "QWEN_PROOFS", "QWEN_CHECK_DIR", "QWEN_ROOT", "QWEN_GIT_RO")
+SANDBOX_VARS = ("QWEN_RUNTIME", "QWEN_PROOFS", "QWEN_CHECK_DIR", "QWEN_ROOT", "QWEN_GIT_RO", "QWEN_BRIEF")
 
 
-def sandbox_env(root, runtime):
+def brief_dir(root, n):
+    """The private folder (made if missing) holding pane n's brief for OpenCode's side panel
+    (Wai, 2026-11-18: "show the overall plan and/or the instigating prompt in that Qwen panel").
+    bin/qwen mounts it read-only for that pane only, never for a check."""
+    return Path(fsutil.state_dir("brief", session.repo_key(str(root)), str(n)))
+
+
+def _write_brief(root, n, text):
+    """Pane n's panel shows `text` (the lead's brief, as sent) until the task ends; best
+    effort: a folder that can't be made safe leaves the panel without it."""
+    try:
+        d = brief_dir(root, n)
+    except (fsutil.UnsafeDir, OSError):
+        return
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".brief-")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, d / "brief.md")
+
+
+def _clear_brief(root, n):
+    with contextlib.suppress(OSError, fsutil.UnsafeDir):
+        (brief_dir(root, n) / "brief.md").unlink(missing_ok=True)
+
+
+def sandbox_env(root, runtime, brief=None):
     """The sandbox variables every Qwen launch (pane or check) may set: the runtime and
     the proofs folder, only when they exist. The caller also clears SANDBOX_VARS first,
     so nothing inherited (a tmux server's environment, Wai's shell) enters the sandbox."""
     env = {}
+    if brief:
+        env["QWEN_BRIEF"] = str(brief)
     if runtime:
         env["QWEN_RUNTIME"] = str(runtime)
     proofs_dir = Path(root) / ".mates" / "proofs"
@@ -103,7 +131,11 @@ def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     sandbox, so it starts in the lead repo `root` (default: the worktree's repo),
     never among Qwen's files."""
     root = root or Path(worktree).parents[2]
-    sets = {**sandbox_env(root, runtime_dir), "QWEN_ROOT": str(worktree), "QWEN_GIT_RO": "1"}
+    try:  # the panel's brief: panes only; a folder that can't be made safe just shows none
+        brief = brief_dir(root, int(Path(worktree).name.rsplit("-", 1)[1]))
+    except (fsutil.UnsafeDir, ValueError, IndexError, OSError):
+        brief = None
+    sets = {**sandbox_env(root, runtime_dir, brief), "QWEN_ROOT": str(worktree), "QWEN_GIT_RO": "1"}
     env = ["env", *(f"-u {k}" for k in SANDBOX_VARS), *(f"{k}={shlex.quote(v)}" for k, v in sets.items())]
     run = [*env, shlex.quote(session._qwen())]
     if opencode_session:
@@ -686,6 +718,23 @@ def _footer(lines, border):
     return " ".join(lines[border + 1:] if border is not None else lines[-3:])
 
 
+# OpenCode's side panel (session title, context, cost) stays open (Wai, 2026-11-18: "always have
+# the right pane open for Qwen like now, it should take priority over the chat window / ctrl+x b,
+# is the shortcut to open the panel if the pane is ever resized too small to have both"). With the
+# panel hidden, OpenCode 1.19.5 moves the context figure ("37.9K (5%)") into the footer.
+PANEL_HIDDEN = re.compile(r"\d+(?:\.\d+)?K \(\d")
+
+
+def ensure_panel(pane, lines):
+    """Press Ctrl+X B when a chat shows with its side panel hidden; True if it pressed. The
+    start screen (no chat yet) has no panel and is left alone."""
+    border = _box_border(lines)
+    if border is None or not PANEL_HIDDEN.search(_footer(lines, border)):
+        return False
+    _tmux_out("send-keys", "-t", pane, "C-x", "b")
+    return True
+
+
 def _spinner(lines, border):
     """OpenCode's spinner footer: its progress glyphs (a run of ⬝ and ■; the idle footer shows
     the folder there), or the words "esc interrupt" / "esc again to interrupt". The glyphs
@@ -1111,6 +1160,7 @@ def send(args):
     if a.check:
         sent_text = text + "\n\nCheck: " + a.check
     paste(pane, _message(sent_text, q["worktree"]))
+    _write_brief(root, a.n, sent_text)  # shown at the top of OpenCode's side panel
     sid = task["opencode_session"]
     if sid is None:
         deadline = time.time() + SESSION_WAIT_S
@@ -1235,7 +1285,9 @@ def wait(args):
         # Without one, idle means no reply is running since the paste.
         found = [(word, name, *f) for name, word in (("question.md", "question"), ("done.md", "done"))
                  if (f := _unsafe(read_protocol_file, q["worktree"], name)) is not None]
-        still = busy(q, db, hit[0]) if found else busy(q, db, hit[0], since, sid)
+        lines = _screen(hit[0])
+        ensure_panel(hit[0], lines)  # Wai: OpenCode's side panel stays open
+        still = busy(q, db, hit[0], lines=lines) if found else busy(q, db, hit[0], since, sid, lines=lines)
         # Still replying after it, and only OpenCode spoke since (docs/bugs.md, 2026-11-16: after
         # an automatic compaction it continues Qwen itself, and one ran on for three hours with
         # its done.md written): stop the reply and report the file. A lead's or Wai's message
@@ -1629,6 +1681,7 @@ def merge(args):
     # Closed before it is logged: a kill in between loses a log line, where the other order left the
     # task open on merged code (a re-merge made an empty duplicate commit and a second accepted line).
     _change(root, a.n, close, task_id=task["id"])
+    _clear_brief(root, a.n)
     log_attempt(root, logged, "accepted")
     _change(root, a.n, lambda e: e.update(lead_since=logged.get("lead_since")))
     print(f"merged Qwen pane {a.n}: {commit[:12]} {message.splitlines()[0]}")
@@ -1779,6 +1832,7 @@ def discard(args):
         if "lead_since" in q:
             e["lead_since"] = q["lead_since"]
     _change(root, a.n, apply)
+    _clear_brief(root, a.n)
     print(f"discarded Qwen pane {a.n}'s task; its worktree is at the lead HEAD")
     return 0
 

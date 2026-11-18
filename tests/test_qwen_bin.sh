@@ -333,7 +333,7 @@ if [ -x /usr/bin/rg ]; then want="None None"; else want="False False"; fi
 check "OpenCode grep and glob tools follow the host's /usr/bin/rg ($want)" '[ "$tl" = "$want" ]'
 # Wai, 2026-11-12: no big OpenCode logo on a fresh pane. A TUI plugin empties the logo slot.
 tp=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plugin"])' "$T/repo/oc-tui.json" 2>/dev/null)
-check "the TUI config loads the no-logo plugin" '[ "$tp" = "['\''file:///opt/qwen-tui/no-logo.js'\'']" ]'
+check "the TUI config loads the no-logo and brief plugins" '[ "$tp" = "['\''file:///opt/qwen-tui/no-logo.js'\'', '\''file:///opt/qwen-tui/brief.js'\'']" ]'
 check "the no-logo plugin is readable in the sandbox" 'grep -q home_logo "$T/repo/oc-nologo.js"'
 # No OpenCode prompt may wait on Wai (2026-11-11: "should ask claude instead of me"): every "ask"
 # becomes "deny", and Qwen asks the lead. The real OpenCode resolves the rules (last match wins).
@@ -397,6 +397,18 @@ wait $pa $pb
 check "two qwen server calls at once start one ollama serve" '[ "$(wc -l < "$S2/starts")" = 1 ]'
 check "both callers get the same server" '[ -s "$S2/a" ] && [ "$(cat "$S2/a")" = "$(cat "$S2/b")" ]'
 pkill -f "$S2/stub/ollama"; sleep 0.2
+
+# --- the brief for OpenCode's side panel (QWEN_BRIEF): read-only in a pane, absent in a check ---
+BF=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/qwen-test-bf.XXXXXX")
+echo "brief-ok" > "$BF/brief.md"
+stb=$(QWEN_BRIEF=$BF QWEN_GIT_RO=1 in_ "$T/wt" "$QWEN" sandbox-test 2>/dev/null)
+check "pane: the brief is readable" 'grep -qF "brief read: REACHABLE" <<<"$stb"'
+check "pane: the brief cannot be changed" 'grep -qF "brief write: blocked" <<<"$stb"'
+out=$(QWEN_BRIEF=$BF in_ "$T/repo" "$QWEN" exec -- sh -c '[ -e /opt/mates-brief ] && echo yes || echo no' 2>/dev/null)
+check "check: no brief mounted" '[ "$out" = no ]'
+QWEN_BRIEF=$T/repo in_ "$T/repo" "$QWEN" sandbox-test >/dev/null 2>&1; rc=$?
+check "a brief folder that holds the repo is refused" '[ "$rc" != 0 ]'
+rm -rf "$BF"
 
 # --- sandbox-test lines -------------------------------------------------
 st=$(QWEN_GIT_RO=1 in_ "$T/wt" "$QWEN" sandbox-test 2>/dev/null)

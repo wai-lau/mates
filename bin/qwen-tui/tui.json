@@ -1,1 +1,1 @@
-{ "plugin": ["file:///opt/qwen-tui/no-logo.js"] }
+{ "plugin": ["file:///opt/qwen-tui/no-logo.js", "file:///opt/qwen-tui/brief.js"] }

@@ -4374,3 +4374,70 @@ def test_a_second_wait_on_a_pane_steps_aside(m):
         t0 = time.time()
         code, out, _ = m.run("wait", 1, "--timeout", "30")
     assert code == 0 and out.startswith("already-waiting") and time.time() - t0 < 5
+
+
+# --- OpenCode's side panel stays open (Wai, 2026-11-18: "always have the right pane open for Qwen
+# like now, it should take priority over the chat window / ctrl+x b, is the shortcut to open the
+# panel if the pane is ever resized too small to have both"). In a chat, OpenCode 1.19.5 shows the
+# panel by default and squeezes the chat to keep it; Ctrl+X B toggles it. With the panel hidden
+# the context figure moves into the footer, which is how mates tells; it then presses Ctrl+X B.
+
+PANEL_SHOWN = ["   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                     • OpenCode 1.19.5"]
+PANEL_HIDDEN = ["   ⬝⬝■■■■■■  esc        9.4K (14%)ctrl+p", "             interrupt            commands"]
+HOME_FOOTER = ["                                                      tab agents  ctrl+p commands"]
+
+
+@pytest.mark.parametrize("footer", [PANEL_HIDDEN, IDLE_FOOTER])  # IDLE_FOOTER: a real 53-column pane
+def test_wait_reopens_a_hidden_panel(m, footer):
+    m.send()
+    _capture(m, _used_screen(EMPTY_BOX, footer))
+    m.run("wait", 1, "--timeout", "0.3")
+    assert "send-keys -t %1 C-x b" in m.tmux_calls()
+
+
+def test_wait_leaves_a_shown_panel_and_the_start_screen_alone(m):
+    m.send()
+    for footer in (PANEL_SHOWN, HOME_FOOTER):
+        _capture(m, _used_screen(EMPTY_BOX, footer))
+        m.run("wait", 1, "--timeout", "0.2")
+    assert not any(c.startswith("send-keys -t %1 C-x") for c in m.tmux_calls())
+
+
+# --- the panel shows the task (Wai, 2026-11-18: "show the overall plan and/or the instigating
+# prompt in that Qwen panel"): send writes the lead's brief to a private folder per pane, bin/qwen
+# mounts it read-only (panes only, never checks), and a TUI plugin shows it at the top of
+# OpenCode's side panel; Qwen keeps its plan in OpenCode's todo list, shown below it.
+
+def test_send_writes_the_brief_for_the_panel_and_merge_clears_it(m):
+    m.send("PANEL-BRIEF fix a.txt")
+    d = cli.brief_dir(str(m.root), 1)
+    assert (d / "brief.md").read_text().startswith("PANEL-BRIEF")
+    assert os.stat(d / "brief.md").st_mode & 0o777 == 0o600 and os.stat(d).st_mode & 0o777 == 0o700
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0
+    assert not (d / "brief.md").exists()
+
+
+def test_discard_clears_the_brief(m):
+    m.send("PANEL-BRIEF fix a.txt")
+    assert m.run("discard", 1)[0] == 0
+    assert not (cli.brief_dir(str(m.root), 1) / "brief.md").exists()
+
+
+def test_panes_get_the_brief_folder_checks_do_not(m):
+    cmd = cli.qwen_cmd(str(m.wt), None, None, str(m.root))
+    assert f"QWEN_BRIEF={cli.brief_dir(str(m.root), 1)}" in cmd and cli.brief_dir(str(m.root), 1).is_dir()
+    assert "QWEN_BRIEF" in cli.SANDBOX_VARS  # cleared before every launch, so a check never gets one
+    assert "QWEN_BRIEF" not in cli.sandbox_env(str(m.root), None)
+
+
+def test_qwen_note_asks_for_the_plan_as_todos():
+    note = (cli.HERE.parent / "bin" / "qwen-sandbox.md").read_text()
+    assert "todo" in note.lower()
+
+
+def test_tui_config_loads_the_brief_plugin():
+    tui = json.loads((cli.HERE.parent / "bin" / "qwen-tui" / "tui.json").read_text())
+    assert "file:///opt/qwen-tui/brief.js" in tui["plugin"]
+    js = (cli.HERE.parent / "bin" / "qwen-tui" / "brief.js").read_text()
+    assert "sidebar_content" in js and "/opt/mates-brief/brief.md" in js
