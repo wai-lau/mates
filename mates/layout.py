@@ -25,7 +25,7 @@ def split_qwen(lead_pane, qwen_panes, cwd, cmd):
         argv = ["tmux", "split-window", "-v", "-P", "-F", "#{pane_id}", "-t", qwen_panes[-1]]
     else:
         argv = ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", lead_pane, "-l", "50%"]
-    return argv + ["-c", cwd, cmd]
+    return [*argv, "-c", cwd, cmd]
 
 
 def _tmux(*args):

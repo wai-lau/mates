@@ -184,10 +184,12 @@ def launch_plan(state, root, fresh, claude_args, runtime_dir=None):
         st["runtime"] = str(runtime_dir)
     elif st.get("runtime"):
         if not Path(st["runtime"]).exists():
-            warnings.append(f"mates: saved runtime {st['runtime']} is gone; panes start without it (the lead runs mates runtime --reason ... to rebuild)")
+            warnings.append(f"mates: saved runtime {st['runtime']} is gone; panes start without it "
+                            "(the lead runs mates runtime --reason ... to rebuild)")
             st["runtime"] = None
         else:
-            warnings.append(f"mates: keeping saved runtime {st['runtime']} (no built runtime given); use .mates/runtime.sh + mates runtime --reason ... to make it stick after restarts")
+            warnings.append(f"mates: keeping saved runtime {st['runtime']} (no built runtime given); "
+                            "use .mates/runtime.sh + mates runtime --reason ... to make it stick after restarts")
     session_args = _claude_plan(st, root, restore, warnings)
     qwens = []
     for q in _qwen_entries(st, root, restore, warnings):
@@ -214,10 +216,8 @@ def save_state(root, state):
             hit = None if q.get("closed") else session.find_pane(root, q["n"])
             if hit:
                 panes[hit[0]] = q["n"]
-        try:
+        with contextlib.suppress(RuntimeError):  # widths are cosmetic: keep the saved ones
             state["widths"] = layout.pane_widths(panes)
-        except RuntimeError:
-            pass  # widths are cosmetic: keep the saved ones
     session.save(root, state)
 
 

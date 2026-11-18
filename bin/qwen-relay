@@ -101,7 +101,7 @@ async def egress(r, w):
 
     try:
         head = await asyncio.wait_for(r.readuntil(b"\r\n\r\n"), 30)
-    except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+    except (TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
         w.close()
         return
     try:
@@ -125,7 +125,7 @@ async def egress(r, w):
         try:
             ur, uw = await asyncio.wait_for(asyncio.open_connection(sa[0], sa[1], family=fam), 15)
             break
-        except (OSError, asyncio.TimeoutError):
+        except (TimeoutError, OSError):
             continue
     else:
         return refuse(f"failed {target} (no answer)", b"502 Bad Gateway")

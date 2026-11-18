@@ -2,6 +2,7 @@
 # bin/mates: window choice, restore, failure shells. A private tmux server (-L), stub
 # claude and qwen (MATES_CLAUDE, MATES_QWEN), HOME a temp dir. No model, no real claude.
 #   bash tests/test_launcher.sh
+# shellcheck disable=SC2034  # variables read inside check '...' strings, which eval runs
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 MATES=$HERE/bin/mates

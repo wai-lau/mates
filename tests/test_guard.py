@@ -1,4 +1,5 @@
-import json, pytest
+import json
+import pytest
 import guard
 
 def d(path, added=(), removed=()):
@@ -109,7 +110,7 @@ def test_guard_flags_links_and_exec_bits():
     assert "symlink:tools/run" in f
     f = guard.guard_flags(_mode_diff("tools/run.sh", "new file mode 100755\nindex 0000000..1111111"), ["tools/run.sh"])
     assert "exec-bit:tools/run.sh" in f
-    f = guard.guard_flags(f"diff --git a/x.sh b/x.sh\nold mode 100644\nnew mode 100755\n", ["x.sh"])
+    f = guard.guard_flags("diff --git a/x.sh b/x.sh\nold mode 100644\nnew mode 100755\n", ["x.sh"])
     assert "exec-bit:x.sh" in f
     f = guard.guard_flags(_mode_diff("a.txt", "new file mode 100644\nindex 0000000..1111111"), ["a.txt"])
     assert f == []

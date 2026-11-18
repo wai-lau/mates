@@ -243,10 +243,10 @@ def test_model_relay_refuses_ambiguous_requests(model_relay, raw):
 # newlines stay, so copied code keeps its shape.
 
 def test_clip_text_drops_controls_and_hiding_characters():
-    raw = ("ls\x1b[201~rm -rf ~\r\n\tok\x07\x00\x9b31m" "‮evil‬" "zero​width⁦x⁩\n").encode()
+    raw = ("ls\x1b[201~rm -rf ~\r\n\tok\x07\x00\x9b31m" "\u202eevil\u202c" "zero\u200bwidth\u2066x\u2069\n").encode()
     assert relay.clip_text(raw) == b"ls[201~rm -rf ~\n\tok31mevilzerowidthx\n"
 
 
 def test_clip_text_keeps_plain_text_and_bad_bytes_safe():
-    assert relay.clip_text("def f():\n\treturn 1\n".encode()) == b"def f():\n\treturn 1\n"
+    assert relay.clip_text(b"def f():\n\treturn 1\n") == b"def f():\n\treturn 1\n"
     assert relay.clip_text(b"caf\xc3\xa9 \xff") == "café �".encode()

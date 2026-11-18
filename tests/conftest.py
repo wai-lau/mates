@@ -1,4 +1,9 @@
-import os, sys, pathlib, subprocess, time, uuid
+import os
+import sys
+import pathlib
+import subprocess
+import time
+import uuid
 import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "mates"))
 
@@ -32,7 +37,8 @@ def private_tmux():
 def private_dir():
     """A fresh mode-700 folder that passes fsutil.safe_ancestry (under the user runtime
     folder: tmp_path sits under /tmp, which others can write). Removed after."""
-    import shutil, tempfile
+    import shutil
+    import tempfile
     import fsutil
     d = pathlib.Path(tempfile.mkdtemp(prefix="mates-test-", dir=fsutil._private_base()))
     yield d

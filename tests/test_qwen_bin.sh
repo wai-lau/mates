@@ -4,6 +4,7 @@
 # PATH stubs (hosaka is never stopped, no digest call), OpenCode is a stub that sleeps,
 # and XDG_STATE_HOME/XDG_CONFIG_HOME are temp dirs.
 #   bash tests/test_qwen_bin.sh
+# shellcheck disable=SC2034  # variables read inside check '...' strings, which eval runs
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 QWEN=$HERE/bin/qwen
@@ -60,7 +61,7 @@ check "exec leaves no run dir behind" '[ -z "$(ls -d "$T/state/qwen"/run.* 2>/de
 in_ "$T/repo" "$QWEN" exec 2>/dev/null; rc=$?
 check "exec with no command fails" '[ "$rc" != 0 ]'
 
-( cd "$T/repo" && env -u QWEN_OPENCODE HOME=$T/no-opencode-home "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+( cd "$T/repo" && env -u QWEN_OPENCODE HOME="$T/no-opencode-home" "$QWEN" exec -- true ) 2>/dev/null; rc=$?
 check "exec works with no OpenCode installed" '[ "$rc" = 0 ]'
 
 # --- read-only git ------------------------------------------------------
@@ -337,6 +338,7 @@ check "the no-logo plugin is readable in the sandbox" 'grep -q home_logo "$T/rep
 # No OpenCode prompt may wait on Wai (2026-11-11: "should ask claude instead of me"): every "ask"
 # becomes "deny", and Qwen asks the lead. The real OpenCode resolves the rules (last match wins).
 # The lead's proofs (/opt/proofs, read-only) must be readable by OpenCode's tools, not only by bash.
+# shellcheck disable=SC2012  # a version sort of fixed names
 REAL_OC=$(ls -d "$HOME"/.local/opt/opencode-*/opencode 2>/dev/null | sort -V | tail -1)
 if [ -n "$REAL_OC" ] && [ -s "$T/repo/oc-config.json" ]; then
   mkdir -p "$T/ochome"

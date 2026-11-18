@@ -84,7 +84,7 @@ others output outputs parser passed plugin prompt public python reason recent re
 remove result results return review reviews rename routes runner sample sanity schema script scripts
 second server should simple single source spaces string struct styles summary system target tested
 testing tests things update useful values verify version within worker workers writer
-""".split())
+""".split())  # noqa: SIM905 (a word list reads better than a list literal)
 
 
 class RetroError(Exception):
@@ -92,7 +92,7 @@ class RetroError(Exception):
 
 
 def _today():
-    return datetime.datetime.now(datetime.timezone.utc).date()
+    return datetime.datetime.now(datetime.UTC).date()
 
 
 def _retros_dir():
@@ -372,8 +372,8 @@ def _chat_prompt(day, chats):
     repos together; past it, the oldest lines go first."""
     rows = []  # (time, repo, json line), every repo
     for repo, lines in chats.items():
-        for l in lines:
-            l = dict(l)
+        for line in lines:
+            l = dict(line)
             if len(l.get("text") or "") > CHAT_PER_LINE:  # cut the text, so each line stays JSON
                 l["text"] = l["text"][:CHAT_PER_LINE] + " [cut]"
             rows.append((l.get("time") or "", repo, json.dumps(l, sort_keys=True)))
@@ -390,7 +390,8 @@ def _chat_prompt(day, chats):
     for repo in chats:
         kept = [r[2] for i, r in enumerate(rows) if r[1] == repo and i not in drop]
         parts.append(f"## Messages sent to Qwen on {day} in {Path(repo).name} (one JSON line per message)")
-        parts.append("Each line is a message sent to Qwen: \"from\": \"lead\" (a lead's brief or answer) or \"other\" (Wai, or a lead pasting by hand).")
+        parts.append("Each line is a message sent to Qwen: \"from\": \"lead\" (a lead's brief or answer) "
+                     "or \"other\" (Wai, or a lead pasting by hand).")
         parts.append("\n".join(kept))
     return "\n\n".join(parts)
 
@@ -455,15 +456,15 @@ def ask_claude(prompt):
             r = subprocess.run([cli._claude(), *CLAUDE_ARGS], input=prompt, capture_output=True, text=True,
                                timeout=CLAUDE_TIMEOUT_S, cwd=cwd, env=env)
     except (OSError, subprocess.TimeoutExpired, fsutil.UnsafeDir) as e:
-        raise RetroError(f"claude did not run: {e}")
+        raise RetroError(f"claude did not run: {e}") from e
     if r.returncode != 0:
         raise RetroError(f"claude exited {r.returncode}: {r.stderr.strip()[-300:]}")
     text = claudejson.parse(r.stdout)["result"].strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
     try:
         d = json.loads(text)
-    except ValueError:
-        raise RetroError("claude's answer is not JSON")
+    except ValueError as e:
+        raise RetroError("claude's answer is not JSON") from e
     if not (isinstance(d, dict) and isinstance(d.get("findings_md"), str)
             and all(isinstance(d.get(k, []), list) for k in ("add", "merge", "retire", "proposals", "groups", "fixes"))):
         raise RetroError("claude's answer lacks findings_md, or add, merge, retire, groups, proposals or fixes is not a list")
@@ -630,7 +631,7 @@ def main(args):
         for day in days:
             lines = [r for r in recs if _day(r) == day]
             chats = {}
-            for repo, db in chat_dbs.items():
+            for repo in chat_dbs:
                 cl = chats_for.get((day, repo))
                 if cl:
                     chats[repo] = cl

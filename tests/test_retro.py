@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import cli
 import fsutil
 import retro
 from test_cli import Retro

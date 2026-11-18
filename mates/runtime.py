@@ -93,7 +93,7 @@ def _bwrap_argv(bwrap, work, dest, uv):
     a = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
          "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
          "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
-         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home", "--dir", "/home/build",
+         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home", "--dir", "/home/build",  # noqa: S108 (a mount point inside the sandbox)
          "--ro-bind", str(work / "passwd"), "/etc/passwd", "--ro-bind", str(work / "group"), "/etc/group"]
     for f in ETC:
         if os.path.exists(f"/etc/{f}"):
@@ -115,7 +115,7 @@ def _bwrap_argv(bwrap, work, dest, uv):
     inner = (f"python3 /opt/mates/qwen-relay in --sock /run/build/egress.sock --listen {PROXY} 2>/dev/null & "
              f"for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && break; sleep 0.1; done; "
              "cd /work/src && exec bash /run/build/runtime.sh")
-    return a + ["--chdir", "/work/src", "--", "/bin/bash", "-c", inner]
+    return [*a, "--chdir", "/work/src", "--", "/bin/bash", "-c", inner]
 
 
 def _build(repo, base, script, dest, log):
@@ -140,8 +140,8 @@ def _build(repo, base, script, dest, log):
                 try:
                     r = subprocess.run(_bwrap_argv(bwrap, work, dest, os.path.realpath(uv) if uv else None),
                                        cwd="/", stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, timeout=BUILD_TIMEOUT_S)
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError(f"runtime build ran over {BUILD_TIMEOUT_S}s (log: {log})")
+                except subprocess.TimeoutExpired as e:
+                    raise RuntimeError(f"runtime build ran over {BUILD_TIMEOUT_S}s (log: {log})") from e
             finally:
                 proxy.kill()
                 proxy.wait()
@@ -226,7 +226,7 @@ def ensure_runtime(repo, base, root=None) -> pathlib.Path | None:
             try:  # the host reads it: a link (to ~/.secrets), fifo or huge file is refused
                 runtime_env(dest)
             except ValueError as e:
-                raise RuntimeError(f"runtime build refused: {e}")
+                raise RuntimeError(f"runtime build refused: {e}") from e
         except BaseException:
             fsutil.force_rmtree(dest)
             raise
@@ -242,7 +242,7 @@ def _read_env(d):
     except FileNotFoundError:
         return None
     except OSError as e:  # ELOOP: a link
-        raise ValueError(f"env file is not a plain file ({e.strerror})")
+        raise ValueError(f"env file is not a plain file ({e.strerror})") from e
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode):

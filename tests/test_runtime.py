@@ -1,4 +1,10 @@
-import os, pwd, shlex, shutil, socket, subprocess, pathlib, pytest
+import os
+import pwd
+import shlex
+import shutil
+import socket
+import subprocess
+import pytest
 import fsutil
 import runtime
 
@@ -133,7 +139,7 @@ def test_build_refuses_a_lockfile_outside_the_repo(tmp_path, private_dir):
 
 def test_build_refuses_a_missing_lockfile(tmp_path, private_dir):
     r = mkrepo(tmp_path, "# lockfiles: uv.lock package-lock.json\ntrue\n")
-    with pytest.raises(RuntimeError, match="package-lock.json"):
+    with pytest.raises(RuntimeError, match=r"package-lock\.json"):
         runtime.ensure_runtime(r, head(r), root=private_dir / "rt")
 
 def test_build_cannot_reach_host_loopback(tmp_path, private_dir):

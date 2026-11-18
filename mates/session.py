@@ -488,7 +488,7 @@ def lead_usage(transcript, n, since):
     usage, hits = {}, set()
     keys = ("input_tokens", "cache_creation_input_tokens", "output_tokens", "cache_read_input_tokens")
     try:
-        fh = open(transcript, encoding="utf-8", errors="replace")
+        fh = open(transcript, encoding="utf-8", errors="replace")  # noqa: SIM115 (the open can fail; the with follows)
     except OSError:
         return None
     with fh:

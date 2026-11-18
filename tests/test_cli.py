@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import os
@@ -189,10 +190,8 @@ def test_lead_commands_run_from_any_claude_session(capsys, tmp_path, monkeypatch
     root.mkdir()
     monkeypatch.setenv("MATES_ROOT", str(root))
     session.save(str(root.resolve()), session.new_state(str(root.resolve())))
-    try:
+    with contextlib.suppress(SystemExit):
         cli.main(["parallel", "on", "--reason", "test"])
-    except SystemExit:
-        pass
     assert "MATES_LEAD" not in capsys.readouterr().err
 
 
@@ -211,7 +210,7 @@ exit 0
     monkeypatch.setenv("TMUX_PANE", "%7")
     monkeypatch.setenv("MATES_ROOT", str(root))
     started = []
-    monkeypatch.setattr(cli, "start_reaper", lambda r: started.append(r))
+    monkeypatch.setattr(cli, "start_reaper", started.append)
     monkeypatch.setattr(cli, "_claude_pid", lambda: 4242)
     return root, started
 
@@ -260,7 +259,7 @@ def test_start_needs_tmux(tmp_path, monkeypatch, capsys):
 def test_open_commands_are_exactly_these():
     """Only these run outside a lead (Wai's shell, Qwen's OpenCode): adding one is a deliberate
     change (tests review 2026-11-17: `merge` added to OPEN_COMMANDS went unnoticed)."""
-    assert cli.OPEN_COMMANDS == {"launch", "list", "log", "retro", "followers"}
+    assert {"launch", "list", "log", "retro", "followers"} == cli.OPEN_COMMANDS
 
 
 @pytest.mark.parametrize("cmd", sorted(set(cli.COMMANDS) - cli.OPEN_COMMANDS))
@@ -2325,8 +2324,8 @@ def _used_screen(box_rows, footer):
             "  ┃", "  ┃  fix the clock", "  ┃", "",
             "     + Thought: 2.1s", "", "     Fixed.", "",
             "     ▣  Build · qwen3.8-27b-turbo · 40s", ""]
-    box = box_rows + ["  ┃  Build · qwen3.8-27b-turbo local", "  ╹" + "▀" * 56]
-    return "\n".join(["     earlier reply"] * 20 + chat + box + footer) + "\n"
+    box = [*box_rows, "  ┃  Build · qwen3.8-27b-turbo local", "  ╹" + "▀" * 56]
+    return "\n".join([*["     earlier reply"] * 20, *chat, *box, *footer]) + "\n"
 
 
 def test_input_empty_used_session(m):
@@ -2384,7 +2383,7 @@ def test_mid_reply_outlasts_opencodes_request_timeout():
     database write (2026-11-17: 30 min of queueing read as idle); only past that is a reply dead."""
     import re as _re
     ms = int(_re.search(r'"headerTimeout": (\d+)', (cli.HERE.parent / "bin" / "qwen").read_text()).group(1))
-    assert cli.MID_REPLY_S > ms / 1000
+    assert ms / 1000 < cli.MID_REPLY_S
 
 
 def test_check_works_when_the_pane_is_gone(m):
@@ -2433,7 +2432,7 @@ def _chat_db(rt, monkeypatch):
 def _chat_msg(db, when, text=None, repo="/home/x/src/widget", n=1, role="user", parent=None, parts=None):
     """One message; `parts` is a list of OpenCode part dicts (default: one text part).
     `when` is an ISO UTC time like 2026-11-09T12:00:00."""
-    ms = int(datetime.datetime.fromisoformat(when).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+    ms = int(datetime.datetime.fromisoformat(when).replace(tzinfo=datetime.UTC).timestamp() * 1000)
     sid = f"ses_{repo.strip('/').replace('/', '_')}_{n}_{parent or 'top'}"
     con = sqlite3.connect(db)
     con.execute("INSERT OR IGNORE INTO session VALUES (?, 'p', ?, ?, 't', ?, ?)",

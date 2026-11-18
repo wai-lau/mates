@@ -27,8 +27,8 @@ SUMMARY_MAX = 50  # table cells are cut here
 def _table(headers, rows):
     rows = [[str(c) for c in r] for r in rows]
     widths = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h) for i, h in enumerate(headers)]
-    for r in [list(headers)] + rows:
-        print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
+    for r in [list(headers), *rows]:
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths, strict=False)).rstrip())
 
 
 def _cut(text, n=SUMMARY_MAX):
@@ -57,8 +57,8 @@ def add(args):
     cli._parser("add", "mates add").parse_args(args)
     root = cli._lead_root()
     state = cli._load(root)
-    lead = session.find_lead(root) or cli.die("there is no mates lead pane for this repo (run mates start from this Claude session, "
-                                                     "or start it with mates)")
+    lead = session.find_lead(root) or cli.die(
+        "there is no mates lead pane for this repo (run mates start from this Claude session, or start it with mates)")
     found = _open_panes(root, state)
     try:  # the Qwen panes top to bottom, so the new one opens below the bottom one
         order = [w["pane"] for w in layout.pane_widths(found)]

@@ -1,4 +1,5 @@
-import json, pytest
+import json
+import pytest
 import logrec
 
 def rec(**kw):
