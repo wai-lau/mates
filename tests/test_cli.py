@@ -4537,3 +4537,13 @@ def test_discard_fixed_and_failed_together_refused(m):
     m.send()
     code, _, err = m.run("discard", 1, "--fixed", "--failed")
     assert code != 0 and m.task() is not None
+
+
+def test_the_lead_runs_on_its_pane_theme_when_bin_mates_names_one(m, monkeypatch):
+    """Prompt bar = title colour (Wai, 2026-11-18): bin/mates names a theme of its own,
+    pane-<its pid>, like the claude() wrapper in ~/.zshrc; anything else is ignored."""
+    monkeypatch.setenv("MATES_PANE_THEME", "pane-4242")
+    argv = cli._claude_argv(m.root, [], [])
+    assert _after(argv, "--settings") == '{"theme": "custom:pane-4242"}'
+    monkeypatch.setenv("MATES_PANE_THEME", 'x", "permissions": {}')
+    assert "--settings" not in cli._claude_argv(m.root, [], [])

@@ -251,7 +251,11 @@ def launch_plan(state, root, fresh, claude_args, runtime_dir=None):
 
 
 def _claude_argv(root, session_args, claude_args):
-    return ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", _claude(),
+    # Prompt bar = title colour: bin/mates names a theme of its own (MATES_PANE_THEME, like the
+    # claude() wrapper in ~/.zshrc does), which ~/.claude/statusline-command.sh recolours.
+    theme = os.environ.get("MATES_PANE_THEME", "")
+    settings = ["--settings", json.dumps({"theme": f"custom:{theme}"})] if re.fullmatch(r"pane-\d+", theme) else []
+    return ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", _claude(), *settings,
             *session_args, "--append-system-prompt", _lead_prompt(), *claude_args]
 
 

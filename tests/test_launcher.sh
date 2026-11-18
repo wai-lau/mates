@@ -33,7 +33,8 @@ cat > "$T/claude" <<EOF
 printf '\\033[?1000h\\033[?1006h'  # like Claude Code's TUI: mouse reporting on; a killed one leaves it on
 b=\$(basename "\$PWD"); sid= title= resume=
 while [ \$# -gt 0 ]; do
-  case \$1 in --session-id) sid=\$2; shift ;; -n) title=\$2; shift ;; --resume) resume=\$2; shift ;; esac
+  case \$1 in --session-id) sid=\$2; shift ;; -n) title=\$2; shift ;; --resume) resume=\$2; shift ;;
+    --settings) echo "\$(basename "\$PWD") \$2" >> '$T/settings.log'; shift ;; esac
   shift
 done
 echo "\$b lead=\$MATES_LEAD root=\$MATES_ROOT key=\${ANTHROPIC_API_KEY-unset} sid=\$sid resume=\$resume" >> '$T/claude.log'
@@ -189,6 +190,7 @@ check "started lead gone: the stale pid is cleared" 'waitfor "[ -z \"\$(tx show-
 # --- /restart on a mates-launched lead: claude is killed after ~/.claude/.restart.<bin/mates pid>
 # is written; bin/mates relaunches it on that conversation with a fresh argv, then the note ---
 mkrepo r9; K9=$(key r9)
+mkdir -p "$T/home/.claude/themes"; echo '{}' > "$T/home/.claude/themes/pane-999999999.json"
 tx new-session -d -s t9 -x 200 -y 50 -c "$T/r9" "$MATES"
 waitfor '[ "$(count r9 claude)" = 1 ] && [ -n "$(tagged "$K9:1")" ]'
 L9=$(tagged "$K9:lead")
@@ -203,6 +205,11 @@ check "restart: claude comes back in the same pane" 'waitfor "[ \"\$(count r9 cl
 check "restart: it resumes the conversation /restart named" 'grep -q "^r9 .* resume=restart-sid-123$" "$T/claude.log"'
 check "restart: the restart file is used up" '[ ! -e "$T/home/.claude/.restart.$MP" ]'
 check "restart: still the tagged lead pane" '[ "$(tagged "$K9:lead")" = "$L9" ]'
+# prompt bar = title colour: the lead runs on bin/mates' own pane theme, which the statusline recolours
+check "theme: the lead's claude runs on bin/mates' pane theme, each launch" \
+  '[ "$(grep -c "^r9 {\"theme\": \"custom:pane-$MP\"}$" "$T/settings.log")" = 2 ]'
+check "theme: bin/mates made the theme file" '[ -f "$T/home/.claude/themes/pane-$MP.json" ]'
+check "theme: a gone process's theme is pruned" '[ ! -e "$T/home/.claude/themes/pane-999999999.json" ]'
 echo 0 > "$T/ctl/r9.quit"
 
 # --- bin/mates refuses inside a Qwen worktree ------------------------------------------

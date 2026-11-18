@@ -76,11 +76,29 @@ go_to() { # show window $1 and stop; $2 says why
 # reporting, key modes): with mouse reporting left on, every mouse move types junk into the shell
 # (2026-11-18: a killed lead's pane filled with "35;127;45M..." and zsh ran it as commands).
 reset_term() {
+  stty sane 2>/dev/null  # a SIGKILLed claude leaves the tty raw
   printf '\033[?1049l\033[?25h\033[0m\033[?2004l\033[?1004l\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[<u\033[>4m' 2>/dev/null
+}
+
+# Prompt bar = title colour, as the claude() wrapper in ~/.zshrc does it: the lead's claude runs on
+# a theme of its own, ~/.claude/themes/pane-<our pid>.json, which ~/.claude/statusline-command.sh
+# recolours to the session's title colour (it finds the file by claude's parent pid: us).
+# Themes of processes that are gone are pruned (a closed pane kills us before any cleanup).
+pane_theme() {
+  local d="$HOME/.claude/themes" f p
+  mkdir -p "$d" || return
+  for f in "$d"/pane-*.json; do
+    [ -e "$f" ] || continue
+    p=${f##*/pane-}; p=${p%.json}
+    kill -0 "$p" 2>/dev/null || rm -f "$f"
+  done
+  [ -f "$d/pane-$$.json" ] || printf '{"name":"pane-%s","base":"dark","overrides":{}}\n' "$$" > "$d/pane-$$.json"
 }
 
 run_lead() { # this pane becomes the lead: cli.py starts the Qwen panes, then claude runs here as our child
   local out rc argv
+  pane_theme
+  export MATES_PANE_THEME="pane-$$"  # cli.py's launch puts it in claude's --settings
   out=$(mktemp) || die "mktemp failed"
   python3 "$CLI" launch "$@" > "$out"; rc=$?
   if [ "$rc" != 0 ]; then
