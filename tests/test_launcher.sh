@@ -30,6 +30,7 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER
 # runs until ctl/<repo>.quit exists, then exits with the code in it.
 cat > "$T/claude" <<EOF
 #!/bin/sh
+printf '\\033[?1000h\\033[?1006h'  # like Claude Code's TUI: mouse reporting on; a killed one leaves it on
 b=\$(basename "\$PWD"); sid= title= resume=
 while [ \$# -gt 0 ]; do
   case \$1 in --session-id) sid=\$2; shift ;; -n) title=\$2; shift ;; --resume) resume=\$2; shift ;; esac
@@ -147,6 +148,8 @@ check "failing claude: the message is shown" 'tx capture-pane -p -t "$P5" | grep
 check "failing claude: the pane stays, a shell in it" \
   '[ -n "$(tx display -p -t "$P5" "#{pane_id}" 2>/dev/null)" ] && [ "$(tx display -p -t "$P5" "#{pane_current_command}")" = sh ]'
 check "failing claude: the lead is not marked live" '[ -z "$(tx show-options -pqv -t "$P5" @mates-lead-live)" ]'
+check "failing claude: mouse reporting is switched off for the shell" \
+  '[ "$(tx display -p -t "$P5" "#{mouse_any_flag}#{mouse_standard_flag}#{mouse_sgr_flag}")" = 000 ]'
 
 # --- test_failed_qwen_pane_not_closed -------------------------------------------------
 mkrepo r6; K6=$(key r6)
