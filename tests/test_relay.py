@@ -250,3 +250,45 @@ def test_clip_text_drops_controls_and_hiding_characters():
 def test_clip_text_keeps_plain_text_and_bad_bytes_safe():
     assert relay.clip_text(b"def f():\n\treturn 1\n") == b"def f():\n\treturn 1\n"
     assert relay.clip_text(b"caf\xc3\xa9 \xff") == "café �".encode()
+
+
+# --- egress --web: a hand-launched qwen (Wai, 2026-11-18: "when I start qwen on my own, it
+# should have network access"). Any host, but still only port 443 at a public address.
+@pytest.fixture
+def web(private_dir):
+    sock = private_dir / "web.sock"
+    p = subprocess.Popen([sys.executable, "-I", str(RELAY), "egress", "--web", "--sock", str(sock)],
+                         stderr=subprocess.PIPE, text=True)
+    for _ in range(50):
+        if sock.exists():
+            break
+        time.sleep(0.05)
+    yield sock, p
+    p.kill()
+    p.wait()
+
+
+@pytest.mark.parametrize("target", [b"127.0.0.1:443", b"localhost:443", b"10.255.255.254:443", b"[::1]:443",
+                                    b"192.168.1.1:443", b"169.254.169.254:443"])
+def test_web_still_refuses_local_targets(web, target):
+    sock, _ = web
+    assert _ask(sock, b"CONNECT " + target + b" HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403")
+
+
+def test_web_still_refuses_other_ports_and_plain_http(web):
+    sock, _ = web
+    assert _ask(sock, b"CONNECT example.com:80 HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403")
+    assert _ask(sock, b"CONNECT 127.0.0.1:11434 HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403")
+    assert _ask(sock, b"GET http://example.com/ HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 403")
+
+
+def test_web_lets_any_host_past_the_list(web):
+    sock, p = web
+    _ask(sock, b"CONNECT github.com:443 HTTP/1.1\r\n\r\n")  # offline or not: never the list refusal
+    p.kill()
+    assert "not a package registry" not in p.stderr.read()
+
+
+def test_allowed_host_web_only_when_asked():
+    assert not relay.allowed_host("github.com")
+    assert relay.allowed_host("github.com", web=True)

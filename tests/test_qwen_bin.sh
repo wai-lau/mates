@@ -27,6 +27,7 @@ printf '#!/bin/sh\nsleep 2\n' > "$T/opencode"; chmod +x "$T/opencode"
 export PATH="$T/stub:$PATH" XDG_STATE_HOME=$T/state XDG_CONFIG_HOME=$T/config QWEN_OPENCODE=$T/opencode
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 unset QWEN_GIT_RO QWEN_RUNTIME
+export QWEN_SRC=$T  # run by hand, qwen mounts only a project under ~/src: here, under $T
 
 mkrepo() { git init -q "$1" && echo hi > "$1/a.txt" && git -C "$1" add a.txt && git -C "$1" commit -qm init; }
 mkrepo "$T/repo"; mkdir "$T/repo/sub"
@@ -419,6 +420,68 @@ done
 check "sandbox-test: the clipboard relay still works (write reached pbcopy)" 'grep -qF "clipboard write: REACHABLE" <<<"$st" && grep -qx "qwen sandbox-test" "$T/pbcopy.out"'
 check "sandbox-test: clipboard read stays blocked" 'grep -qF "clipboard read: blocked" <<<"$st"'
 check "sandbox-test left no probe files in git" '[ -z "$(find "$T/repo/.git" -name '\''qwen-probe*'\'')" ]'
+
+# --- run by hand: only a git repo under ~/src (Wai, 2026-11-18: "only allow subfolders under ~/src,
+# otherwise refusal is correct"; "qwen should not be running in ~/src directly, only subfolders
+# that are git repos") ---------------------------------------------------------------------------
+mkdir -p "$T/plain/deep"; echo x > "$T/plain/deep/f.txt"
+( cd "$T/plain/deep" && "$QWEN" exec -- true ) 2>"$T/plain.err"; rc=$?
+check "by hand, a folder under ~/src in no repo: refused" '[ "$rc" != 0 ] && grep -q "run qwen inside a git repo under" "$T/plain.err"'
+( cd "$T/repo/sub" && "$QWEN" exec -- cat ../a.txt ) > "$T/sub.out" 2>&1; rc=$?
+check "by hand, a subfolder of a repo under ~/src: the repo is mounted" '[ "$rc" = 0 ] && grep -qx hi "$T/sub.out"'
+( cd "$T" && "$QWEN" exec -- true ) 2>"$T/src.err"; rc=$?
+check "by hand, ~/src itself: refused" '[ "$rc" != 0 ] && grep -q "run qwen from a project under" "$T/src.err"'
+O=$(mktemp -d); mkrepo "$O/r"
+( cd "$O/r" && "$QWEN" exec -- true ) 2>"$T/out.err"; rc=$?; rm -rf "$O"
+check "by hand, a repo outside ~/src: refused" '[ "$rc" != 0 ] && grep -q "run qwen from a project under" "$T/out.err"'
+H2=$T/h2; mkrepo "$H2"; mkdir -p "$H2/src/proj"; mkrepo "$H2/src/repo"
+( cd "$H2/src/proj" && HOME=$H2 QWEN_SRC=$H2/src "$QWEN" exec -- true ) 2>"$T/h2.err"; rc=$?
+check "by hand, a folder in ~/src with no repo, \$HOME a repo: refused, \$HOME never found" \
+  '[ "$rc" != 0 ] && grep -q "run qwen inside a git repo under" "$T/h2.err"'
+( cd "$H2/src/repo" && HOME=$H2 QWEN_SRC=$H2/src "$QWEN" exec -- cat a.txt ) > "$T/h2.out" 2>&1; rc=$?
+check "by hand, a repo in ~/src, \$HOME a repo: mounted" '[ "$rc" = 0 ] && grep -qx hi "$T/h2.out"'
+( cd "$H2" && HOME=$H2 QWEN_SRC=$H2/src "$QWEN" exec -- true ) 2>/dev/null; rc=$?
+check "by hand, \$HOME itself: refused" '[ "$rc" != 0 ]'
+
+# --- the hide list: personal data inside a checkout never enters the sandbox ---------------
+check "hide list: made with emet's data/ in it" 'grep -qx "~/src/emet/data" "$T/config/qwen/hide"'
+mkdir -p "$T/repo/private"; echo SECRET > "$T/repo/private/log.ndjson"; echo SECRET > "$T/repo/notes.txt"
+printf '%s\n' "$T/repo/private" "$T/repo/notes.txt" "$T/other/a.txt" >> "$T/config/qwen/hide"
+( cd "$T/repo" && "$QWEN" exec -- sh -c 'cat private/log.ndjson notes.txt; ls private' ) > "$T/hide.out" 2>&1
+check "hide list: a listed folder and file in the repo are empty inside" '! grep -q SECRET "$T/hide.out"'
+check "hide list: still there on the host" 'grep -qx SECRET "$T/repo/private/log.ndjson"'
+( cd "$T/repo" && "$QWEN" exec -- cat a.txt ) > "$T/hide2.out" 2>&1; rc=$?
+check "hide list: the rest of the repo is untouched" '[ "$rc" = 0 ] && grep -qx hi "$T/hide2.out"'
+rm -rf "$T/repo/private" "$T/repo/notes.txt"
+
+# --- run by hand: the web (Wai, 2026-11-18: "when I start qwen on my own, it should have network
+# access"), through the egress proxy only; mates (QWEN_ROOT) and exec stay offline --------------
+hostnet=$(readlink /proc/self/ns/net)
+echo 'TOKEN=s3cret' > "$T/repo/.env"; mkdir -p "$T/repo/sub/k"; echo 'PRIVATE' > "$T/repo/sub/k/id_ed25519"
+echo 'keep' > "$T/repo/.env.example"
+git -C "$T/repo" remote add origin https://user:tok3n@example.com/r.git
+probe='readlink /proc/self/ns/net; echo "web=${QWEN_WEB:-} proxy=${HTTPS_PROXY:-} relay=${QWEN_NO_RELAY:-}"
+  (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && echo PROXY-LISTENING
+  (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && echo MODEL-LISTENING
+  echo "env=[$(cat .env)] key=[$(cat sub/k/id_ed25519)] example=[$(cat .env.example)]"
+  git config --get remote.origin.url'
+nsby=$(in_ "$T/repo" "$QWEN" shell -c "$probe" 2>/dev/null)
+check "by hand, shell: still its own network (not the host's)" '[ -n "$nsby" ] && ! grep -qxF "$hostnet" <<<"$nsby"'
+check "by hand, shell: the web proxy on 3128, the model relay on 11434" \
+  'grep -qx "web=1 proxy=http://127.0.0.1:3128 relay=" <<<"$nsby" && grep -qx PROXY-LISTENING <<<"$nsby" && grep -qx MODEL-LISTENING <<<"$nsby"'
+check "by hand, shell: .env and key files read empty, .env.example kept" 'grep -qxF "env=[] key=[] example=[keep]" <<<"$nsby"'
+check "by hand, shell: git remote credentials blanked" 'grep -qx "https://example.com/r.git" <<<"$nsby"'
+check "by hand: the .env on disk is untouched" 'grep -qx TOKEN=s3cret "$T/repo/.env"'
+check "by hand: each launch is logged in web.log" 'grep -q "^== .* $T/repo$" "$T/state/qwen/web.log"'
+nsm=$(QWEN_ROOT=$T/repo in_ "$T/repo" "$QWEN" shell -c "$probe" 2>/dev/null)
+check "mates (QWEN_ROOT), shell: no web, secrets as they are" \
+  'grep -qx "web= proxy= relay=" <<<"$nsm" && ! grep -qx PROXY-LISTENING <<<"$nsm" && grep -qxF "env=[TOKEN=s3cret] key=[PRIVATE] example=[keep]" <<<"$nsm"'
+nse=$(in_ "$T/repo" "$QWEN" exec -- bash -c "$probe" 2>/dev/null)
+check "by hand, exec: no web" 'grep -q "^web= proxy= relay=1$" <<<"$nse" && ! grep -qx PROXY-LISTENING <<<"$nse"'
+sth=$(in_ "$T/repo" "$QWEN" sandbox-test 2>/dev/null)
+check "by hand, sandbox-test: home blocked, raw internet blocked, host loopback via proxy blocked" \
+  'grep -qF "your home (~/.ssh): blocked" <<<"$sth" && grep -qF "internet 1.1.1.1:443: blocked" <<<"$sth" && grep -qF "host loopback via proxy: blocked" <<<"$sth"'
+git -C "$T/repo" remote remove origin; rm -rf "$T/repo/.env" "$T/repo/.env.example" "$T/repo/sub/k"
 
 [ $fail = 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

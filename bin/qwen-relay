@@ -4,7 +4,8 @@
   qwen-relay out --sock S --to 127.0.0.1:PORT      (outside: unix socket -> Ollama, chat API only)
   qwen-relay in  --sock S --listen 127.0.0.1:11434 (inside, no network: TCP -> unix socket)
   qwen-relay clip --sock S --run PROG               (outside: each connection's bytes -> PROG's stdin)
-  qwen-relay egress --sock S                        (outside: HTTPS proxy for a runtime build)
+  qwen-relay egress --sock S [--web]                (outside: HTTPS proxy for a runtime build;
+                                                    --web: for a hand-launched qwen)
 
 The sandbox has no network namespace route out; these sockets are the only
 ways to reach the model server and (write-only) the clipboard.
@@ -17,9 +18,14 @@ choosing. The name is resolved here, outside, and the tunnel goes to the checked
 address, so a name that resolves to loopback, the LAN or the WSL host never
 connects: local services stay out of reach (emet's MCP server listens on
 127.0.0.1). Each tunnel, allowed or refused, is one line on stderr.
+
+With --web (a qwen Wai launched by hand: "when I start qwen on my own, it should
+have network access") any host passes, still only port 443 at a public address:
+the web, never loopback, the LAN, the WSL host or the owner's Ollama.
 """
 import argparse
 import asyncio
+import functools
 import ipaddress
 import os
 import re
@@ -80,8 +86,9 @@ def parse_connect(head):
     return host, int(port)
 
 
-def allowed_host(host):
-    return host.lower() in REGISTRIES
+def allowed_host(host, web=False):
+    """web (--web): any host; the port and public-address checks still apply."""
+    return web or host.lower() in REGISTRIES
 
 
 def pick_public(infos):
@@ -93,7 +100,7 @@ def _log(msg):
     print(f"qwen-relay egress: {msg}", file=sys.stderr, flush=True)
 
 
-async def egress(r, w):
+async def egress(r, w, web=False):
     def refuse(why, code=b"403 Forbidden"):
         _log(why)
         w.write(b"HTTP/1.1 " + code + b"\r\n\r\n")
@@ -112,7 +119,7 @@ async def egress(r, w):
     target = f"{host}:{port}"
     if port != EGRESS_PORT:
         return refuse(f"refused {target} (only port {EGRESS_PORT})")
-    if not allowed_host(host):
+    if not allowed_host(host, web):
         return refuse(f"refused {target} (not a package registry)")
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -207,6 +214,7 @@ async def main():
     ap.add_argument("--to")
     ap.add_argument("--listen")
     ap.add_argument("--run", help="clip: program that takes the text on stdin")
+    ap.add_argument("--web", action="store_true", help="egress: any host, not just the registries")
     a = ap.parse_args()
     if a.mode == "clip":
         # Write-only: the sandbox can set the clipboard but never read it.
@@ -227,7 +235,7 @@ async def main():
     elif a.mode == "egress":
         if os.path.exists(a.sock):
             os.unlink(a.sock)
-        srv = await asyncio.start_unix_server(egress, path=a.sock)
+        srv = await asyncio.start_unix_server(functools.partial(egress, web=a.web), path=a.sock)
         os.chmod(a.sock, 0o600)
     elif a.mode == "out":
         host, port = a.to.rsplit(":", 1)

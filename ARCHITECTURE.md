@@ -159,7 +159,16 @@ the build log. Adding a registry means changing the code.
 - The environment and its tokens. Every sandbox starts from `--clearenv`. The
   lead, the digest call and the retro run with `ANTHROPIC_API_KEY` removed:
   they use Wai's Claude subscription login, which stays outside.
-- Any network traffic beyond the relays above.
+- Any network traffic beyond the relays above, in every sandbox mates starts.
+  The one exception is `qwen` that Wai runs herself (no `QWEN_ROOT`): its
+  agent, `qwen shell` and `qwen sandbox-test` share the host's network (Wai,
+  2026-11-18: "when I start qwen on my own, it should have network access"),
+  with web fetch on and Ollama at its own address; `qwen exec` stays offline.
+  Run by hand, `qwen` mounts only a git repo under `~/src` (Wai, 2026-11-18:
+  "only subfolders that are git repos"); anywhere else it refuses.
+- Paths listed in `~/.config/qwen/hide`, in any sandbox: each is covered by an
+  empty folder or file. It starts with `~/src/emet/data`, emet's raw logs,
+  which Wai can read and so a `qwen` she runs in that checkout could too.
 - The checkout, during a build. Only the script and the lockfiles it names,
   read from the commit, enter the build sandbox; an uncommitted or ignored file
   never does (`mates/runtime.py:_stage`). Its passwd file names only a `build`

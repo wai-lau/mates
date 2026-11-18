@@ -21,7 +21,15 @@
 #   - sees /usr and the OpenCode binary read-only; your home folder is NOT there;
 #   - has no network: the only ways out are a unix socket to the Ollama server and a
 #     write-only one to the clipboard (`xclip` inside runs bin/qwen-clip, which hands
-#     the text to pbcopy outside; reading the clipboard is refused);
+#     the text to pbcopy outside; reading the clipboard is refused). Started by hand
+#     (no QWEN_ROOT), the agent, `qwen shell` and `qwen sandbox-test` also get the web
+#     (Wai, 2026-11-18: "when I start qwen on my own, it should have network access"):
+#     an HTTPS proxy over one more socket (qwen-relay egress --web), port 443 at public
+#     addresses only, so loopback services, the LAN, the WSL host and Ollama's own API
+#     stay out of reach; every tunnel is logged to $STATE/web.log. Secret-looking files
+#     in the mount (.env*, *.pem, *.key, .credentials*, id_* keys, .netrc, .npmrc, .pypirc)
+#     read as empty, and credentials in git remote URLs are blanked. `qwen exec` stays
+#     offline;
 #   - starts from an empty environment (no tokens);
 #   - gets copies of the files listed in ~/.config/qwen/copy-in (one per line,
 #     `<path>` or `<path>:<path in sandbox home>`). Add lines there when the agent
@@ -79,9 +87,9 @@ cd /
 
 # The one cleanup, on the one EXIT trap, set before anything it cleans exists: the relays
 # that were started, this run's sandbox dir, and this run's GPU lock.
-RUN="" RELAY="" CLIP="" LOCK="" DTMP=""
+RUN="" RELAY="" CLIP="" WEB="" LOCK="" DTMP=""
 cleanup() {
-  local p; for p in $RELAY $CLIP; do kill "$p" 2>/dev/null || true; done
+  local p; for p in $RELAY $CLIP $WEB; do kill "$p" 2>/dev/null || true; done
   [ -z "$RUN" ] || rm -rf -- "$RUN"
   [ -z "$DTMP" ] || rm -rf -- "$DTMP"
   [ -z "$LOCK" ] || rm -f -- "$LOCK"
@@ -191,17 +199,25 @@ check_git_config() { # <config file> <git dir its relative paths start from> <to
 }
 TOP="" GITADMIN="" GITDIR=""
 resolve_repo() { # sets TOP, GITADMIN (this checkout's git dir), GITDIR (the shared git dir)
-  local cwd=$CWD root d adm common line
+  local cwd=$CWD root d adm common line src
   if [ -n "${QWEN_ROOT:-}" ]; then
     root=$(rp "$QWEN_ROOT") && [ -d "$root" ] || die "QWEN_ROOT is not a folder: $QWEN_ROOT"
     case "$cwd/" in "$root"/*) ;; *) die "refusing: $cwd is not inside QWEN_ROOT ($root)" ;; esac
   else
     case "$cwd/" in */.mates/*) die "refusing to find the repo from inside a .mates folder (set QWEN_ROOT)" ;; esac
+    # Run by hand, qwen mounts only a git repo under ~/src (Wai, 2026-11-18: "only allow subfolders
+    # under ~/src, otherwise refusal is correct", then "qwen should not be running in ~/src
+    # directly, only subfolders that are git repos": a repo's history shows and undoes every edit).
+    # QWEN_SRC moves that folder, for the tests. The .git search stops at the project's top folder,
+    # ~/src/<name>: above it is $HOME, itself a repo.
+    src=$(rp "${QWEN_SRC:-$HOME/src}") || die "run qwen from a project under ~/src (there is no ${QWEN_SRC:-$HOME/src})"
+    case "$cwd/" in "$src"/?*/) ;; *) die "run qwen from a project under $src: only those may be mounted ($cwd is not in one)" ;; esac
     d=$cwd
     until [ -e "$d/.git" ] || [ -L "$d/.git" ]; do
-      [ "$d" != / ] || die "run qwen inside a git repo (the sandbox only sees that repo)"
+      if [ "$(dirname "$d")" = "$src" ]; then d=""; break; fi
       d=$(dirname "$d")
     done
+    [ -n "$d" ] || die "run qwen inside a git repo under $src ($cwd is in none; git init it first)"
     root=$d
   fi
   forbidden_dir "$root" && die "refusing to mount $root (/, your home or above it, or a secret path)"
@@ -256,6 +272,14 @@ refuse_secret() { # path -> status 0 if it must not go in
 ~/.gitconfig
 ~/.config/git/ignore:.config/git/ignore
 EOF
+# Folders and files inside a repo that never enter the sandbox: each is covered by an empty one.
+# emet's data/ (its raw logs, personal data) is mode 700 and owned by Wai, so a qwen Wai runs in
+# that checkout could read it, and by hand the sandbox has the network.
+[ -f "$CONF/hide" ] || cat > "$CONF/hide" <<'HIDE'
+# Paths inside a repo that the qwen sandbox never sees: each is covered by an empty folder or file.
+# One per line; ~ is your home. Personal data that lives inside a checkout belongs here.
+~/src/emet/data
+HIDE
 sed -i '\#^~/.claude/CLAUDE.md#d' "$CONF/copy-in"  # replaced by digests (it was refused as a secret path anyway)
 
 # safe_ancestry <path>: status 0 if it and every folder above it is owned by us or root and
@@ -328,6 +352,9 @@ stage_digests() {
   local home=$1 d
   mkdir -p "$home/.qwen"
   cp "$HERE/qwen-sandbox.md" "$home/.qwen/sandbox.md"  # no internet, repo-only: so it doesn't try
+  if by_hand; then  # by hand it has the network: say so instead
+    sed -i -e 's/^- No internet:.*/- Web over HTTPS only (a proxy; no local hosts, no ssh): curl, web fetch and git over https work./' -e 's/, web page or docs//' "$home/.qwen/sandbox.md"
+  fi
   DTMP=$(private_dir) || { DTMP=""; echo "qwen: no private runtime folder (XDG_RUNTIME_DIR); no digests" >&2; return 0; }
   cat -- "$HOME/.claude/CLAUDE.md" > "$DTMP/global.src" 2>/dev/null || true  # Wai's own file
   # shellcheck disable=SC2088  # the label is shown in a message, never used as a path
@@ -356,12 +383,52 @@ make_home() {
 }
 
 # run_sandboxed <server host:port | -> <cmd...>: the only way anything Qwen-facing runs.
+# hide_paths <top>: cover each $CONF/hide path inside <top> with an empty folder or file (A+=).
+hide_paths() {
+  local line p
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in ''|'#'*) continue ;; esac
+    case $line in \~|\~/*) line=$HOME${line#\~} ;; esac
+    p=$(realpath -m -- "$line")
+    case "$p/" in "$1"/?*) ;; *) continue ;; esac
+    if [ -d "$p" ]; then A+=(--tmpfs "$p")
+    elif [ -e "$p" ] || [ -L "$p" ]; then A+=(--ro-bind /dev/null "$p"); fi
+  done < "$CONF/hide"
+}
+# mask_secrets <mount> <git dir>: with the web on, files that hold keys or tokens must not be
+# readable (any shell command could send them out): each one in the mount is covered by an
+# empty read-only file, and the git config (remote URLs can carry a token) is replaced by a
+# copy with user:password@ blanked. Adds to A. Files Qwen creates later are its own.
+mask_secrets() {
+  local mnt=$1 gitdir=$2 f n=0
+  : > "$RUN/empty"; chmod 444 "$RUN/empty"
+  while IFS= read -r -d '' f; do
+    n=$((n + 1)); [ "$n" -le 2000 ] || die "refusing the web: over 2000 secret-looking files in $mnt"
+    A+=(--ro-bind "$RUN/empty" "$f")
+  done < <(find "$mnt" -xdev \( -name .git -o -name node_modules \) -prune -o -type f \( \
+    -name .env -o -name '.env.*' ! -name .env.example -o -name '*.pem' -o -name '*.key' -o -name '.credentials*' \
+    -o -name 'id_rsa*' -o -name 'id_ed25519*' -o -name 'id_ecdsa*' -o -name 'id_dsa*' -o -name '*.p12' -o -name '*.pfx' \
+    -o -name .netrc -o -name .npmrc -o -name .pypirc -o -name '*.kdbx' -o -name .git-credentials \) -print0 2>/dev/null)
+  if [ -n "$gitdir" ] && [ -f "$gitdir/config" ]; then
+    sed -E 's#(://)[^/@[:space:]]+@#\1#g' "$gitdir/config" > "$RUN/gitconfig"
+    A+=(--ro-bind "$RUN/gitconfig" "$gitdir/config")
+  fi
+  [ -n "$gitdir" ] && [ -f "$gitdir/.git-credentials" ] && A+=(--ro-bind "$RUN/empty" "$gitdir/.git-credentials")
+  return 0
+}
+
+# by_hand: Wai ran qwen herself (mates always sets QWEN_ROOT); then the sandbox has the network.
+by_hand() { [ -z "${QWEN_ROOT:-}" ]; }
+
 # Host `-` (qwen exec): no relay at all (no Ollama, no clipboard), and the inner bash is
 # told QWEN_NO_RELAY=1 so it starts no `qwen-relay in` either.
 run_sandboxed() {
   local host=$1; shift
   command -v bwrap >/dev/null || die "bwrap not installed: refusing to run unsandboxed"
-  local top="" gitdir="" ocdir="" cwd rt="" pf="" bf="" chk="" mnt
+  local top="" gitdir="" ocdir="" cwd rt="" pf="" bf="" chk="" mnt net=""
+  # The web (by hand, not exec): through the egress proxy only; the sandbox keeps its own
+  # empty network, so nothing on the host's loopback or LAN can be reached.
+  [ "$host" != - ] && by_hand && net=1
   if [ -n "${QWEN_CHECK_DIR:-}" ]; then
     # A check (mates check): only this snapshot folder is mounted, at a neutral path, and
     # no repo at all. Its parents in the sandbox are /work and /, so no file Qwen wrote
@@ -408,13 +475,22 @@ run_sandboxed() {
   fi
   RUN=$(mktemp -d "$STATE/run.XXXXXX")
   make_home "$RUN/home"
+  if [ -n "$net" ] && [ -f "$RUN/home/.gitconfig" ]; then
+    # The web is HTTPS only: a url.*.insteadOf rule that turns https into ssh would break git.
+    local k; while read -r k _; do git config -f "$RUN/home/.gitconfig" --unset-all "$k" || true
+    done < <(git config -f "$RUN/home/.gitconfig" --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true)
+  fi
   [ "$host" = - ] || stage_digests "$RUN/home"  # a check reads no digests: no Claude call
   if [ "$host" != - ]; then
     python3 -I "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" & RELAY=$!
+    if [ -n "$net" ]; then
+      echo "== $(date '+%F %T') pid $$ $mnt" >> "$STATE/web.log"
+      python3 -I "$HERE/qwen-relay" egress --web --sock "$RUN/web.sock" 2>> "$STATE/web.log" & WEB=$!
+    fi
     if command -v pbcopy >/dev/null; then
       python3 -I "$HERE/qwen-relay" clip --sock "$RUN/clip.sock" --run "$(command -v pbcopy)" & CLIP=$!
     fi
-    for _ in $(seq 50); do [ -S "$RUN/ollama.sock" ] && break; sleep 0.1; done
+    for _ in $(seq 50); do [ -S "$RUN/ollama.sock" ] && { [ -z "$net" ] || [ -S "$RUN/web.sock" ]; } && break; sleep 0.1; done
   fi
   # --new-session would block terminal keystroke injection (TIOCSTI), but it also detaches the
   # terminal, so the agent never sees pane resizes (SIGWINCH). The kernel already blocks TIOCSTI
@@ -432,7 +508,7 @@ run_sandboxed() {
     --ro-bind "$HERE/qwen-clip" /opt/qwen-clip/xclip
     --ro-bind "$HERE/qwen-tui" /opt/qwen-tui
     --bind "$RUN" /run/qwen)
-  if [ -n "$chk" ]; then A+=(--bind "$chk" /work/check); else A+=(--bind "$top" "$top"); fi
+  if [ -n "$chk" ]; then A+=(--bind "$chk" /work/check); else A+=(--bind "$top" "$top"); hide_paths "$top"; fi
   # OpenCode sessions: this repo's folder for agent runs; a check (host -) gets an empty one,
   # so check code cannot touch the session database mates reads.
   if [ "$host" = - ]; then A+=(--tmpfs /home/qwen/.local/share/opencode)
@@ -453,7 +529,8 @@ run_sandboxed() {
   [ -n "$pf" ] && A+=(--ro-bind "$pf" /opt/proofs --setenv MATES_PROOFS /opt/proofs)
   [ -n "$bf" ] && A+=(--ro-bind "$bf" /opt/mates-brief)
   [ -n "$OPENCODE" ] && [ -x "$OPENCODE" ] && A+=(--ro-bind "$OPENCODE" /opt/opencode/opencode)
-  local f; for f in passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime; do
+  local f etc=(passwd group nsswitch.conf ld.so.cache ld.so.conf ld.so.conf.d ssl ca-certificates alternatives localtime)
+  for f in "${etc[@]}"; do
     [ -e "/etc/$f" ] && A+=(--ro-bind "/etc/$f" "/etc/$f")
   done
   local e; for e in "${SANDBOX_ENV[@]}"; do A+=(--setenv "${e%%=*}" "${e#*=}"); done
@@ -473,11 +550,22 @@ run_sandboxed() {
   fi
   A+=(--setenv HOME /home/qwen --setenv PATH "$path" --setenv TERM "${TERM:-xterm-256color}" --setenv LANG C.UTF-8)
   [ "$host" = - ] && A+=(--setenv QWEN_NO_RELAY 1)
+  if [ -n "$net" ]; then
+    # The proxy resolves names outside; the model stays on the relay, never the proxy.
+    local px=http://127.0.0.1:3128 v
+    for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy; do A+=(--setenv "$v" "$px"); done
+    A+=(--setenv NO_PROXY "127.0.0.1,localhost" --setenv no_proxy "127.0.0.1,localhost" --setenv QWEN_WEB 1)
+    mask_secrets "$mnt" "$gitdir"
+  fi
   A+=("${renv[@]}" --chdir "$cwd")
   bwrap "${A[@]}" -- /bin/bash -c '
     if [ -z "${QWEN_NO_RELAY:-}" ]; then
       python3 /opt/qwen-relay in --sock /run/qwen/ollama.sock --listen 127.0.0.1:11434 2>/dev/null &
       for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null && break; sleep 0.1; done
+    fi
+    if [ -n "${QWEN_WEB:-}" ]; then
+      python3 /opt/qwen-relay in --sock /run/qwen/web.sock --listen 127.0.0.1:3128 2>/dev/null &
+      for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.1; done
     fi
     "$@"' bash "$@"
 }
@@ -520,6 +608,9 @@ if os.path.isdir("/opt/mates-brief"):
     t("brief write", lambda: write_probe("/opt/mates-brief/probe"))
 t("internet 1.1.1.1:443", lambda: socket.create_connection(("1.1.1.1", 443), 3))
 t("ollama via relay", lambda: urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=5).read())
+if os.environ.get("QWEN_WEB"):
+    t("web https://example.com via proxy", lambda: urllib.request.urlopen("https://example.com", timeout=10).read(1))
+    t("host loopback via proxy", lambda: urllib.request.urlopen("https://127.0.0.1:" + sys.argv[4], timeout=5).read(1))
 t("clipboard write", lambda: subprocess.run(["xclip", "-selection", "clipboard"], input=b"qwen sandbox-test", check=True))
 t("clipboard read", lambda: subprocess.run(["xclip", "-o"], check=True))
 t("repo write", lambda: write_probe(".qwen-sandbox-probe"))
@@ -538,7 +629,7 @@ else:
 t("other repos'"'"' OpenCode state", lambda: os.listdir(sys.argv[1]))
 print("OpenCode state here:", sys.argv[3], "->", sorted(os.listdir(os.path.expanduser("~/.local/share/opencode"))))
 print("home sees:", sorted(os.listdir(os.environ["HOME"])))
-print("env:", sorted(os.environ))' "$STATE/opencode" "${QWEN_GIT_RO:-0}" "$(opencode_dir)"
+print("env:", sorted(os.environ))' "$STATE/opencode" "${QWEN_GIT_RO:-0}" "$(opencode_dir)" "${host##*:}"
     exit ;;
 esac
 
@@ -574,8 +665,8 @@ cfg='{
     }
   },
   "instructions": ["/home/qwen/.qwen/sandbox.md", "/home/qwen/.qwen/global.md", "/home/qwen/.qwen/repo.md"],
-  "tools": { "webfetch": false, "websearch": false TOOLS_},
-  "permission": { "edit": "allow", "bash": "allow", "webfetch": "deny",
+  "tools": { "webfetch": WEBT_, "websearch": false TOOLS_},
+  "permission": { "edit": "allow", "bash": "allow", "webfetch": "WEBP_",
                   "question": "deny", "plan_enter": "deny", "doom_loop": "deny",
                   "external_directory": { "*": "deny", "/tmp/*": "allow", "/opt/proofs/*": "allow" RTDIR_},
                   "read": { "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" } }
@@ -586,6 +677,10 @@ tools=''; [ -x /usr/bin/rg ] || tools=', "grep": false, "glob": false'
 # plain path goes into the JSON; any other keeps the deny.
 rtdir=''; rtp=$(readlink -f -- "${QWEN_RUNTIME:-}" 2>/dev/null) || rtp=''
 [ -n "${QWEN_RUNTIME:-}" ] && [[ $rtp =~ ^/[A-Za-z0-9._/+-]+$ ]] && rtdir=", \"$rtp/*\": \"allow\""
+# By hand the sandbox has the web (through the egress proxy): web fetch on.
+webt=false webp=deny
+by_hand && webt=true webp=allow
+cfg=${cfg//WEBT_/$webt}; cfg=${cfg//WEBP_/$webp}
 cfg=${cfg//MODEL_/$MODEL}; cfg=${cfg//CTX_/$CTX}; cfg=${cfg//LABEL_/$LABEL}; cfg=${cfg//TOOLS_/$tools}; cfg=${cfg//RTDIR_/$rtdir}
 SANDBOX_ENV=(OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1
   OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_CLAUDE_CODE=1 "OPENCODE_CONFIG_CONTENT=$cfg"
