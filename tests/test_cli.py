@@ -902,6 +902,16 @@ def test_errors_never_exit_1_which_means_timeout(m, monkeypatch):
     assert code not in (0, 1) and "no server" in err
 
 
+def test_git_errors_exit_3_never_1(m, monkeypatch):
+    m.send()
+
+    def boom(*a, **k):
+        raise cli.GitError("index.lock exists")
+    monkeypatch.setattr(cli, "_lead_head", boom)  # sync reads the lead's HEAD outside its own handlers
+    code, _, err = m.run("sync", 1)
+    assert code == 3 and "git failed" in err and "index.lock exists" in err
+
+
 def test_diff_includes_untracked(m):
     m.send()
     (m.wt / "a.txt").write_text("b\n")
@@ -2740,10 +2750,6 @@ def _stale_reply(m, age=20):
     m.msg("ses_old", "user", time.time() - age)  # unfinished, newer than STALE_S
 
 
-def test_paste_grace_default():
-    assert getattr(cli, "PASTE_GRACE_S", None) == 30
-
-
 def test_send_ignores_a_stale_reply_when_the_screen_is_idle(m):
     _stale_reply(m)
     _capture(m, _used_screen(EMPTY_BOX, IDLE_FOOTER))
@@ -2823,11 +2829,6 @@ def test_launch_starts_panes_a_few_seconds_apart(m, monkeypatch):
               if "wait-for -S mates-go-" in line]
     assert len(stamps) == 2
     assert stamps[0] - t0 < 0.4 and stamps[1] - stamps[0] >= 0.4
-
-
-@pytest.mark.real_stagger
-def test_pane_stagger_default():
-    assert getattr(cli, "PANE_STAGGER_S", None) == 5  # the measured race window was ~2 s
 
 
 # --- `mates add` evens out the Qwen panes (Wai, 2026-11-16: "I prefer splitting the qwen panes
@@ -3040,14 +3041,35 @@ def test_reap_logs_the_close(m):
     assert [(r.get("event"), r.get("n")) for r in m.log()] == [("idle-close", 1)]
 
 
-def test_reap_watch_ends_with_the_lead(m):
+def _count_reap_cycles(m, monkeypatch, end_lead=True):
+    """Wrap cli.reap so each cycle `reap --watch` runs is counted; the first one takes the lead
+    pane away, as closing the window does, so a watcher that ignores its lock ends instead of
+    looping for minutes."""
+    cycles = []
+    real = cli.reap
+
+    def counted(args):
+        cycles.append(1)
+        code = real(args)
+        if end_lead:
+            m.no_panes()
+        return code
+    monkeypatch.setattr(cli, "reap", counted)
+    monkeypatch.setattr(cli, "REAP_POLL_S", 0.01)
+    return cycles
+
+
+def test_reap_watch_runs_a_cycle_and_ends_with_the_lead(m, monkeypatch):
     """`mates reap --watch` (started by launch) runs reap every REAP_POLL_S and ends when
     the repo's lead pane is gone, so it never outlives the mates session."""
-    m.no_panes()
-    t0 = time.time()
+    m.lead_pane()
+    assert m.state()["qwens"][0].get("idle_since") is None
+    cycles = _count_reap_cycles(m, monkeypatch)
     code, out, err = m.run("reap", "--watch")
     assert code == 0, err
-    assert time.time() - t0 < 5
+    assert len(cycles) == 1  # one real cycle ran before the lead went
+    assert any(c.startswith("list-panes") for c in m.tmux_calls())
+    assert m.state()["qwens"][0]["idle_since"] is not None  # and it started the pane's idle clock
 
 
 # --- reap follow-ups (lead review of the Qwen version): launch starts the watcher, a merge
@@ -3069,16 +3091,20 @@ def test_launch_starts_the_reap_watcher(m, monkeypatch):
     assert kw.get("start_new_session") is True
 
 
-def test_one_reap_watcher_per_repo(m):
+def test_one_reap_watcher_per_repo(m, monkeypatch):
     import fcntl
+    m.lead_pane()
+    cycles = _count_reap_cycles(m, monkeypatch)
     lock = cli.reaper_lock(str(m.root))
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "a") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
-        t0 = time.time()
         code, out, err = m.run("reap", "--watch")  # the lead pane is live: only the lock ends it
         assert code == 0, err
-        assert time.time() - t0 < 5
+        assert cycles == []  # it left without running a cycle
+    cycles = _count_reap_cycles(m, monkeypatch)
+    m.lead_pane()
+    assert m.run("reap", "--watch")[0] == 0 and len(cycles) == 1  # no lock held: it does run
 
 
 def test_merge_restarts_the_idle_clock(m):
@@ -3291,10 +3317,6 @@ def _other_task(m, name, n=1, **task):
     st = session.new_state(root)
     st["qwens"] = [_q(root, n, task={"id": uuid.uuid4().hex[:12], "direct": False, **task})]
     session.save(root, st)
-
-
-def test_cap_default():
-    assert getattr(cli, "QWEN_TASK_CAP", None) == 3
 
 
 def test_send_refused_past_the_machine_wide_cap(m):

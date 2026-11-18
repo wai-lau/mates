@@ -143,11 +143,13 @@ def test_retro_flags_not_a_list_are_empty(rt):
     assert rec["flags"] == [] and rec["questions"] == []
 
 
-def test_bin_mates_retro_runs_outside_a_git_repo(tmp_path):
+def test_bin_mates_retro_runs_outside_a_git_repo(tmp_path, private_dir):
     (tmp_path / "home").mkdir()
+    (private_dir / "run").mkdir(mode=0o700)
     out = tmp_path / "nowhere"
     out.mkdir()
-    env = {**os.environ, "HOME": str(tmp_path / "home"), "MATES_CLAUDE": "/bin/false"}
+    env = {**os.environ, "HOME": str(tmp_path / "home"), "MATES_CLAUDE": "/bin/false",
+           "XDG_STATE_HOME": str(private_dir / "state"), "XDG_RUNTIME_DIR": str(private_dir / "run")}
     env.pop("MATES_LEAD", None)
     r = subprocess.run([str(ROOT / "bin" / "mates"), "retro"], cwd=out, env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
