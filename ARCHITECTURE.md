@@ -915,7 +915,7 @@ and the code turns its answer into lessons that every lead loads.
 flowchart LR
     timer["systemd timer, 04:30"] --> retro["mates retro"]
     log["log.jsonl, cleaned"] --> retro
-    chats["Messages sent to Qwen,<br/>from OpenCode's database"] --> retro
+    chats["Briefs and answers sent to Qwen,<br/>from mates' own record"] --> retro
     past["Current lessons and<br/>the last 7 retros"] --> retro
     retro --> claude["claude -p, no tools"]
     claude --> answer["One JSON answer"]
@@ -943,11 +943,13 @@ For each day, `retro.py:_prompt` builds the prompt from:
 - the day's log lines, cleaned (`clean`): `detail` is dropped (it held check
   output, which Qwen's code wrote), questions are cut to the answers, and flags
   to their kind, since the paths are Qwen's choice;
-- the messages sent into Qwen's chats that day in each logged repo, read from
-  OpenCode's database (`_chat_lines`). Only user messages go in: tagged `lead`
-  when they start `[from Claude]`, `other` otherwise (Wai, or a lead pasting by
-  hand), with the ask line stripped. Each line is cut at 2000 characters and a
-  day at 300,000, oldest lines dropped first (`_chat_prompt`).
+- the briefs and answers the leads sent to Qwen that day in each logged repo,
+  from mates' own record (`cli.sent_path`: `send` and `answer` append each one,
+  owner-only, to `~/.claude/mates/sent/<repo>/<UTC day>.jsonl`; `retro.py:_sent_lines`).
+  Never from Qwen's OpenCode database, which Qwen can write: a forged "[from
+  Claude]" row there would read as a lead's brief (Wai, 2026-11-18: "2A"). Wai's
+  own typed messages to Qwen are not in the record. Each line is cut at 2000
+  characters and a day at 300,000, oldest lines dropped first (`_chat_prompt`).
 
 It never reads Qwen's replies or tool calls, so Qwen's words cannot become
 lessons. The code comment quotes Wai: "retro should not use Qwen at all".

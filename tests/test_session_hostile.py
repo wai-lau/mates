@@ -48,8 +48,6 @@ def test_unreadable_database_gives_each_reader_its_cant_read_answer(hostile):
     assert session.auto_continued("/w/1", hostile, 0) is False
     with pytest.raises(sqlite3.Error):
         session.opencode_usage("/w/1", hostile, 0)
-    with pytest.raises(sqlite3.Error):
-        session.opencode_chats("/r", hostile, "2026-11-09")
     assert time.time() - t0 < 3
 
 

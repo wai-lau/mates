@@ -2543,6 +2543,13 @@ def test_send_and_answer_keep_a_private_copy(m):
     assert [r["kind"] for r in recs] == ["send", "sendback"] and "ANSWER-TEXT" in recs[1]["text"]
 
 
+def test_the_record_keeps_the_whole_brief_and_its_check(m):
+    m.send("FIRST-LINE fix a.txt\nSECOND-LINE with the details", "--check", "test -f b.txt")
+    day = datetime.datetime.now(datetime.UTC).date().isoformat()
+    (rec,) = [json.loads(line) for line in cli.sent_path(str(m.root), day).read_text().splitlines()]
+    assert "SECOND-LINE" in rec["text"] and "Check: test -f b.txt" in rec["text"]
+
+
 def test_a_refused_send_keeps_no_record(m):
     m.input("┃  half a sentence Wai is typ\n")
     assert m.run("send", 1, "--reason", "r", "NOT-SENT task")[0] != 0

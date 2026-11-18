@@ -1175,8 +1175,37 @@ def send(args):
                 break
             time.sleep(SESSION_POLL_S)
     print(f"sent to Qwen pane {a.n} (task {task['id']}, attempt {task['attempts']})")
+    _log_sent(root, a.n, task, "send", sent_text)
     _remind(a.n, task)
     return 0
+
+
+def sent_path(root, day):
+    """mates' own record of the briefs and answers pasted to `root`'s Qwen panes on UTC `day`:
+    the daily retro reads this, never Qwen's OpenCode database, which Qwen can write (Wai,
+    2026-11-18: "2A"). LOG is read when called, so tests' isolation covers it."""
+    return LOG.parent / "sent" / session.repo_key(str(root)) / f"{day}.jsonl"
+
+
+def _log_sent(root, n, task, kind, text):
+    """Append one line (owner-only file and folders) to the record for this UTC day."""
+    now = time.gmtime()
+    path = sent_path(root, time.strftime("%Y-%m-%d", now))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    os.chmod(path.parent.parent, 0o700)
+    if not path.exists():
+        path.touch(mode=0o600)
+    line = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", now),
+        "repo": str(root),
+        "n": n,
+        "task_id": task["id"],
+        "kind": kind,
+        "text": text,
+    }
+    with path.open("a") as f:
+        f.write(json.dumps(line) + "\n")
 
 
 def _reserve_task(root, a, q, lead, summary, files, before):
@@ -1358,6 +1387,8 @@ def answer(args):
     apply(q)
     _change(root, a.n, apply, task_id=task["id"])
     paste(pane, _message(text, q["worktree"]))
+    kind = "sendback" if a.sendback else "answer"
+    _log_sent(root, a.n, task, kind, text)
     print(f"answered Qwen pane {a.n}" + (f" (sent back: attempt {task['attempts']})" if a.sendback else ""))
     if a.sendback:
         _remind(a.n, task)

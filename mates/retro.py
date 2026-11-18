@@ -30,9 +30,7 @@ import fcntl
 import json
 import os
 import re
-import sqlite3
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -41,17 +39,12 @@ import claudejson
 import cli
 import fsutil
 import logrec
-import session
 
 SRC = cli.HERE.parent  # the mates source checkout: the one ~/bin/mates resolves to
 PROMPT = cli.HERE / "prompts" / "retro.md"
 CLAUDE_ARGS = ["-p", "--tools", "", "--strict-mcp-config", "--setting-sources", "project",
                "--output-format", "json"]
 CLAUDE_TIMEOUT_S = 600
-# The fixed footer of every mates message, with a worktree path or without one (chats from before
-# the footer named it): noise for the retro.
-_PRE, _POST = cli.ASK_SUFFIX.split("{worktree}/")
-ASK_FOOTER = re.compile("(?:" + re.escape(_PRE) + r"(?:\S+/)?" + re.escape(_POST) + r"\s*)+$")
 LAST_RETROS = 7
 LESSON_MAX = 300  # characters in one lesson (a merge of two needs the room)
 GROUP_MAX = 60  # characters in a group name (a heading in every lead's prompt)
@@ -133,41 +126,33 @@ def _list(v):
     return v if isinstance(v, list) else []  # never iterate a string
 
 
-def _chat_db(repo):
-    """The OpenCode database for this repo; None if it is not there."""
-    try:
-        p = session.opencode_db(repo)
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return p if p.exists() else None
-
-
-def _chat_lines(repo, db, day):
-    """The messages sent INTO Qwen's chats on `day` in this repo, each as a JSON object:
-    "from" is "lead" (starting [from Claude]) or "other" (Wai typing, or a lead pasting by
-    hand). Qwen's own replies and tool calls never go in: only Claude authors lessons, and
-    Qwen's words must not reach them (Wai, 2026-11-13: "retro should not use Qwen at all").
-    OpenCode's own user messages (its compaction request and continue line) are left out.
-    The database is Qwen's to write, so a row that does not parse or is not shaped like a
-    message is skipped; a database that cannot be read gives no lines."""
+def _sent_lines(root, day):
+    """The lead's private send record for `day`: each successful send/answer the lead
+    performed that day. Lines that do not parse or lack the required fields are skipped."""
+    path = cli.sent_path(root, day)
+    if not path.exists():
+        return []
     lines = []
     try:
-        chats = session.opencode_chats(repo, db, day)
-    except sqlite3.Error as e:
-        print(f"retro: cannot read the chats of {repo} for {day}: {e}", file=sys.stderr)
+        with path.open() as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                    if not isinstance(obj, dict):
+                        continue
+                    ts = obj.get("ts")
+                    text = obj.get("text")
+                    if not isinstance(ts, str) or not isinstance(text, str):
+                        continue
+                    hhmmss = ts[11:19] if len(ts) >= 19 else ""
+                    lines.append({"from": "lead", "time": hhmmss, "text": text})
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+    except OSError:
         return lines
-    for _, ms, raw, parts in chats:
-        try:
-            if json.loads(raw).get("role") != "user" or session._opencode_own([d for _, d in parts]):
-                continue
-            ts = datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).strftime("%H:%M:%S")
-            text = "".join(pt.get("text") or "" for pt in (json.loads(d) for _, d in parts)
-                           if pt.get("type") == "text")
-            text = " ".join(ASK_FOOTER.sub("", text).split())
-            lines.append({"from": "lead" if text.startswith("[from Claude]") else "other", "time": ts,
-                          **({"text": text} if text else {})})
-        except (ValueError, TypeError, AttributeError, OverflowError, OSError):
-            continue
     return lines
 
 
@@ -391,8 +376,8 @@ def _chat_prompt(day, chats):
     for repo in chats:
         kept = [r[2] for i, r in enumerate(rows) if r[1] == repo and i not in drop]
         parts.append(f"## Messages sent to Qwen on {day} in {Path(repo).name} (one JSON line per message)")
-        parts.append("Each line is a message sent to Qwen: \"from\": \"lead\" (a lead's brief or answer) "
-                     "or \"other\" (Wai, or a lead pasting by hand).")
+        parts.append("Each line is a brief or answer a lead sent to Qwen, from mates' own record: "
+                     "\"from\": \"lead\".")
         parts.append("\n".join(kept))
     return "\n\n".join(parts)
 
@@ -621,22 +606,15 @@ def main(args):
         if not days:
             print("retro: nothing to do (every finished log day has a retro)")
         # Chat data is read once: all repos, all days the retro covers
-        repos = {r.get("repo") for r in recs if r.get("repo")}
-        chat_dbs = {}
-        for repo in repos:
-            db = _chat_db(repo)
-            if db:
-                chat_dbs[repo] = db
         chats_for = {}
         for day in days:
-            for repo, db in chat_dbs.items():
-                chats_for[(day, repo)] = _chat_lines(repo, db, day)
+            for repo in {r.get("repo") for r in recs if r.get("repo")}:
+                chats_for[(day, repo)] = _sent_lines(repo, day)
         for day in days:
             lines = [r for r in recs if _day(r) == day]
             chats = {}
-            for repo in chat_dbs:
-                cl = chats_for.get((day, repo))
-                if cl:
+            for (d, repo), cl in chats_for.items():
+                if d == day and cl:
                     chats[repo] = cl
             if not lines and not chats:
                 print(f"retro {day}: no log lines, skipped")

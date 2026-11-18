@@ -407,33 +407,6 @@ def opencode_mid_reply(session, db):
     return last / 1000 if last else None
 
 
-def opencode_chats(repo, db, day):
-    """All OpenCode messages in this repo's worktrees for `day` (ISO date).
-    Returns a list of (message_id, created_ms, data_json, parts) for each message.
-    Parts are a list of (part_id, part_data_json). Top-level sessions only."""
-    import datetime as dt
-    start = dt.datetime.fromisoformat(f"{day}T00:00:00+00:00")
-    start_ms = int(start.timestamp() * 1000)
-    end_ms = int((start + dt.timedelta(days=1)).timestamp() * 1000)  # the whole day, to midnight
-    prefix = f"{repo}/.claude/worktrees/mates-qwen-"
-    out = []
-    with _ro(db, CHATS_BUDGET_S) as con:
-        sessions = con.execute(
-            "SELECT id FROM session WHERE parent_id IS NULL AND directory LIKE ?",
-            (prefix + "%",)).fetchall()
-        for (sid,) in sessions:
-            msgs = con.execute(
-                "SELECT id, time_created, data FROM message WHERE session_id = ? AND "
-                "time_created >= ? AND time_created < ? ORDER BY time_created, id",
-                (sid, start_ms, end_ms)).fetchall()
-            for mid, ms, data in msgs:
-                parts = con.execute(
-                    "SELECT id, data FROM part WHERE message_id = ? ORDER BY time_created, id",
-                    (mid,)).fetchall()
-                out.append((mid, ms, data, parts))
-    return out
-
-
 def opencode_usage(worktree, db, since):
     """(tokens, compactions, last_reply_s) summed over all top-level OpenCode sessions
     in `worktree` for assistant messages created at or after `since` (epoch s).
