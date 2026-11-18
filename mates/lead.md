@@ -148,6 +148,10 @@ Qwen's sandbox has no uv, pytest, venv or `node_modules`: you install what a che
 needs with `.mates/runtime.sh` and `mates runtime --reason "<what the check needs;
 who asked>"`. Steps, limits and examples: `docs/runtime.md` in the mates source checkout.
 
+A Qwen pane runs the `qwen` code it started with. When mates changes that code (a new
+sandbox rule, the model relay), `mates restart N` puts an idle pane on it, its chat kept;
+on a busy pane it refuses with exit 3: run it again once the pane is idle.
+
 - A package Qwen asks for is a claim, not a decision. Install only what the
   repo declares (its lockfile, `pyproject.toml`, `package.json`) or a
   well-known test runner the check command needs; check the exact name on the

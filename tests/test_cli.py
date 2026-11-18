@@ -4569,3 +4569,32 @@ def test_send_and_answer_refocus_the_lead(m):
     m.lead_pane("%0")
     m.send("FOCUS task")
     assert m.tmux_calls()[-1] == "select-pane -t %0"
+
+
+# --- mates restart N: one idle pane onto the current code, its chat kept ---------------------
+
+def test_restart_respawns_an_idle_pane_with_its_chat(m):
+    m.ses("ses_1")
+    code, out, err = m.run("restart", 1)
+    assert code == 0, err
+    respawn = next(c for c in m.tmux_calls() if c.startswith("respawn-pane"))
+    assert respawn.startswith(f"respawn-pane -k -t %1 -c {m.root} ") and "-s ses_1" in respawn
+    assert "restarted Qwen pane 1 (%1) with its chat" in out
+
+
+def test_restart_refuses_a_busy_pane(m):
+    m.ses("ses_1")
+    m.msg("ses_1", "user", time.time())  # a message with no reply yet
+    code, _, err = m.run("restart", 1)
+    assert code == 3 and "busy" in err and not any(c.startswith("respawn-pane") for c in m.tmux_calls())
+
+
+def test_restart_refuses_typed_input(m):
+    m.input("┃  half a sentence Wai is typ\n")
+    code, _, err = m.run("restart", 1)
+    assert code == 3 and "input box" in err
+
+
+def test_restart_needs_an_open_pane(m):
+    code, _, err = m.run("restart", 2)
+    assert code != 0 and "no open Qwen pane 2" in err

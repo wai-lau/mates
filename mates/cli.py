@@ -1974,6 +1974,29 @@ def _restart_pane(root, pane, q, sid, dest):
     release_pane(pane)
 
 
+def restart_cmd(args):
+    """Restart one idle Qwen pane on the current bin/qwen and relays, its chat kept: a pane runs
+    the code it started with (2026-11-18: panes started before Wai's own qwen got priority on the
+    model kept the old relay)."""
+    p = _parser("restart", "mates restart N")
+    p.add_argument("n", type=int)
+    a = p.parse_args(args)
+    root = _lead_root()
+    state = _load(root)
+    q = next((x for x in state["qwens"] if x["n"] == a.n and not x.get("closed")), None)
+    hit = None if q is None else _find(root, state, q)
+    if hit is None:
+        die(f"no open Qwen pane {a.n}")
+    db = _db(root)
+    why = _not_restartable(q, hit[0], db)
+    if why:
+        die(f"Qwen pane {a.n} is {why}; run mates restart {a.n} again when it is idle", 3)
+    sid = session.opencode_session(q["worktree"], db)
+    _restart_pane(root, hit[0], q, sid, q.get("runtime") or state.get("runtime"))
+    print(f"restarted Qwen pane {a.n} ({hit[0]})" + (" with its chat" if sid else ", new chat"))
+    return 0
+
+
 def _log_runtime(root, base, reason, h, outcome, restarted):
     logrec.write(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12], "route": "runtime",
                        "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, base))}",
@@ -2193,7 +2216,7 @@ def start_reaper(root):
 
 COMMANDS = {"launch": launch, "retro": retro, "send": send, "wait": wait, "answer": answer, "check": check, "diff": diff,
             "merge": merge, "sync": sync, "discard": discard, "add": panes.add, "remove": panes.remove,
-            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd,
+            "list": panes.list_, "log": panes.log, "log-route": panes.log_route, "runtime": runtime_cmd, "restart": restart_cmd,
             "parallel": parallel_cmd, "reap": reap, "start": start,
             "followers": followers}
 
