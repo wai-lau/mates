@@ -395,6 +395,40 @@ def _chat_prompt(day, chats):
     return "\n\n".join(parts)
 
 
+ANSWERED_REL = "docs/answered-questions.md"
+QUESTIONS_REL = "OPEN-QUESTIONS.md"
+NONE_LINE = re.compile(r"^[ \t]*none\.?[ \t]*$", re.I | re.M)
+
+
+def _section(text, name):
+    """(start, end) of the body of the `## name` section in `text`, or None."""
+    m = re.search(r"^## " + re.escape(name) + r"[ \t]*\n", text, re.M)
+    if not m:
+        return None
+    nxt = re.search(r"^## ", text[m.end():], re.M)
+    return m.end(), m.end() + nxt.start() if nxt else len(text)
+
+
+def _context():
+    """What the retro must know before it proposes anything, each as data: the lead's rules, the
+    owner's answered decisions (the table) and the open questions (the file is gitignored)."""
+    parts = ["## The lead's rules (`lead.md`, data)\n", (cli.HERE / "lead.md").read_text().strip() + "\n"]
+    try:
+        rows = [l for l in (SRC / ANSWERED_REL).read_text().splitlines() if l.startswith("|")]
+    except OSError:
+        rows = []
+    parts += ["## Wai's answered decisions, newest first (data; propose nothing already answered)\n",
+              "\n".join(rows) + "\n" if rows else "None yet.\n"]
+    try:
+        text = (SRC / QUESTIONS_REL).read_text()
+        span = _section(text, "Open")
+        open_q = text[span[0]:span[1]].strip() if span else ""
+    except OSError:
+        open_q = ""
+    parts += ["## Open questions (data; propose nothing already open)\n", open_q + "\n" if open_q else "None.\n"]
+    return parts
+
+
 def _prompt(day, lines, lessons_text, prior, chats):
     numbered, last = "", None
     for n, (g, l) in enumerate(current_entries(lessons_text), 1):
@@ -402,7 +436,8 @@ def _prompt(day, lines, lessons_text, prior, chats):
             numbered += f"### {g}\n"
             last = g
         numbered += f"{n}. {l}\n"
-    parts = [PROMPT.read_text(), "## Current lessons (by group, numbered for `retire`, `merge` and `groups`)\n",
+    parts = [PROMPT.read_text(), *_context(),
+             "## Current lessons (by group, numbered for `retire`, `merge` and `groups`)\n",
              numbered or "None yet.\n"]
     parts.append(f"## The last {LAST_RETROS} retros\n")
     parts += [p.read_text().strip() + "\n" for p in prior] or ["None yet.\n"]
@@ -430,10 +465,12 @@ def ask_claude(prompt):
     except ValueError:
         raise RetroError("claude's answer is not JSON")
     if not (isinstance(d, dict) and isinstance(d.get("findings_md"), str)
-            and all(isinstance(d.get(k, []), list) for k in ("add", "merge", "retire", "proposals", "groups"))):
-        raise RetroError("claude's answer lacks findings_md, or add, merge, retire, groups or proposals is not a list")
+            and all(isinstance(d.get(k, []), list) for k in ("add", "merge", "retire", "proposals", "groups", "fixes"))):
+        raise RetroError("claude's answer lacks findings_md, or add, merge, retire, groups, proposals or fixes is not a list")
     proposals = [" ".join(str(p).split()) for p in d.get("proposals") or [] if str(p).strip()]
-    return d["findings_md"], d.get("add") or [], d.get("merge") or [], d.get("retire") or [], d.get("groups") or [], proposals
+    fixes = [" ".join(str(p).split()) for p in d.get("fixes") or [] if str(p).strip()]
+    return (d["findings_md"], d.get("add") or [], d.get("merge") or [], d.get("retire") or [], d.get("groups") or [],
+            proposals, fixes)
 
 
 def _git(*a):
@@ -459,11 +496,12 @@ def commit_lessons(day, changed):
     return "committed " + _git("rev-parse", "--short", "HEAD").stdout.strip()
 
 
-def append_proposals(day, proposals):
-    """Each proposal becomes a numbered question under `## Open` in OPEN-QUESTIONS.md."""
-    if not proposals:
+def append_proposals(day, proposals, fixes=()):
+    """Each proposal becomes a numbered question under `## Open` in OPEN-QUESTIONS.md; each fix a
+    bullet under `## Offers`. A placeholder `None.` in either section goes."""
+    if not proposals and not fixes:
         return
-    path = SRC / "OPEN-QUESTIONS.md"
+    path = SRC / QUESTIONS_REL
     text = path.read_text() if path.exists() else \
         "# Open questions\n\nUpdated -\n\n## Open\n\n## Offers\n\n## Status that bears on the questions\n"
     n = max([int(x) for x in re.findall(r"^\*\*(\d+)\.", text, re.M)] or [0])
@@ -472,17 +510,27 @@ def append_proposals(day, proposals):
         n += 1
         entries += (f"**{n}. Should mates take this retro proposal: {p.rstrip('.?')}?**\n\n"
                     f"Proposed by the daily retro for {day}; nothing was applied.\n\n")
-    m = re.search(r"^## Open[ \t]*\n", text, re.M)
-    if not m:
-        text = text.rstrip("\n") + "\n\n## Open\n\n" + entries
-    else:
-        nxt = re.search(r"^## ", text[m.end():], re.M)
-        at = m.end() + nxt.start() if nxt else len(text)
-        head = text[:at].rstrip("\n") + "\n\n"
-        text = head + entries + text[at:]
+    text = _add_to(text, "Open", entries, before="Offers")
+    offers = "".join(f"- {f.rstrip('.')} (found by the daily retro for {day}; nothing was applied)\n" for f in fixes)
+    text = _add_to(text, "Offers", offers, before="Status that bears on the questions")
     stamp = time.strftime("Updated %Y-%m-%d %H:%M")
     text = re.sub(r"^Updated .*$", stamp, text, count=1, flags=re.M)
     _write(path, text)
+
+
+def _add_to(text, name, entries, before):
+    """Put `entries` at the end of the `## name` section (made, ahead of `## before` or at the end,
+    if missing), dropping the section's placeholder `None.` line."""
+    if not entries:
+        return text
+    span = _section(text, name)
+    if not span:
+        nxt = re.search(r"^## " + re.escape(before) + r"[ \t]*$", text, re.M)
+        at = nxt.start() if nxt else len(text)
+        return text[:at].rstrip("\n") + f"\n\n## {name}\n\n" + entries + (("\n" + text[at:]) if nxt else "")
+    body = NONE_LINE.sub("", text[span[0]:span[1]]).strip("\n")
+    body = ((body + "\n\n") if body else "") + entries
+    return text[:span[0]] + "\n" + body.rstrip("\n") + "\n" + ("\n" + text[span[1]:] if text[span[1]:] else "")
 
 
 def _group_list(entries):
@@ -499,7 +547,7 @@ def run_day(day, lines, names, chats):
     lessons_path = SRC / LESSONS_REL
     old = lessons_path.read_text() if lessons_path.exists() else ""
     prior = sorted(p for p in _retros_dir().glob("*.md") if p.stem < day)[-LAST_RETROS:]
-    findings, add, merge, retire, regroup, proposals = ask_claude(_prompt(day, lines, old, prior, chats))
+    findings, add, merge, retire, regroup, proposals, fixes = ask_claude(_prompt(day, lines, old, prior, chats))
     entries = current_entries(old)
     current = [l for _, l in entries]
     taken, notes = pick_retired(retire, current)
@@ -521,7 +569,7 @@ def run_day(day, lines, names, chats):
     if new != old:
         _write(lessons_path, new)
     committed = commit_lessons(day, new != old)
-    append_proposals(day, proposals)
+    append_proposals(day, proposals, fixes)
     out = [f"# Retro {day}\n", findings.strip() + "\n",
            f"## Lessons\n\nAdded {len(added)}, merged {len(merges)}, retired {len(taken)}; {len(kept)} in "
            f"{LESSONS_REL}; {committed}.\n"]
@@ -539,6 +587,8 @@ def run_day(day, lines, names, chats):
         out.append("Rejected:\n\n" + "".join(f"- {l} ({why})\n" for l, why in rejected))
     out.append("## Proposals (in OPEN-QUESTIONS.md, not applied)\n\n"
                + ("".join(f"- {p}\n" for p in proposals) if proposals else "None.\n"))
+    if fixes:
+        out.append("## Fixes (under Offers in OPEN-QUESTIONS.md, not applied)\n\n" + "".join(f"- {f}\n" for f in fixes))
     _write(_retros_dir() / f"{day}.md", "\n".join(out))
     print(f"retro {day}: {len(lines)} log lines, {len(added)} lessons added, {len(merges)} merged, "
           f"{len(taken)} retired, "
