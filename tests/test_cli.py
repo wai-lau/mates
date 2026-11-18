@@ -4501,9 +4501,36 @@ def test_a_wide_chat_keeps_its_panel(m):
 
 def test_discard_fixed_logs_accepted_with_fixes(m):
     m.send()
-    assert m.run("discard", 1, "--fixed")[0] == 0
+    assert m.run("discard", 1, "--fixed", "--share", "70")[0] == 0
     (rec,) = m.log()
-    assert rec["outcome"] == "accepted-with-fixes" and rec["route"] == "qwen"
+    assert rec["outcome"] == "accepted-with-fixes" and rec["route"] == "qwen" and rec["qwen_share"] == 70
+
+
+# --- how much of a task Qwen did (Wai, 2026-11-18: "assign a completion percentage, weighed by
+# difficulty"): qwen_share, 0-100, the share of the task's work Qwen completed, weighting each
+# part by how hard it was. merge logs 100; discard --fixed must give it; an escalation may.
+
+def test_discard_fixed_needs_a_share(m):
+    m.send()
+    code, _, err = m.run("discard", 1, "--fixed")
+    assert code != 0 and "--share" in err and m.task() is not None
+
+
+@pytest.mark.parametrize("bad", ["-5", "101", "lots"])
+def test_share_must_be_a_percentage(m, bad):
+    m.send()
+    code, _, _ = m.run("discard", 1, "--fixed", "--share", bad)
+    assert code != 0 and m.task() is not None
+
+
+def test_merge_logs_a_full_share_and_an_escalation_may_give_one(m):
+    m.send()
+    _checked_and_diffed(m)
+    assert m.run("merge", 1)[0] == 0
+    assert m.log()[-1]["qwen_share"] == 100
+    m.send("next")
+    assert m.run("discard", 1, "--share", "20")[0] == 0
+    assert (m.log()[-1]["outcome"], m.log()[-1]["qwen_share"]) == ("escalated", 20)
 
 
 def test_discard_fixed_and_failed_together_refused(m):

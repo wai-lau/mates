@@ -9,6 +9,9 @@ FIELDS = ("ts", "repo", "task_id", "summary", "route", "reason", "check", "check
           "flags", "attempts", "outcome", "answered_by", "worker_wall_s", "worker_tokens", "compactions",
           "verdict", "lead_tokens", "questions", "pane", "runtime", "restarted", "event", "n",
           "send_check",  # the command sent with `mates send --check` (check is blanked by a review's clearing)
+          # the share of a task's work Qwen completed, 0-100, each part weighed by how hard it was (Wai,
+          # 2026-11-18: "assign a completion percentage, weighed by difficulty"): merge 100, else the lead's
+          "qwen_share",
           "model", "for_task",  # a follower's model; the Qwen task a takeover finishes
           "lead_input", "lead_cache_write", "lead_output")  # lead_tokens = their sum
 PILOT_FIELDS = ("arm", "full_diff_read", "lead_cache_read", "detail", "commit", "tree")

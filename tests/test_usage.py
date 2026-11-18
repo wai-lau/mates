@@ -111,3 +111,17 @@ def test_off_lines_say_keep_working():
 def test_endgame_window_edges(hours, endgame):
     """Exactly 3 h out is in the endgame; at or past the reset (a stale cache) it is not."""
     assert usage.headroom(_data(50, hours), NOW)["endgame"] is endgame
+
+
+def test_a_snoozed_pace_cap_means_work_through_it_but_followers_still_follow_the_switch(tmp_path, monkeypatch):
+    """Wai, 2026-11-18: "for pace-snooze, if I've toggled it on, it means work through paced
+    limits / no Claude followers still applies though"."""
+    snooze = tmp_path / "pace-snooze"
+    snooze.write_text(str(int(NOW + 1800)))
+    monkeypatch.setattr(usage, "snooze_path", lambda: snooze)
+    h = usage.headroom(_data(75, 30), NOW)  # day 6: over pace, followers off
+    assert h["on"] is False and h["snoozed_until"] == NOW + 1800
+    line = usage.report(h)
+    assert "snoozed" in line and "work through" in line and line.startswith("followers off")
+    snooze.write_text(str(int(NOW - 60)))  # an expired snooze says nothing
+    assert "snoozed" not in usage.report(usage.headroom(_data(75, 30), NOW))

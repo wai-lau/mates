@@ -52,6 +52,10 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 - Qwen is never limited by `mates followers`: send to Qwen on any day, within the
   3-task cap. Day 1 of the week has no Claude followers (Wai: "1B, except always
   allow Qwen followers").
+- When Wai has snoozed the pace cap (`pace-snooze`; `mates followers` says so), work
+  through the paced limits; Claude followers still follow the switch ("for pace-snooze,
+  if I've toggled it on, it means work through paced limits / no Claude followers still
+  applies though").
 - Off: the only change is no new subagents. Keep working: start the work now,
   sending Qwen what it can do and doing the rest yourself. Never put work off
   until the weekly reset, and never tell Wai that work waits for it.
@@ -128,7 +132,10 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
   its file. A task that crashes twice: discard it and do it yourself.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
 - Qwen's work that you finish and merge yourself (its diff applied, then fixed): close
-  the task with `mates discard N --fixed` (logged `accepted-with-fixes`, not escalated)
+  the task with `mates discard N --fixed --share P` (logged `accepted-with-fixes`, not
+  escalated; P is the share, 0-100, of the task Qwen completed, each part weighed by how
+  hard it was: "assign a completion percentage, weighed by difficulty"). Give an
+  escalation its share too: `mates discard N --share P`.
   and log your part with `mates log-route claude-self "<what you fixed>" "<why>" --for <task id>`.
 - `mates list` shows the panes; `mates log` the audit log. `mates add` opens
   another Qwen pane only for truly independent parallel work; `mates remove N` closes one.

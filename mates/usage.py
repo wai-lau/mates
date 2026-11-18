@@ -31,6 +31,21 @@ ENDGAME_TARGET = 99.0
 STALE_S = 600  # the statusline refreshes the cache every 60 s; the cap ignores it past 10 min
 
 
+def snooze_path():
+    return Path.home() / ".claude" / "cache" / "pace-snooze"
+
+
+def _snoozed_until(now):
+    """When Wai's pace-snooze ends (epoch s), or None when it is not on. A snooze means work
+    through the paced limits (Wai, 2026-11-18: "for pace-snooze, if I've toggled it on, it means
+    work through paced limits / no Claude followers still applies though")."""
+    try:
+        until = float(snooze_path().read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return until if until > now else None
+
+
 def cache_path():
     return Path.home() / ".claude" / "cache" / "statusline_usage.json"
 
@@ -46,7 +61,7 @@ def headroom(data, now):
     left = allowed - used
     to_reset = reset - now
     h = {"used": used, "day": day, "allowed": allowed, "left": left, "five_hour": five,
-         "endgame": 0 < to_reset <= ENDGAME_S, "to_reset": to_reset}
+         "endgame": 0 < to_reset <= ENDGAME_S, "to_reset": to_reset, "snoozed_until": _snoozed_until(now)}
     if h["endgame"]:
         h["line"] = endgame_line(to_reset)
         h["on"] = used < h["line"] and five <= FIVE_HOUR_MAX
@@ -77,7 +92,15 @@ KEEP_WORKING = ("No new Claude subagents; keep working now: send Qwen what pays 
 
 
 def report(h):
-    """One line for the lead."""
+    """One line for the lead (plus a note when Wai has snoozed the pace cap)."""
+    line = _report(h)
+    if h.get("snoozed_until"):
+        line += (f". Wai has snoozed the pace cap until {time.strftime('%H:%M', time.localtime(h['snoozed_until']))}: "
+                 "work through the paced limits; Claude followers still follow this switch")
+    return line
+
+
+def _report(h):
     if "why" in h:
         return f"followers off: {h['why']}. {KEEP_WORKING}"
     state = "on" if h["on"] else "off"

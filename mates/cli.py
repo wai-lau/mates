@@ -1051,8 +1051,9 @@ def _costs(root, entry, t):
     return rec
 
 
-def log_attempt(root, entry, outcome):
-    """Append the log line for the attempt on entry's task that just finished."""
+def log_attempt(root, entry, outcome, qwen_share=None):
+    """Append the log line for the attempt on entry's task that just finished. `qwen_share`:
+    the share (0-100) of the task Qwen completed, weighed by difficulty, when the task ends."""
     t = entry["task"]
     checked = t.get("checked_tree")
     rec = {"repo": str(root), "task_id": t["id"], "summary": t.get("summary") or "", "route": "qwen",
@@ -1063,6 +1064,8 @@ def log_attempt(root, entry, outcome):
             "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
             "red_on_base": t.get("red_on_base"),
             "questions": t.get("questions") or [], **_costs(root, entry, t)}
+    if qwen_share is not None:
+        rec["qwen_share"] = qwen_share
     logrec.write(LOG, rec)
 
 
@@ -1750,7 +1753,7 @@ def merge(args):
     # task open on merged code (a re-merge made an empty duplicate commit and a second accepted line).
     _change(root, a.n, close, task_id=task["id"])
     _clear_brief(root, a.n)
-    log_attempt(root, logged, "accepted")
+    log_attempt(root, logged, "accepted", qwen_share=100)
     _change(root, a.n, lambda e: e.update(lead_since=logged.get("lead_since")))
     print(f"merged Qwen pane {a.n}: {commit[:12]} {message.splitlines()[0]}")
     try:
@@ -1876,14 +1879,20 @@ def _stop_reply(root, state, q, n):
 
 
 def discard(args):
-    p = _parser("discard", "mates discard N [--failed | --fixed]")
+    p = _parser("discard", "mates discard N [--failed | --fixed --share P | --share P]")
     p.add_argument("n", type=int)
     p.add_argument("--failed", action="store_true")
     p.add_argument("--fixed", action="store_true",
                    help="you finished Qwen's work and merged it yourself: logged accepted-with-fixes")
+    p.add_argument("--share", type=int, metavar="P",
+                   help="the share (0-100) of the task Qwen completed, each part weighed by difficulty")
     a = p.parse_args(args)
     if a.failed and a.fixed:
         die("--failed and --fixed say opposite things: pick one")
+    if a.fixed and a.share is None:
+        die("--fixed needs --share P: the share (0-100) of the task Qwen completed, weighed by difficulty")
+    if a.share is not None and not 0 <= a.share <= 100:
+        die("--share is a percentage, 0 to 100")
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, a.n)
@@ -1895,7 +1904,8 @@ def discard(args):
     except GitError as e:
         die(f"discard failed: {e}", 1)
     if task:
-        log_attempt(root, q, "failed" if a.failed else "accepted-with-fixes" if a.fixed else "escalated")
+        log_attempt(root, q, "failed" if a.failed else "accepted-with-fixes" if a.fixed else "escalated",
+                    qwen_share=0 if a.failed else a.share)
 
     def apply(e):  # this task, the idle clock and the lead-token mark only
         if task and (e.get("task") or {}).get("id") == task["id"]:
