@@ -1022,8 +1022,13 @@ def test_check_refuses_shared_state_folder(m, monkeypatch):
     assert code != 0 and "refusing to check" in err and not (m.t / "exec.log").exists()
 
 
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
 def test_check_cannot_reach_home(m, monkeypatch):
+    """Every command tries to READ a real marker file; the marker must never reach the check's
+    output. (Commands that merely fail because a file is missing would pass with no sandbox.)"""
+    if shutil.which("bwrap") is None:
+        if os.environ.get("MATES_REQUIRE_BWRAP"):
+            pytest.fail("bwrap is not installed and MATES_REQUIRE_BWRAP is set: the sandbox test cannot run")
+        pytest.skip("bwrap not installed (set MATES_REQUIRE_BWRAP=1 to make this a failure)")
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     monkeypatch.setenv("MATES_QWEN", str(Path(cli.__file__).resolve().parent.parent / "bin" / "qwen"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(m.t / "config"))  # XDG_STATE_HOME stays m.private
@@ -1032,11 +1037,21 @@ def test_check_cannot_reach_home(m, monkeypatch):
     outside = m.t / "outside"
     outside.mkdir()
     home = Path(os.environ["HOME"])
-    home.mkdir(parents=True, exist_ok=True)
-    for cmd in (f'echo x > "$HOME/canary" && echo x > {home}/canary', f"echo x > {outside}/canary",
-                f"ls {real_home}/.ssh", f"cat {real_home}/.claude/.credentials.json",
-                f"ls {m.wt}", f"ls {m.root}", '[ "$PWD" != /work/check ]'):
-        code, out, _ = m.run("check", 1, "--", cmd)
+    marker = f"SECRET-{uuid.uuid4().hex}"
+    markers = {home / ".ssh" / "id": None, home / ".claude" / ".credentials.json": None,
+               m.wt / "worktree-canary": None, m.root / "lead-canary": None, outside / "outside-canary": None}
+    for path in markers:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(marker + "\n")
+    assert all(p.read_text().strip() == marker for p in markers)  # the markers really are readable here
+    cmds = [f'echo x > "$HOME/canary" && echo x > {home}/canary', f"echo x > {outside}/canary", f"ls {real_home}/.ssh",
+            f"cat {real_home}/.claude/.credentials.json", f"ls {m.wt}", f"ls {m.root}", '[ "$PWD" != /work/check ]']
+    cmds += [f"cat {p}" for p in markers]
+    cmds += [f"cat {home}/.ssh/id {home}/.claude/.credentials.json {m.wt}/worktree-canary {m.root}/lead-canary "
+             f"{outside}/outside-canary; cat ~/.ssh/id ~/.claude/.credentials.json; ls -R {home}; false"]
+    for cmd in cmds:
+        code, out, err = m.run("check", 1, "--", cmd)
+        assert marker not in out + err, (cmd, out, err)
         assert code != 0, (cmd, out)
     assert not (home / "canary").exists() and not (outside / "canary").exists()
     assert m.task()["checked_tree"] is None
