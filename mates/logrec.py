@@ -15,7 +15,9 @@ PILOT_FIELDS = ("arm", "full_diff_read", "lead_cache_read", "detail", "commit", 
 REQUIRED = ("repo", "task_id", "summary", "route", "reason", "outcome")
 # runtime: a `mates runtime` build; pane: a pane event (idle close); parallel: toggle `mates parallel on|off`
 ROUTES = {"qwen", "claude-subagent", "claude-self", "runtime", "pane", "parallel"}
-OUTCOMES = {"accepted", "sent-back", "escalated", "failed", "closed"}  # closed: a pane event
+# accepted-with-fixes: Qwen did most of the task and the lead finished it and merged it (Wai,
+# 2026-11-18: "YES"); not an escalation, which the retro counts against routing to Qwen.
+OUTCOMES = {"accepted", "accepted-with-fixes", "sent-back", "escalated", "failed", "closed"}  # closed: a pane event
 
 
 def validate(rec: dict) -> dict:

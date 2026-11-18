@@ -127,6 +127,9 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
   counts as an attempt). To start clean, `mates discard N` and send the brief from
   its file. A task that crashes twice: discard it and do it yourself.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
+- Qwen's work that you finish and merge yourself (its diff applied, then fixed): close
+  the task with `mates discard N --fixed` (logged `accepted-with-fixes`, not escalated)
+  and log your part with `mates log-route claude-self "<what you fixed>" "<why>" --for <task id>`.
 - `mates list` shows the panes; `mates log` the audit log. `mates add` opens
   another Qwen pane only for truly independent parallel work; `mates remove N` closes one.
 

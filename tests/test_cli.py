@@ -4448,3 +4448,65 @@ def test_tui_config_loads_the_brief_plugin():
     assert "file:///opt/qwen-tui/brief.js" in tui["plugin"]
     js = (cli.HERE.parent / "bin" / "qwen-tui" / "brief.js").read_text()
     assert "sidebar_content" in js and "/opt/mates-brief/brief.md" in js
+    # todo > brief (Wai, 2026-11-18): the brief hides while OpenCode's todo section shows
+    assert "api.state.session.todo(" in js and 'status !== "completed"' in js
+
+
+# --- a chat squeezed by the side panel (Wai, 2026-11-18: "close pane, send work, then reopen
+# pane"): OpenCode keeps its panel at about 44 columns and shrinks the chat, so in a narrow pane
+# the input box is too narrow to read (its placeholder is cut and reads as typed text). Then send
+# and answer close the panel (Ctrl+X B), check the box and paste, and open it again.
+
+PANEL_IDLE = "   /home/wai/src/x/.claude/  • OpenCode 1.19.5"  # idle, panel open (a real 87-column pane)
+NARROW_PANEL = ("     earlier reply\n" * 20 + "  ┃\n  ┃  Ask any\n  ┃\n  ┃  Build\n  ╹" + "▀" * 9
+                + "\n" + PANEL_IDLE + "\n")
+
+
+def _panel_toggle_hook(m):
+    """tmux send-keys C-x b: the first press shows the full-width chat, the second the squeeze."""
+    wide = m.t / "wide-screen"
+    wide.write_text("     earlier reply\n" * 20 + '  ┃  Ask anything… "Fix a TODO in the codebase"\n')
+    narrow = m.t / "narrow-screen"
+    narrow.write_text(NARROW_PANEL)
+    hook = m.t / "on-enter"
+    hook.write_text(f"""#!/bin/sh
+case "$(tail -1 '{m.t}/tmux.log')" in *"C-x b"*)
+  if [ "$(grep -c 'C-x b' '{m.t}/tmux.log')" = 1 ]; then cp '{wide}' '{m.t}/capture'; else cp '{narrow}' '{m.t}/capture'; fi;;
+esac
+""")
+    hook.chmod(0o755)
+
+
+def test_send_closes_a_squeezing_panel_then_reopens_it(m, monkeypatch):
+    monkeypatch.setattr(cli, "PANEL_REDRAW_S", 0)
+    _capture(m, NARROW_PANEL)
+    _panel_toggle_hook(m)
+    code, _, err = m.run("send", 1, "--reason", "r", "--files", "a.txt", "SQUEEZED task")
+    assert code == 0, err
+    calls = m.tmux_calls()
+    toggles = [i for i, c in enumerate(calls) if c == "send-keys -t %1 C-x b"]
+    pastes = [i for i, c in enumerate(calls) if c.startswith("paste-buffer")]
+    assert len(toggles) == 2 and toggles[0] < pastes[0] and toggles[1] > pastes[-1]
+    assert any("SQUEEZED task" in b for b in m.buffers())
+
+
+def test_a_wide_chat_keeps_its_panel(m):
+    m.send("WIDE task")
+    assert not any(c == "send-keys -t %1 C-x b" for c in m.tmux_calls())
+
+
+# --- Qwen work the lead finishes and merges (Wai, 2026-11-18: "YES" to a distinct outcome): it
+# was logged as escalated (discard's default), so the retro counted partly successful Qwen work
+# as failure and its lessons pushed leads away from Qwen. discard --fixed logs accepted-with-fixes.
+
+def test_discard_fixed_logs_accepted_with_fixes(m):
+    m.send()
+    assert m.run("discard", 1, "--fixed")[0] == 0
+    (rec,) = m.log()
+    assert rec["outcome"] == "accepted-with-fixes" and rec["route"] == "qwen"
+
+
+def test_discard_fixed_and_failed_together_refused(m):
+    m.send()
+    code, _, err = m.run("discard", 1, "--fixed", "--failed")
+    assert code != 0 and m.task() is not None

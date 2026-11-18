@@ -827,12 +827,47 @@ BSPACE_MARGIN = 20  # extra Backspaces past the text: the rows may hide spaces a
 BSPACE_CHUNK = 200  # keys per tmux send-keys call
 
 
+# A chat squeezed by OpenCode's side panel (Wai, 2026-11-18: "close pane, send work, then reopen
+# pane"): the panel keeps about 44 columns and the chat shrinks, and under CHAT_MIN columns the
+# input box cannot be read (its placeholder is cut and reads as typed text). _box_guard then
+# closes the panel (Ctrl+X B) for this command; send and answer reopen it when they finish.
+CHAT_MIN = 30
+PANEL_REDRAW_S = 0.6
+_PANELS_CLOSED = set()
+
+
+def _chat_squeezed(lines):
+    border = _box_border(lines)
+    if border is None or PANEL_HIDDEN.search(_footer(lines, border)):
+        return False  # no chat on screen, or its panel is already hidden
+    return len(lines[border].strip()) < CHAT_MIN
+
+
+def _reopening_panels(fn):
+    """send and answer: reopen any panel _box_guard closed, however the command ends."""
+    def run(args):
+        try:
+            return fn(args)
+        finally:
+            for pane in sorted(_PANELS_CLOSED):
+                with contextlib.suppress(RuntimeError):
+                    _tmux_out("send-keys", "-t", pane, "C-x", "b")
+            _PANELS_CLOSED.clear()
+    run.__name__, run.__doc__ = fn.__name__, fn.__doc__
+    return run
+
+
 def _box_guard(n, pane, clear):
     """Die unless the input box of Qwen pane n is empty. With `clear`, delete its text first
     (Backspace presses, as a typist would: OpenCode's kill-line and select-all keys are
     version-dependent and Ctrl-C quits an empty prompt, while Backspace works the same on
     every version and the e2e fake) and refuse if it is still not empty. Without, refuse
-    with the text, so the lead can carry what matters and run again with --clear-box."""
+    with the text, so the lead can carry what matters and run again with --clear-box.
+    A chat squeezed by the side panel gets the panel closed first (send and answer reopen it)."""
+    if pane not in _PANELS_CLOSED and _chat_squeezed(_screen(pane)):
+        _tmux_out("send-keys", "-t", pane, "C-x", "b")
+        _PANELS_CLOSED.add(pane)
+        time.sleep(PANEL_REDRAW_S)
     text = input_text(pane)
     if text == "":
         return
@@ -1096,6 +1131,7 @@ def _cap_message(holding):
             "merge or discard one first")
 
 
+@_reopening_panels
 def send(args):
     p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] [--clear-box] "<text>"')
     p.add_argument("n", type=int)
@@ -1347,6 +1383,7 @@ def wait(args):
         time.sleep(min(WAIT_POLL_S, max(0.0, deadline - time.time())))
 
 
+@_reopening_panels
 def answer(args):
     p = _parser("answer", 'mates answer N [--sendback] [--clear-box] "<text>"')
     p.add_argument("n", type=int)
@@ -1839,10 +1876,14 @@ def _stop_reply(root, state, q, n):
 
 
 def discard(args):
-    p = _parser("discard", "mates discard N [--failed]")
+    p = _parser("discard", "mates discard N [--failed | --fixed]")
     p.add_argument("n", type=int)
     p.add_argument("--failed", action="store_true")
+    p.add_argument("--fixed", action="store_true",
+                   help="you finished Qwen's work and merged it yourself: logged accepted-with-fixes")
     a = p.parse_args(args)
+    if a.failed and a.fixed:
+        die("--failed and --fixed say opposite things: pick one")
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, a.n)
@@ -1854,7 +1895,7 @@ def discard(args):
     except GitError as e:
         die(f"discard failed: {e}", 1)
     if task:
-        log_attempt(root, q, "failed" if a.failed else "escalated")
+        log_attempt(root, q, "failed" if a.failed else "accepted-with-fixes" if a.fixed else "escalated")
 
     def apply(e):  # this task, the idle clock and the lead-token mark only
         if task and (e.get("task") or {}).get("id") == task["id"]:
