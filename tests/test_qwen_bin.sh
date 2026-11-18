@@ -288,6 +288,10 @@ check "plain repo CLAUDE.md -> secret: refused, the secret never reaches claude 
 rm -f "$PR/CLAUDE.md"; echo "plain rules" > "$PR/CLAUDE.md"; rm -rf "$T/claude-in" "$T/config/qwen/digests"
 (cd "$PR" && exec "$QWEN" >/dev/null 2>&1)
 check "plain repo with a regular CLAUDE.md: it is digested" 'grep -q "plain rules" "$T/claude-in"'
+stub claude "cat >/dev/null; seq 1 400 | tr '\\n' ' '; echo"
+rm -rf "$T/config/qwen/digests"
+(cd "$PR" && exec "$QWEN" >/dev/null 2>&1)
+check "a digest over 150 words is cut to 150" 'for f in "$T"/config/qwen/digests/*.md; do w=$(wc -w < "$f"); [ "$w" -le 150 ] && [ "$w" -gt 100 ] || exit 1; done; ls "$T"/config/qwen/digests/*.md >/dev/null'
 stub claude 'exit 1'
 pkill -f "$T/stub/ollama"; sleep 0.2
 rm -rf "$DL" "$PR" "$T/claude-in"

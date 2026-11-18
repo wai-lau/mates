@@ -311,6 +311,9 @@ digest() {
        || [ ! -s "$out.tmp" ]; then
       rm -f "$out.tmp"; echo "qwen: digest failed for $label, continuing without it" >&2; return 1
     fi
+    # the prompt asks for at most 150 words; cut any excess here (Qwen's context stays small)
+    awk 'n >= 150 { exit } { if (n + NF <= 150) { print; n += NF } else { l = ""; for (i = 1; n < 150; i++) { l = l (l == "" ? "" : " ") $i; n++ }; print l; exit } }' \
+      "$out.tmp" > "$out.cut" && mv "$out.cut" "$out.tmp"
     mv "$out.tmp" "$out"
   fi
   echo "$out"

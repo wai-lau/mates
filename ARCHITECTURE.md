@@ -7,7 +7,7 @@ local Qwen workers in panes stacked on its right. Each Qwen pane runs OpenCode
 check can prove, checks and reads what comes back, and merges it. Wai can type
 into any pane herself.
 
-This file describes the code as of main at `255474c`. Each mechanism names the
+This file describes the code as of main at `d0609c1`. Each mechanism names the
 `file:function` (or constant) that implements it, so you can check it. Where
 this file and the code disagree, the code is right.
 
@@ -871,7 +871,15 @@ that need judgement or for more throughput when Qwen's slot is full.
 `mates/lead.md` tells the lead to run `mates followers` before each one, to pick
 the cheapest model that can do the task, to brief it like Qwen, to check what it
 returns itself, and to log it as `claude-subagent`. While `mates followers`
-says on, the lead should run independent work in parallel followers.
+says on, the lead should run independent work in parallel followers. When it
+says off, the lead keeps working: only new subagents stop.
+
+In the endgame, the last 3 hours before the weekly reset, `mates followers`
+says "endgame". Wai sets a pace to reach 99 % of the week's usage at the reset
+and wants model costs counted low in that window, without burning budget for
+its own sake. The lead then runs real work in parallel followers and picks the
+model by quality and speed rather than price. Past the pace line the switch says
+off again.
 
 `mates/usage.py:headroom` decides on or off from the statusline's usage cache
 (`~/.claude/cache/statusline_usage.json`):

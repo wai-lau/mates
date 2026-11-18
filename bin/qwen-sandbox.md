@@ -11,6 +11,7 @@
 - Done: write `.mates/done.md`, two lines, then stop:
   1. what changed (the files);
   2. the test status, one of `passed`, `failed: <why>`, `could not run: <why>`.
+- Done means the message's `Check:` command passes. Run it exactly as written (bash `timeout: 600000`) before writing done.md, and put its result on line 2. No `Check:` line: run the repo's full test command.
 - Unsure or stuck: write the question to `.mates/question.md`, then stop.
 - `.mates/` is in the repo root, the folder you start in. Write its files by full path, never `/mates/`.
 - Don't commit. Git may be read-only here: `git status` and `git diff` work; add, commit, checkout and branch do not.
