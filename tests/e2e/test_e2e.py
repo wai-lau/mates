@@ -8,6 +8,7 @@ own tests in tests/test_qwen_bin.sh).
 """
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -107,9 +108,23 @@ esac
         self.until(lambda: self.pane() and "Ask anything" in self.screen())
 
 
+def _stop_reapers(root):
+    """`mates launch` starts a detached `reap --watch` that sleeps minutes between cycles: end
+    the ones started for this test's repo (found by working folder, never by name alone)."""
+    for d in Path("/proc").glob("[0-9]*"):
+        try:
+            argv = (d / "cmdline").read_bytes().split(b"\0")
+            if b"reap" in argv and b"--watch" in argv and os.readlink(d / "cwd") == str(root):
+                os.kill(int(d.name), 15)
+        except OSError:
+            continue
+
+
 @pytest.fixture
 def w(tmp_path, private_tmux, private_dir, monkeypatch):
-    return World(tmp_path, private_tmux, private_dir, monkeypatch)
+    world = World(tmp_path, private_tmux, private_dir, monkeypatch)
+    yield world
+    _stop_reapers(world.root)
 
 
 def test_send_done_check_diff_merge(w):
@@ -177,3 +192,92 @@ def test_killed_pane_reads_dead(w):
     w.tmux("kill-pane", "-t", w.pane())
     assert w.mates("wait", 1, "--timeout", "10").stdout == "dead\n"
     assert "closed" in w.mates("list").stdout or "yes" in w.mates("list").stdout
+
+
+def _lead_commit(w, name, text):
+    (w.root / name).write_text(text)
+    _git(w.root, "add", name)
+    _git(w.root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", f"lead {name}")
+
+
+def _entry(w):
+    return next(q for q in session.load(str(w.root))["qwens"] if q["n"] == 1)
+
+
+def _wt(w):
+    return w.root / ".claude" / "worktrees" / "mates-qwen-1"
+
+
+def test_sync_takes_a_lead_commit_made_mid_task(w):
+    w.add()
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Make a.txt say b. FAKE:done")
+    assert w.mates("wait", 1, "--timeout", "60").stdout.startswith("done: a.txt: b")
+    base = _entry(w)["task"]["base"]
+    _lead_commit(w, "lead.txt", "from the lead\n")
+    out = w.mates("sync", 1).stdout
+    assert out.startswith("synced Qwen pane 1") and _entry(w)["task"]["base"] != base
+    assert (_wt(w) / "lead.txt").read_text() == "from the lead\n" and (_wt(w) / "a.txt").read_text() == "b\n"
+    assert "check exit 0" in w.mates("check", 1, "--", "grep -qx b a.txt && test -f lead.txt").stdout
+    diff = w.mates("diff", 1).stdout
+    assert "+b" in diff and "lead.txt" not in diff  # the lead's own commit is not Qwen's change
+    w.mates("merge", 1, "-m", "e2e: a.txt says b")
+    assert (w.root / "a.txt").read_text() == "b\n" and (w.root / "lead.txt").exists()
+    assert _git(w.root, "status", "--porcelain") == ""
+
+
+def test_new_chat_mid_task_is_read_from_the_new_session(w):
+    w.add()
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Pick a value. FAKE:question")
+    assert w.mates("wait", 1, "--timeout", "60").stdout.startswith("question: Which value?")
+    first = _entry(w)["opencode_session"]
+    w.tmux("send-keys", "-t", w.pane(), "-l", "/new")
+    w.until(lambda: "/new" in w.screen())
+    w.tmux("send-keys", "-t", w.pane(), "Enter")
+    w.until(lambda: "Ask anything" in w.screen())
+    w.mates("answer", 1, "Use b. FAKE:done")
+    assert w.mates("wait", 1, "--timeout", "60").stdout.startswith("done: a.txt: b")
+    con = sqlite3.connect(w.env["FAKE_OPENCODE_DB"])
+    sessions = [r[0] for r in con.execute("SELECT id FROM session ORDER BY time_created")]
+    con.close()
+    assert len(sessions) == 2 and sessions[0] == first
+    assert session.opencode_session(str(_wt(w)), w.env["FAKE_OPENCODE_DB"]) == sessions[1]
+
+
+def test_reap_closes_an_idle_pane_and_add_reopens_it(w):
+    w.add()
+    state = session.load(str(w.root))
+    state["qwens"][0]["idle_since"] -= 4000  # unused for over an hour (the limit is 30 minutes)
+    session.save(str(w.root), state)
+    old_pane = w.pane()
+    assert "closed idle Qwen pane 1" in w.mates("reap").stdout
+    w.until(lambda: w.pane() is None)
+    assert old_pane not in w.tmux("list-panes", "-a", "-F", "#{pane_id}")
+    entry = _entry(w)
+    assert entry["closed"] and entry["closed_idle"]
+    assert "unused" in w.mates("send", 1, "--reason", "e2e", "task", ok=False).stderr
+    w.add()
+    assert w.pane() is not None and not _entry(w)["closed"]
+
+
+def test_a_reply_with_no_marker_leaves_no_protocol_file(w):
+    w.add()
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Just say hello.")
+    assert w.mates("wait", 1, "--timeout", "60").stdout == "idle\n"
+    mates_dir = _wt(w) / ".mates"
+    assert not (mates_dir / "done.md").exists() and not (mates_dir / "question.md").exists()
+    assert (w.root / "a.txt").read_text() == "a\n"
+
+
+def test_relaunch_restores_the_pane_and_keeps_the_open_task(w):
+    w.add()
+    w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Pick a value. FAKE:question")
+    assert w.mates("wait", 1, "--timeout", "60").stdout.startswith("question:")
+    task = _entry(w)["task"]
+    w.tmux("kill-pane", "-t", w.pane())  # the window is gone; the lead pane stays to run launch in
+    panes = w.tmux("list-panes", "-a", "-F", "#{pane_id} #{@mates}").splitlines()
+    w.env["TMUX_PANE"] = next(x.split()[0] for x in panes if x.endswith(":lead"))
+    r = w.mates("launch")
+    assert b"claude" in r.stdout.encode().split(b"\0")
+    w.until(lambda: w.pane() and "Ask anything" in w.screen())
+    assert _entry(w)["task"] == task and not _entry(w)["closed"]
+    assert w.mates("wait", 1, "--timeout", "10").stdout.startswith("question: Which value?")
