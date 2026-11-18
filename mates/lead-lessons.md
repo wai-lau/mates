@@ -2,19 +2,15 @@
 
 ### What goes to Qwen
 
-- Route to Qwen only when the check fixes the outcome, not when Qwen must design the approach. For look-only work pin the asked values in the check; 'nothing else moved' lets wrong ones pass.
-- Behaviour plus lead-written failing tests gets Qwen's best work; exact code in a brief leaves it nothing to do, and a known diff of a few lines is faster to apply yourself.
+- For look-only work pin the asked values in the check; 'nothing else moved' lets wrong ones pass.
 - Qwen misses what no test pins: an untested file in a brief comes back wrong, and its own fakes can hide real crashes. Leave untested parts out or add a test that loads the real file.
-- Route only when it cuts cost. If briefing, waiting and review cost more than doing the work (small or known changes, or follow-ups found in review), keep it with Claude.
 
 ### Checks
 
-- Send with the check attached so it runs on the untouched tree first; green there proves nothing. Keep other queued tasks' red tests off main, or no full-suite check can pass.
-- Make checks gate on exit status (no trailing pipe to tail, head or grep), keep them from modifying the tree they judge, and try them on a known-bad tree.
-- Before sending a contract that changes behaviour, run the whole suite against it and fix the old tests it breaks yourself; otherwise Qwen stops to ask and the task drags for hours.
-- Tests Qwen writes are not a check: it grades itself. Write the probe or failing tests first and send them as the spec; probe-first tasks passed review on the first try.
-- For a refactor, pin every moved piece in the check (one definition left, one grep each). Comments move with their code; fix any that name an old file, function or line, and drop none silently.
-- A contract can pass alone and still clash with old tests once code meets both. Try it with the whole suite on a rough sketch of the change, and settle every value (defaults, URLs, key presence) before the send; a wrong lead check costs a send-back.
+- Keep other queued tasks' red tests off main, or no full-suite check can pass. Keep a check from modifying the tree it judges, and try it on a known-bad tree.
+- Before sending a contract that changes behaviour, run the whole suite against a rough sketch of the change, fix the old tests it breaks yourself, and settle every value (defaults, URLs, key presence); otherwise Qwen stops to ask and a wrong lead check costs a send-back.
+- Probe-first tasks (the probe or failing tests written first, sent as the spec) passed review on the first try.
+- In a refactor, comments move with their code; fix any that name an old file, function or line, and drop none silently.
 
 ### Writing briefs
 
@@ -25,14 +21,11 @@
 
 ### Review, merge and logging
 
-- Treat Qwen's done note as a claim and probe every accept against the spec. Merge only under the check that defines done; if it fails, send it back or finish it and log that.
-- Forbid edits to existing tests; if Qwen changes a test or skips a case to make it agree with its code, send it back.
+- Probe every accept against the spec; if the check fails, send it back or finish it yourself and log that.
 - After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
-- Record worker model id, lead tokens, the check and red-on-base on every attempt, claude-self rows included; log an outcome for every send and count each re-brief.
 
 ### Running the panes
 
 - Before sending, confirm the pane has the runtime and can open the proof files its check needs; a missing runtime or mount looks like a worker stall.
-- Judge a stall by turns, not the clock. Stuck means no new tool call for 30 minutes or two failed re-briefs; after a pane restart, confirm the task resumed before waiting on it.
+- After a pane restart, confirm the task resumed before waiting on it.
 - Wait on Qwen with long blocking waits, not frequent polls: lead cache reads grow with every turn spent checking a slow pane and were most of the lead's cost.
-- OpenCode needs Escape twice to stop a reply, and a new chat in a busy pane leaves the old one running unseen: stop the reply first, or restart the pane.

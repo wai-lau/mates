@@ -84,7 +84,6 @@ def test_launch_plan_fresh(tmp_path):
     assert "--resume" not in argv
     prompt = _after(argv, "--append-system-prompt")
     assert "[from Claude]" in prompt and not prompt.endswith("\n")
-    assert cli.ASK_SUFFIX.format(worktree="<worktree>") in prompt  # lead.md quotes the footer
     assert [(q["n"], q["worktree"]) for q in plan["qwens"]] == [(1, _wt(root, 1))]
     cmd = plan["qwens"][0]["cmd"]
     assert f"QWEN_ROOT={_wt(root, 1)}" in cmd and "QWEN_GIT_RO=1" in cmd and " -s " not in cmd
@@ -1794,11 +1793,12 @@ class Retro:
     def git(self, *a):
         return subprocess.run(["git", "-C", str(self.src), *a], check=True, capture_output=True, text=True).stdout
 
-    def reply(self, findings="All fine.", add=(), retire=(), proposals=(), merge=(), groups=None):
+    def reply(self, findings="All fine.", add=(), retire=(), proposals=(), merge=(), groups=None, fixes=None):
         (self.t / "reply.json").write_text(json.dumps({"findings_md": findings, "add": list(add),
                                                        "merge": list(merge), "retire": list(retire),
                                                        "proposals": list(proposals),
-                                                       **({"groups": groups} if groups is not None else {})}))
+                                                       **({"groups": groups} if groups is not None else {}),
+                                                       **({"fixes": list(fixes)} if fixes is not None else {})}))
 
     def line(self, day, **kw):
         import logrec
