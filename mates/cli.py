@@ -750,15 +750,23 @@ def _footer(lines, border):
 # OpenCode's side panel (session title, context, cost) stays open (Wai, 2026-11-18: "always have
 # the right pane open for Qwen like now, it should take priority over the chat window / ctrl+x b,
 # is the shortcut to open the panel if the pane is ever resized too small to have both"). With the
-# panel hidden, OpenCode 1.19.5 moves the context figure ("37.9K (5%)") into the footer.
+# panel hidden, OpenCode 1.19.5 moves the context figure ("37.9K (5%)") into the footer. But a
+# wide, short pane (168x26, 2026-11-18) shows the figure there with the panel open too, and then
+# the panel's own last line, "• OpenCode 1.19.5", sits at the end of the same row: reading that
+# as hidden pressed Ctrl+X B on every poll, and the panel flickered open and shut.
 PANEL_HIDDEN = re.compile(r"\d+(?:\.\d+)?K \(\d")
+PANEL_OPEN = re.compile(r"• OpenCode \d")
+
+
+def _panel_hidden(footer):
+    return bool(PANEL_HIDDEN.search(footer)) and not PANEL_OPEN.search(footer)
 
 
 def ensure_panel(pane, lines):
     """Press Ctrl+X B when a chat shows with its side panel hidden; True if it pressed. The
     start screen (no chat yet) has no panel and is left alone."""
     border = _box_border(lines)
-    if border is None or not PANEL_HIDDEN.search(_footer(lines, border)):
+    if border is None or not _panel_hidden(_footer(lines, border)):
         return False
     _tmux_out("send-keys", "-t", pane, "C-x", "b")
     return True
@@ -867,7 +875,7 @@ _PANELS_CLOSED = set()
 
 def _chat_squeezed(lines):
     border = _box_border(lines)
-    if border is None or PANEL_HIDDEN.search(_footer(lines, border)):
+    if border is None or _panel_hidden(_footer(lines, border)):
         return False  # no chat on screen, or its panel is already hidden
     return len(lines[border].strip()) < CHAT_MIN
 

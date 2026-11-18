@@ -4392,6 +4392,8 @@ def test_a_second_wait_on_a_pane_steps_aside(m):
 PANEL_SHOWN = ["   ⬝⬝⬝⬝⬝⬝⬝⬝  esc interrupt                     • OpenCode 1.19.5"]
 PANEL_HIDDEN = ["   ⬝⬝■■■■■■  esc        9.4K (14%)ctrl+p", "             interrupt            commands"]
 HOME_FOOTER = ["                                                      tab agents  ctrl+p commands"]
+# a real 168x26 pane with the panel open (2026-11-18): the context figure shows in the footer too
+PANEL_SHOWN_WIDE = ["   ⬝■■■■■■⬝  esc interrupt" + " " * 70 + "36.0K (55%)  ctrl+p commands    • OpenCode 1.19.5", ""]
 
 
 @pytest.mark.parametrize("footer", [PANEL_HIDDEN, IDLE_FOOTER])  # IDLE_FOOTER: a real 53-column pane
@@ -4404,7 +4406,7 @@ def test_wait_reopens_a_hidden_panel(m, footer):
 
 def test_wait_leaves_a_shown_panel_and_the_start_screen_alone(m):
     m.send()
-    for footer in (PANEL_SHOWN, HOME_FOOTER):
+    for footer in (PANEL_SHOWN, HOME_FOOTER, PANEL_SHOWN_WIDE):
         _capture(m, _used_screen(EMPTY_BOX, footer))
         m.run("wait", 1, "--timeout", "0.2")
     assert not any(c.startswith("send-keys -t %1 C-x") for c in m.tmux_calls())
