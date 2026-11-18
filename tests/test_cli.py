@@ -3170,7 +3170,7 @@ def test_launch_plan_drops_a_hand_set_runtime_that_is_gone(tmp_path):
     old["runtime"] = str(tmp_path / "deleted-rt")
     old["qwens"] = [_q(root, 1)]
     plan = cli.launch_plan(old, root, False, [], runtime_dir=None)
-    assert plan["state"]["runtime"] is None and "QWEN_RUNTIME" not in plan["qwens"][0]["cmd"]
+    assert plan["state"]["runtime"] is None and "QWEN_RUNTIME=" not in plan["qwens"][0]["cmd"]
     assert any("deleted-rt" in w for w in plan["warnings"])
 
 
@@ -3193,10 +3193,23 @@ def test_parallel_needs_on_or_off_and_a_reason(m):
 
 def test_qwen_cmd_passes_the_proofs_folder(tmp_path):
     root = _root(tmp_path)
-    assert "QWEN_PROOFS" not in cli.qwen_cmd(_wt(root, 1), None, None, root)
+    assert "QWEN_PROOFS=" not in cli.qwen_cmd(_wt(root, 1), None, None, root)
     proofs = Path(root) / ".mates" / "proofs"
     proofs.mkdir(parents=True)
     assert f"QWEN_PROOFS={proofs}" in cli.qwen_cmd(_wt(root, 1), None, None, root)
+
+
+def test_stray_sandbox_variables_never_reach_the_pane_or_the_check(tmp_path, monkeypatch, m):
+    monkeypatch.setenv("QWEN_PROOFS", "/stray/proofs")
+    monkeypatch.setenv("QWEN_RUNTIME", "/stray/runtime")
+    root = _root(tmp_path)
+    cmd = cli.qwen_cmd(_wt(root, 1), None, None, root)
+    assert "env -u QWEN_RUNTIME -u QWEN_PROOFS -u QWEN_CHECK_DIR -u QWEN_ROOT -u QWEN_GIT_RO " in cmd
+    assert "/stray" not in cmd
+    assert cli.sandbox_env(root, None) == {}
+    m.send()
+    code, out, _ = m.run("check", 1, "--", 'echo "p=${QWEN_PROOFS:-none} r=${QWEN_RUNTIME:-none}"')
+    assert code == 0 and "p=none" in out and "/stray" not in out
 
 
 def test_check_passes_the_proofs_folder(m):

@@ -75,6 +75,22 @@ def _entry(root, n):
 
 # --- the Qwen pane wrapper ----------------------------------------------------------
 
+SANDBOX_VARS = ("QWEN_RUNTIME", "QWEN_PROOFS", "QWEN_CHECK_DIR", "QWEN_ROOT", "QWEN_GIT_RO")
+
+
+def sandbox_env(root, runtime):
+    """The sandbox variables every Qwen launch (pane or check) may set: the runtime and
+    the proofs folder, only when they exist. The caller also clears SANDBOX_VARS first,
+    so nothing inherited (a tmux server's environment, Wai's shell) enters the sandbox."""
+    env = {}
+    if runtime:
+        env["QWEN_RUNTIME"] = str(runtime)
+    proofs_dir = Path(root) / ".mates" / "proofs"
+    if proofs_dir.is_dir():
+        env["QWEN_PROOFS"] = str(proofs_dir)
+    return env
+
+
 def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     """The command a Qwen pane runs. It waits for `release_pane` (so the pane is
     tagged before qwen can fail), then runs qwen in the worktree with read-only git.
@@ -85,12 +101,8 @@ def qwen_cmd(worktree, opencode_session=None, runtime_dir=None, root=None):
     sandbox, so it starts in the lead repo `root` (default: the worktree's repo),
     never among Qwen's files."""
     root = root or Path(worktree).parents[2]
-    env = [f"QWEN_ROOT={shlex.quote(str(worktree))}", "QWEN_GIT_RO=1"]
-    if runtime_dir:
-        env.append(f"QWEN_RUNTIME={shlex.quote(str(runtime_dir))}")
-    proofs_dir = Path(root) / ".mates" / "proofs"
-    if proofs_dir.is_dir():
-        env.append(f"QWEN_PROOFS={shlex.quote(str(proofs_dir))}")
+    sets = {**sandbox_env(root, runtime_dir), "QWEN_ROOT": str(worktree), "QWEN_GIT_RO": "1"}
+    env = ["env", *(f"-u {k}" for k in SANDBOX_VARS), *(f"{k}={shlex.quote(v)}" for k, v in sets.items())]
     run = [*env, shlex.quote(session._qwen())]
     if opencode_session:
         run += ["-s", shlex.quote(opencode_session)]
@@ -1326,13 +1338,8 @@ def run_check(root, state, n, tree, base, cmd):
     (exit status, output). The output is Qwen's code's, so control characters are made
     visible (`shown`). Past CHECK_TIMEOUT_S the whole check is killed (its process group;
     the sandbox dies with its parent) and fails with status 124 and a "timed out" line."""
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("QWEN_RUNTIME", "QWEN_ROOT", "QWEN_GIT_RO", "QWEN_PROOFS")}
-    if state.get("runtime"):
-        env["QWEN_RUNTIME"] = state["runtime"]
-    proofs_dir = Path(root) / ".mates" / "proofs"
-    if proofs_dir.is_dir():
-        env["QWEN_PROOFS"] = str(proofs_dir)
+    env = {k: v for k, v in os.environ.items() if k not in SANDBOX_VARS}
+    env.update(sandbox_env(root, state.get("runtime")))
     _sweep_checks()
     procs = []
 
