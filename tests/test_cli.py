@@ -256,6 +256,26 @@ def test_start_needs_tmux(tmp_path, monkeypatch, capsys):
     assert "tmux" in capsys.readouterr().err
 
 
+def test_open_commands_are_exactly_these():
+    """Only these run outside a lead (Wai's shell, Qwen's OpenCode): adding one is a deliberate
+    change (tests review 2026-11-17: `merge` added to OPEN_COMMANDS went unnoticed)."""
+    assert cli.OPEN_COMMANDS == {"launch", "list", "log", "retro", "followers"}
+
+
+@pytest.mark.parametrize("cmd", sorted(set(cli.COMMANDS) - cli.OPEN_COMMANDS))
+def test_every_lead_command_refuses_outside_a_lead(cmd, capsys):
+    with pytest.raises(SystemExit) as e:
+        cli.main([cmd])
+    assert e.value.code == 2 and "runs only from" in capsys.readouterr().err
+
+
+def test_unknown_command_refused(capsys, monkeypatch):
+    monkeypatch.setenv("MATES_LEAD", "1")
+    with pytest.raises(SystemExit) as e:
+        cli.main(["frobnicate"])
+    assert e.value.code == 2 and "unknown command" in capsys.readouterr().err
+
+
 def test_subcommand_refused_without_lead_env(capsys, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "LOG", tmp_path / "no-log.jsonl")
     with pytest.raises(SystemExit) as e:

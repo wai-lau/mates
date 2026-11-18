@@ -39,3 +39,12 @@ def test_pane_fields_and_old_pilot_lines_validate(tmp_path):
     logrec.append(p, rec(arm="mates", full_diff_read=False, lead_cache_read=3))  # a pilot line, as before
     a, b = [json.loads(l) for l in p.read_text().splitlines()]
     assert a["pane"] == 2 and a["questions"][0]["a"] == "add()" and "pane" not in b
+
+
+def test_log_file_is_private(tmp_path):
+    """The audit log holds briefs, reasons and questions: owner-only (tests review 2026-11-17:
+    a 0o666 mutant survived)."""
+    import os
+    p = tmp_path / "log.jsonl"
+    logrec.append(p, rec())
+    assert os.stat(p).st_mode & 0o777 == 0o600

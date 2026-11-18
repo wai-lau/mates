@@ -105,3 +105,9 @@ def test_off_lines_say_keep_working():
     assert end_off.startswith("followers off") and "keep working" in end_off and "counts low" not in end_off
     stale = usage.report({"on": False, "why": "the usage cache is over 10 minutes old"})
     assert "keep working" in stale
+
+
+@pytest.mark.parametrize("hours,endgame", [(3.0, True), (3.01, False), (0.0, False), (-0.5, False)])
+def test_endgame_window_edges(hours, endgame):
+    """Exactly 3 h out is in the endgame; at or past the reset (a stale cache) it is not."""
+    assert usage.headroom(_data(50, hours), NOW)["endgame"] is endgame
