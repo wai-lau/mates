@@ -15,6 +15,7 @@ import pytest
 
 import cli
 import layout
+import panes
 import runtime
 import session
 
@@ -4197,3 +4198,91 @@ def test_log_survives_lines_that_are_not_objects(m):
     code, out, err = m.run("log")
     assert code == 0, err
     assert "good" in out
+
+
+# --- refusals: one table of die() messages no other test asserts. Each row: setup (a function
+# of the Mates harness and monkeypatch, or None), the command, the message the lead reads, and
+# the exit code (2 = refused; 1 is wait's timeout and is never an error).
+
+def _no_state(m, mp):
+    other = m.t / "other-repo"
+    _repo(other)
+    mp.setenv("MATES_ROOT", str(other))
+
+
+def _opencode_gone(m, mp):
+    q = m.t / "qwen-gone"
+    q.write_text("#!/bin/sh\nexit 1\n")
+    q.chmod(0o755)
+    mp.setenv("MATES_QWEN", str(q))
+
+
+def _shell_pane(m, mp):
+    m.live(False)
+
+
+def _mates_dir_is_a_link(m, mp):
+    m.send()
+    elsewhere = m.t / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "done.md").write_text("PRIVATE\n")
+    (m.wt / ".mates").symlink_to(elsewhere)
+
+
+def _done_md_is_a_fifo(m, mp):
+    m.send()
+    (m.wt / ".mates").mkdir(exist_ok=True)
+    os.mkfifo(m.wt / ".mates" / "done.md")
+
+
+def _git_breaks(m, mp):
+    m.send()
+
+    def boom(*a, **k):
+        raise cli.GitError("index.lock exists")
+    mp.setattr(cli, "snapshot", boom)
+
+
+def _git_breaks_on_send_check(m, mp):
+    def boom(*a, **k):
+        raise cli.GitError("index.lock exists")
+    mp.setattr(cli, "run_check", boom)
+
+
+def _remove_breaks(exc):
+    def setup(m, mp):
+        def boom(*a, **k):
+            raise exc
+        mp.setattr(panes, "_remove_folder", boom)
+    return setup
+
+
+REFUSALS = [
+    ("pane-number", None, ("check", "x", "--", "true"), "N must be a pane number, not 'x'", 2),
+    ("no-state", _no_state, ("wait", 1, "--timeout", "1"), "no mates state for this repo", 2),
+    ("launch-unknown-arg", None, ("launch", "--bogus"), "launch: unknown argument '--bogus'", 2),
+    ("check-usage-bare", None, ("check",), "usage: mates check N [-- <cmd>]", 2),
+    ("check-usage-no-dashes", None, ("check", "1", "true"), "usage: mates check N [-- <cmd>]", 2),
+    ("check-no-task-no-cmd", None, ("check", "1"), "this task has no check to reuse", 2),
+    ("no-opencode-sessions", _opencode_gone, ("check", 1, "--", "true"), "cannot find the OpenCode sessions", 2),
+    ("not-running-qwen", _shell_pane, ("send", 1, "--reason", "r", "task"), "is not running qwen", 2),
+    ("mates-dir-is-a-link", _mates_dir_is_a_link, ("wait", 1, "--timeout", "1"), "is not a plain folder", 2),
+    ("done-md-is-a-fifo", _done_md_is_a_fifo, ("wait", 1, "--timeout", "1"), ".mates/done.md is not a plain file", 2),
+    ("check-git-failed", _git_breaks, ("check", 1, "--", "true"), "git failed on Qwen worktree 1: index.lock exists", 2),
+    ("diff-git-failed", _git_breaks, ("diff", 1), "git failed on Qwen worktree 1: index.lock exists", 2),
+    ("send-check-git-failed", _git_breaks_on_send_check,
+     ("send", 1, "--reason", "r", "--files", "a.txt", "--check", "true", "task"), "git failed on Qwen worktree 1", 2),
+    ("remove-git-failed", _remove_breaks(cli.GitError("branch is checked out")), ("remove", 1, "--force"),
+     "remove failed: branch is checked out", 1),
+    ("remove-cannot-delete", _remove_breaks(PermissionError("denied")), ("remove", 1, "--force"),
+     "remove failed: cannot delete", 1),
+]
+
+
+@pytest.mark.parametrize("setup, args, message, code", [r[1:] for r in REFUSALS], ids=[r[0] for r in REFUSALS])
+def test_refusal_messages(m, monkeypatch, setup, args, message, code):
+    if setup:
+        setup(m, monkeypatch)
+    got, out, err = m.run(*args)
+    assert got == code and message in err, (got, out, err)
+    assert "PRIVATE" not in out + err
