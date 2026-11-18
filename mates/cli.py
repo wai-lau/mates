@@ -522,6 +522,7 @@ LOG = Path.home() / ".claude" / "mates" / "log.jsonl"
 TEXT_MAX = 2000  # Qwen's done/question text is cut here
 WAIT_DEFAULT_S = 1800
 WAIT_POLL_S = 2.0
+STALL_S = 1800  # a pane that reads busy while OpenCode has written nothing for this long is stalled
 SESSION_WAIT_S = 30  # send: how long to look for the OpenCode session row after the message
 SESSION_POLL_S = 0.5
 CHECK_TAIL = 20
@@ -939,12 +940,11 @@ def _costs(root, entry, t):
         print(f"mates: cannot read Qwen's tokens: {e}", file=sys.stderr)
     # finish: Qwen's last reply in this attempt; with none (Wai's own work), now
     rec = {"worker_wall_s": round(max(0.0, (last or now) - t["attempt_ts"]), 1), "worker_tokens": tokens,
-           "compactions": compactions, "answered_by": answered_by(), "lead_tokens": None, "lead_cache_read": None}
+           "compactions": compactions, "answered_by": answered_by()}
     state = session.load(root) or {}
-    transcript = session.transcript_path(root, state)
-    if transcript:
-        rec["lead_tokens"], rec["lead_cache_read"] = session.lead_tokens(transcript, entry["n"],
-                                                                          entry.get("lead_since") or 0)
+    # the lead's work on this attempt: since the send (lead_since is set there), split by kind
+    rec.update(session.lead_cost_fields(session.transcript_path(root, state), entry["n"],
+                                        entry.get("lead_since") or 0))
     entry["lead_since"] = now  # the next attempt's lead tokens start here (the caller saves)
     return rec
 
@@ -955,14 +955,13 @@ def log_attempt(root, entry, outcome):
     checked = t.get("checked_tree")
     rec = {"repo": str(root), "task_id": t["id"], "summary": t.get("summary") or "", "route": "qwen",
            "reason": t.get("reason"), "attempts": t.get("attempts", 0), "outcome": outcome, "pane": entry["n"],
-           "check": t.get("check_cmd"),
+           "check": t.get("check_cmd"), "send_check": t.get("send_check"),
            "check_sha": hashlib.sha256(t["check_cmd"].encode()).hexdigest() if t.get("check_cmd") else None,
            "tree": checked, "flags": t.get("flags") or [],
             "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
             "red_on_base": t.get("red_on_base"),
             "questions": t.get("questions") or [], **_costs(root, entry, t)}
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    logrec.append(LOG, rec)
+    logrec.write(LOG, rec)
 
 
 def _remind(n, task):
@@ -1120,7 +1119,7 @@ def _reserve_task(root, a, q, lead, summary, files, before):
     def write(entry, task):
         def apply(e):
             e["task"] = task
-            e["lead_since"] = entry.get("lead_since")
+            e["lead_since"] = task["attempt_ts"]  # this attempt's lead work counts from the send
             if before:
                 e["opencode_session"] = before
         _change(root, a.n, apply)
@@ -1156,6 +1155,13 @@ def _patch_task(root, n, task_id, **fields):
         if "opencode_session" in fields:
             e["opencode_session"] = fields["opencode_session"]
     _change(root, n, apply, task_id=task_id)
+
+
+def _quiet_s(worktree, db, since):
+    """Seconds since OpenCode last wrote in any session of `worktree`, counted from `since` (the
+    paste) at the earliest; 0 when there is no paste time and nothing was written."""
+    last = session.last_activity(worktree, db)
+    return 0.0 if last is None and not since else time.time() - max(last or 0, since)
 
 
 def wait(args):
@@ -1210,6 +1216,11 @@ def wait(args):
                 print(f"mates: Qwen pane {a.n} is still running: OpenCode continued it after compacting "
                       f"its context, past its {name}, and two Escapes did not stop it")
             return 0
+        if still and (age := _quiet_s(q["worktree"], db, since)) > STALL_S:
+            print("stalled")
+            print(f"mates: Qwen pane {a.n} reads busy but OpenCode wrote nothing for {int(age // 60)} minutes; "
+                  f"`mates discard {a.n}` and do it yourself", file=sys.stderr)
+            return 0
         stopped = 0 if still else stopped + 1
         if stopped >= 2:
             print(f"{found[0][0]}: {shown(found[0][2])}" if found else "idle")
@@ -1255,7 +1266,7 @@ def answer(args):
             t["attempts"] += 1
             t["attempt_ts"] = now
             _clear_review(t)
-            e["lead_since"] = q.get("lead_since")
+            e["lead_since"] = now
         t["paste_ts"] = now
     apply(q)
     _change(root, a.n, apply, task_id=task["id"])
@@ -1757,10 +1768,9 @@ def _restart_pane(root, pane, q, sid, dest):
 
 
 def _log_runtime(root, base, reason, h, outcome, restarted):
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12], "route": "runtime",
-                        "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, base))}",
-                        "reason": reason, "outcome": outcome, "runtime": h, "restarted": restarted})
+    logrec.write(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12], "route": "runtime",
+                       "summary": f"runtime {h}: {', '.join(runtime.runtime_files(root, base))}",
+                       "reason": reason, "outcome": outcome, "runtime": h, "restarted": restarted})
 
 
 def _refuse_narrow(n, pane):
@@ -1855,9 +1865,9 @@ def parallel_cmd(args):
     root = _lead_root()
     _load(root)  # refuses with no state
     session.update(root, lambda st: st.update(parallel=a.mode == "on"))
-    logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
-                        "route": "parallel", "summary": f"parallel {a.mode}", "reason": a.reason,
-                        "outcome": "accepted"})
+    logrec.write(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
+                       "route": "parallel", "summary": f"parallel {a.mode}", "reason": a.reason,
+                       "outcome": "accepted"})
     print(f"parallel {a.mode}: {a.reason}")
     return 0
 
@@ -1954,10 +1964,10 @@ def reap(args):
 
 def _log_idle_close(root, q):
     """Log an idle close as a pane event (route "pane"), never as a Qwen task."""
-    logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
-                        "summary": f"idle-close qwen-{q['n']}", "event": "idle-close", "n": q["n"],
-                        "route": "pane", "reason": f"unused for {IDLE_CLOSE_S // 60} minutes",
-                        "outcome": "closed", "pane": q["n"]})
+    logrec.write(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
+                       "summary": f"idle-close qwen-{q['n']}", "event": "idle-close", "n": q["n"],
+                       "route": "pane", "reason": f"unused for {IDLE_CLOSE_S // 60} minutes",
+                       "outcome": "closed", "pane": q["n"]})
 
 
 def reaper_lock(root):

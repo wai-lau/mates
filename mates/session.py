@@ -278,6 +278,23 @@ def _last_write(con, session):
                        (session, session)).fetchone()[0]
 
 
+def last_activity(worktree, db):
+    """When OpenCode last wrote a message or part in any session run in `worktree` (epoch s),
+    or None with none or when the database cannot be read."""
+    if not Path(db).exists():
+        return None
+    try:
+        with _ro(db) as con:
+            row = con.execute(
+                "SELECT max(t) FROM (SELECT max(time_updated) t FROM message WHERE session_id IN "
+                "(SELECT id FROM session WHERE directory = ?) UNION ALL SELECT max(time_updated) FROM part "
+                "WHERE session_id IN (SELECT id FROM session WHERE directory = ?))",
+                (str(worktree), str(worktree))).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] / 1000 if row and row[0] else None
+
+
 def opencode_session(worktree, db):
     """The newest top-level OpenCode session run in `worktree`, or None."""
     if not Path(db).exists():
@@ -460,20 +477,20 @@ def _epoch(stamp):
         return None
 
 
-def lead_tokens(transcript, n, since):
-    """(lead_tokens, lead_cache_read) the lead spent on Qwen pane `n` after `since`
-    (epoch s), from its transcript (JSONL): the assistant messages with a tool call
-    whose command runs `mates <sub> n`. lead_tokens sums `input_tokens +
-    cache_creation_input_tokens + output_tokens`, lead_cache_read sums
-    `cache_read_input_tokens`. One API message is written as several entries (one per
-    content block) with the same id: its usage counts once (largest value per field).
-    Rough by design: other work the lead did while waiting is not counted."""
+def lead_usage(transcript, n, since):
+    """What the lead spent after `since` (epoch s), from its transcript (JSONL), as a dict of
+    `input`, `cache_write`, `output` and `cache_read` token sums; None when the transcript
+    cannot be read. With `n`, only the assistant messages with a tool call whose command runs
+    `mates <sub> n` count; with n None, every assistant message does. One API message is
+    written as several entries (one per content block) with the same id: its usage counts once
+    (largest value per field). Rough by design: other work the lead did while waiting is not
+    counted for a pane."""
     usage, hits = {}, set()
     keys = ("input_tokens", "cache_creation_input_tokens", "output_tokens", "cache_read_input_tokens")
     try:
         fh = open(transcript, encoding="utf-8", errors="replace")
     except OSError:
-        return 0, 0
+        return None
     with fh:
         for line in fh:
             if '"assistant"' not in line:
@@ -482,7 +499,7 @@ def lead_tokens(transcript, n, since):
                 d = json.loads(line)
             except ValueError:
                 continue
-            ts = _epoch(d.get("timestamp")) if d.get("type") == "assistant" else None
+            ts = _epoch(d.get("timestamp")) if isinstance(d, dict) and d.get("type") == "assistant" else None
             if ts is None or ts <= since:
                 continue
             msg = d.get("message") or {}
@@ -491,6 +508,8 @@ def lead_tokens(transcript, n, since):
             have = usage.setdefault(mid, dict.fromkeys(keys, 0))
             for k in keys:
                 have[k] = max(have[k], int(u.get(k) or 0))
+            if n is None:
+                hits.add(mid)
             for block in msg.get("content") or []:
                 if not isinstance(block, dict) or block.get("type") != "tool_use" \
                         or block.get("name") not in LEAD_TOOLS:
@@ -498,9 +517,26 @@ def lead_tokens(transcript, n, since):
                 cmd = (block.get("input") or {}).get("command")
                 if isinstance(cmd, str) and any(int(m.group(2)) == n for m in MATES_CALL.finditer(cmd)):
                     hits.add(mid)
-    tok = sum(usage[m]["input_tokens"] + usage[m]["cache_creation_input_tokens"] + usage[m]["output_tokens"]
-              for m in hits)
-    return tok, sum(usage[m]["cache_read_input_tokens"] for m in hits)
+    return {"input": sum(usage[m]["input_tokens"] for m in hits),
+            "cache_write": sum(usage[m]["cache_creation_input_tokens"] for m in hits),
+            "output": sum(usage[m]["output_tokens"] for m in hits),
+            "cache_read": sum(usage[m]["cache_read_input_tokens"] for m in hits)}
+
+
+def lead_tokens(transcript, n, since):
+    """(lead_tokens, lead_cache_read): lead_usage's input + cache_write + output, and its
+    cache_read; (0, 0) when the transcript cannot be read."""
+    u = lead_usage(transcript, n, since)
+    return (u["input"] + u["cache_write"] + u["output"], u["cache_read"]) if u else (0, 0)
+
+
+def lead_cost_fields(transcript, n, since):
+    """The log fields for the lead's spend (see lead_usage), all None without a transcript."""
+    u = lead_usage(transcript, n, since) if transcript else None
+    if u is None:
+        return dict.fromkeys(("lead_tokens", "lead_cache_read", "lead_input", "lead_cache_write", "lead_output"))
+    return {"lead_tokens": u["input"] + u["cache_write"] + u["output"], "lead_cache_read": u["cache_read"],
+            "lead_input": u["input"], "lead_cache_write": u["cache_write"], "lead_output": u["output"]}
 
 
 def transcript_path(root, state):

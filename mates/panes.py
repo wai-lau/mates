@@ -213,9 +213,11 @@ def _records():
     out = []
     for line in lines:
         try:
-            out.append(json.loads(line))
+            r = json.loads(line)
         except ValueError:
             continue
+        if isinstance(r, dict):
+            out.append(r)
     return out
 
 
@@ -244,15 +246,26 @@ def log(args):
 
 def log_route(args):
     p = argparse.ArgumentParser(prog="mates log-route",
-                                usage='mates log-route <route> "<summary>" "<reason>" [--outcome accepted]')
+                                usage='mates log-route <route> "<summary>" "<reason>" [--outcome accepted] '
+                                      '[--model NAME] [--for TASK_ID]')
     p.add_argument("route", choices=sorted(logrec.ROUTES - {"qwen", "runtime", "pane"}))  # those come from their commands
     p.add_argument("summary")
     p.add_argument("reason")
     p.add_argument("--outcome", choices=sorted(logrec.OUTCOMES), default="accepted")
+    p.add_argument("--model", help="the follower's model")
+    p.add_argument("--for", dest="for_task", help="the Qwen task id this takeover finishes")
     a = p.parse_args(args)
     task_id = uuid.uuid4().hex[:12]
-    cli.LOG.parent.mkdir(parents=True, exist_ok=True)
-    logrec.append(cli.LOG, {"repo": cli._lead_root(), "task_id": task_id, "summary": a.summary, "route": a.route,
-                            "reason": a.reason, "outcome": a.outcome})
+    root = cli._lead_root()
+    rec = {"repo": root, "task_id": task_id, "summary": a.summary, "route": a.route,
+           "reason": a.reason, "outcome": a.outcome}
+    if a.model:
+        rec["model"] = a.model
+    if a.for_task:
+        rec["for_task"] = a.for_task
+    since = logrec.last_ts(cli.LOG, root)  # the lead's work since this repo's last log line
+    transcript = session.transcript_path(root, session.load(root) or {}) if since is not None else None
+    rec.update(session.lead_cost_fields(transcript, None, since or 0))
+    logrec.write(cli.LOG, rec)
     print(f"logged task {task_id}: {a.route} {a.outcome}")
     return 0

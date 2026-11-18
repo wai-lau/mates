@@ -48,3 +48,22 @@ def test_log_file_is_private(tmp_path):
     p = tmp_path / "log.jsonl"
     logrec.append(p, rec())
     assert os.stat(p).st_mode & 0o777 == 0o600
+
+
+def test_write_makes_the_folder_and_validates(tmp_path):
+    p = tmp_path / "new" / "dir" / "log.jsonl"
+    logrec.write(p, rec(model="haiku", for_task="abc", send_check="true", lead_input=1, lead_cache_write=2,
+                        lead_output=3))
+    assert json.loads(p.read_text())["for_task"] == "abc"
+    with pytest.raises(ValueError): logrec.write(p, rec(route="gpt"))
+    assert len(p.read_text().splitlines()) == 1
+
+
+def test_last_ts_finds_the_newest_line_of_a_repo(tmp_path):
+    p = tmp_path / "log.jsonl"
+    assert logrec.last_ts(p, "r") is None
+    logrec.write(p, rec(ts="2026-11-17T10:00:00Z"))
+    logrec.write(p, rec(repo="other", ts="2026-11-17T11:00:00Z"))
+    with p.open("a") as f:
+        f.write("junk\n[1]\n")
+    assert logrec.last_ts(p, "r") == 1794909600

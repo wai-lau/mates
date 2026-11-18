@@ -508,6 +508,7 @@ one line:
 | `done: <text>` | `done.md` exists, same rule | 0 |
 | `done: <text>` or `question: <text>`, then a `mates:` line | the file exists, the pane is still replying, and every user message since the file was written is OpenCode's own (after an automatic compaction it sends itself an empty message and "Continue if you have next steps, ..."): wait stops the pane first (`stop_pane`) and says whether it stopped | 0 |
 | `idle` | no protocol file, and no reply running since the paste, two polls in a row | 0 |
+| `stalled` | the pane reads busy, but OpenCode wrote no message or part in any session of the worktree for `STALL_S` (30 min), counted from the paste at the earliest (`cli.py:_quiet_s`, `session.py:last_activity`); a `mates:` line on stderr says how long | 0 |
 | `timeout` | past `--timeout` (default 1800 s) | 1 |
 
 The lead runs it under its Monitor tool. Because `timeout` exits 1, an
@@ -776,7 +777,8 @@ folder inside the repo Qwen writes.
 ### The audit log
 
 `~/.claude/mates/log.jsonl` holds one JSON object per line, appended with
-`O_APPEND`, mode 600. `logrec.py:validate` refuses unknown fields, a missing
+`O_APPEND`, mode 600. Every line goes through `logrec.py:write` (makes the
+folder, validates, appends). `logrec.py:validate` refuses unknown fields, a missing
 required field (`repo`, `task_id`, `summary`, `route`, `reason`, `outcome`),
 or an unknown route or outcome. `ts` is UTC.
 
@@ -793,6 +795,7 @@ Each finished Qwen attempt is one line (`cli.py:log_attempt`):
 | `summary`, `reason` | the brief's first line; why Qwen |
 | `attempts`, `outcome` | the attempt count, and how this attempt ended |
 | `check`, `check_sha` | the task's check command, and its sha256 |
+| `send_check` | the command sent with `mates send --check`; `check` is blanked when a review clears, so this is the one that survives |
 | `red_on_base` | the check failed on the base at send |
 | `tree` | the checked snapshot |
 | `full_diff_read` | the lead diffed exactly the checked snapshot |
@@ -801,11 +804,17 @@ Each finished Qwen attempt is one line (`cli.py:log_attempt`):
 | `worker_wall_s` | seconds from the attempt's start to Qwen's last reply |
 | `worker_tokens`, `compactions` | summed over every OpenCode session in the worktree since the attempt began (`session.py:opencode_usage`) |
 | `answered_by` | the model the server had loaded at log time (`cli.py:answered_by`) |
-| `lead_tokens`, `lead_cache_read` | the lead's tokens on assistant messages whose tool call ran `mates <command> N`; rough by design (`session.py:lead_tokens`) |
+| `lead_input`, `lead_cache_write`, `lead_output`, `lead_tokens`, `lead_cache_read` | the lead's tokens on assistant messages whose tool call ran `mates <command> N`, from the same transcript reading (`session.py:lead_usage`); `lead_tokens` is the sum of the first three, `lead_cache_read` is counted apart. The window starts when this attempt was sent (`send`, or `answer --sendback`, sets the pane's `lead_since`), not at the pane's previous log line. Rough by design; all null with no transcript |
 
 Other lines: `runtime` (the files, the hash, the panes restarted), `parallel`,
 `pane` (`event: idle-close`), and `claude-self` or `claude-subagent` from
-`mates log-route`.
+`mates log-route <route> "<summary>" "<reason>" [--outcome O] [--model NAME]
+[--for TASK_ID]`. A log-route line adds `model` (the follower's model) and
+`for_task` (the Qwen task a takeover finishes) when given, and the lead's
+cost fields counted over every assistant message since this repo's last log
+line (`logrec.py:last_ts`; null when the repo has no earlier line). That
+window can include tokens a Qwen row already counted, so compare rows, do not
+sum them. `mates log` skips lines that are not JSON objects.
 
 ### Retros and lessons
 

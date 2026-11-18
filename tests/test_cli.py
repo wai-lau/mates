@@ -1715,14 +1715,16 @@ def test_log_line_has_cost_fields(m):
         now = time.time()
         d = session.PROJECTS_DIR / m.key
         d.mkdir(parents=True)
-        (d / "lead-sid.jsonl").write_text("".join(json.dumps(x) + "\n" for x in [
-            {"type": "custom-title", "customTitle": "mates repo"},
-            _asst(now - 5, "m1", "mates send 1 --reason r 'fix a.txt'", _usage(10, 100, 5, 1000)),
-            _asst(now - 4, "m2", "mates diff 2", _usage(999, 0, 0, 0)),
-            _asst(now - 3, "m3", "mates check 1 -- true", _usage(1, 2, 3, 40))]))
         m.on_enter_creates_session("ses_1")
         m.send()
         t0 = m.task()["attempt_ts"]
+        assert m.state()["qwens"][0]["lead_since"] == pytest.approx(t0, abs=1)  # the window opens at the send
+        (d / "lead-sid.jsonl").write_text("".join(json.dumps(x) + "\n" for x in [
+            {"type": "custom-title", "customTitle": "mates repo"},
+            _asst(t0 - 100, "m0", "mates wait 1", _usage(5000, 0, 5000, 0)),  # before the send: not this attempt
+            _asst(t0 + 1, "m1", "mates send 1 --reason r 'fix a.txt'", _usage(10, 100, 5, 1000)),
+            _asst(t0 + 2, "m2", "mates diff 2", _usage(999, 0, 0, 0)),
+            _asst(t0 + 3, "m3", "mates check 1 -- true", _usage(1, 2, 3, 40))]))
         m.msg("ses_1", "assistant", t0 - 50, completed_s=t0 - 49, finish="stop", tokens=(1000, 1000))  # earlier
         m.msg("ses_1", "user", t0 + 0.5)
         m.msg("ses_1", "assistant", t0 + 1, completed_s=t0 + 3, finish="tool-calls", tokens=(100, 20))
@@ -1734,6 +1736,8 @@ def test_log_line_has_cost_fields(m):
         assert rec["worker_wall_s"] == pytest.approx(6.0, abs=0.11)
         assert rec["answered_by"] == ["qwen-x:latest"]
         assert (rec["lead_tokens"], rec["lead_cache_read"]) == (115 + 6, 1040)
+        assert (rec["lead_input"], rec["lead_cache_write"], rec["lead_output"]) == (11, 102, 8)
+        assert rec["lead_tokens"] == rec["lead_input"] + rec["lead_cache_write"] + rec["lead_output"]
         assert (rec["pane"], rec["questions"], rec["tree"], rec["full_diff_read"]) == (1, [], rec["tree"], True)
         assert m.state()["qwens"][0]["lead_since"] >= now
         # no server: answered_by is null; the lead's earlier commands were counted already
@@ -1742,6 +1746,7 @@ def test_log_line_has_cost_fields(m):
         m.send("next")
         st = m.state()  # the next attempt starts after the first one's (fake, future-dated) replies
         st["qwens"][0]["task"]["attempt_ts"] = t0 + 10
+        st["qwens"][0]["lead_since"] = t0 + 10
         session.save(str(m.root), st)
         assert m.run("discard", 1)[0] == 0
         rec2 = m.log()[-1]
@@ -4088,3 +4093,92 @@ def test_fresh_keeps_each_open_tasks_work_logs_it_escalated_and_clears_it(tmp_pa
     refs = _git(root, "for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
     assert len(refs) == 2
     assert sorted(_git(root, "show", f"{r}:a.txt") for r in refs) == ["work one", "work two"]
+
+
+def test_send_check_is_logged_even_when_review_clears_the_check(m):
+    m.on_enter_creates_session("ses_1")
+    assert _send_check(m, "test -f done.txt")[0] == 0
+    assert m.run("discard", 1)[0] == 0
+    (rec,) = m.log()
+    assert rec["send_check"] == "test -f done.txt" and rec["red_on_base"] is True
+
+
+def test_lead_since_moves_at_send(m):
+    m.on_enter_creates_session("ses_1")
+    before = time.time()
+    m.send()
+    assert m.state()["qwens"][0]["lead_since"] >= before
+    st = m.state()
+    st["qwens"][0]["lead_since"] = before - 5000  # an old mark (the pane's previous log line)
+    session.save(str(m.root), st)
+    m.send("second try")  # the same task sent again
+    assert m.state()["qwens"][0]["lead_since"] >= before
+
+
+def _lead_transcript(m, rows):
+    d = session.PROJECTS_DIR / m.key
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "lead-sid.jsonl").write_text("".join(json.dumps(x) + "\n" for x in
+                                              [{"type": "custom-title", "customTitle": "mates repo"}, *rows]))
+
+
+def test_log_route_counts_lead_tokens_since_the_last_log_line(m):
+    import logrec
+    now = time.time()
+    logrec.append(cli.LOG, {"repo": str(m.root.resolve()), "task_id": "prev", "summary": "s", "route": "qwen",
+                            "reason": "r", "outcome": "accepted",
+                            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 100))})
+    _lead_transcript(m, [_asst(now - 300, "o", "ls", _usage(9000, 0, 9000, 9000)),
+                         _asst(now - 50, "a", None, _usage(10, 100, 5, 1000)),
+                         _asst(now - 40, "b", "mates diff 2", _usage(1, 2, 3, 40))])
+    code, _, err = m.run("log-route", "claude-subagent", "survey", "wide", "--model", "haiku", "--for", "abc123")
+    assert code == 0, err
+    rec = m.log()[-1]
+    assert (rec["lead_input"], rec["lead_cache_write"], rec["lead_output"]) == (11, 102, 8)
+    assert (rec["lead_tokens"], rec["lead_cache_read"]) == (121, 1040)
+    assert (rec["model"], rec["for_task"]) == ("haiku", "abc123")
+    assert m.run("log-route", "claude-self", "s2", "r2")[0] == 0  # the next row starts after this one
+    assert m.log()[-1]["lead_tokens"] == 0 and "model" not in m.log()[-1]
+
+
+def test_log_route_without_a_transcript_logs_no_cost(m):
+    assert m.run("log-route", "claude-self", "s", "r")[0] == 0
+    assert m.log()[-1].get("lead_tokens") is None
+
+
+def test_wait_reports_a_stalled_qwen(m):
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    old = time.time() - 2600
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = old
+    session.save(str(m.root), st)
+    m.msg("ses_1", "user", old + 1)
+    m.msg("ses_1", "assistant", old + 5, completed_s=old + 6, finish="tool-calls")  # the newest: 43 min old
+    _capture(m, _used_screen(EMPTY_BOX, SPIN_FOOTER))
+    code, out, _ = m.run("wait", 1, "--timeout", "5")
+    assert (code, out) == (0, "stalled\n")
+
+
+def test_wait_is_not_stalled_while_opencode_still_writes(m):
+    m.on_enter_creates_session("ses_1")
+    m.send()
+    old = time.time() - 2600
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = old
+    session.save(str(m.root), st)
+    m.msg("ses_1", "user", old + 1)
+    m.msg("ses_1", "assistant", time.time() - 60, completed_s=time.time() - 59, finish="tool-calls")
+    _capture(m, _used_screen(EMPTY_BOX, SPIN_FOOTER))
+    assert m.run("wait", 1, "--timeout", "0.3")[1] == "timeout\n"
+
+
+def test_log_survives_lines_that_are_not_objects(m):
+    import logrec
+    logrec.append(cli.LOG, {"repo": "/x", "task_id": "a", "summary": "good", "route": "qwen", "reason": "r",
+                            "outcome": "accepted"})
+    with open(cli.LOG, "a") as f:
+        f.write("[1, 2]\n\"str\"\n5\nnull\nnot json\n")
+    code, out, err = m.run("log")
+    assert code == 0, err
+    assert "good" in out
