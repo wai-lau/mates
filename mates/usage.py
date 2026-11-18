@@ -72,7 +72,8 @@ def read(path=None, now=None):
         return {"on": False, "why": f"no usable usage data ({type(e).__name__})"}
 
 
-KEEP_WORKING = "No new subagents; keep working now: send Qwen what pays off, do the rest yourself"
+KEEP_WORKING = ("No new Claude subagents; keep working now: send Qwen what pays off (Qwen is always allowed), "
+                "do the rest yourself")
 
 
 def report(h):

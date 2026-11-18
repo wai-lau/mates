@@ -49,6 +49,9 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
   > "above 75% turn off followers"
 - While on, be aggressive: run independent work in parallel followers.
   > "remember to be more aggressive with subagents when we have >1d worth of usage before hitting pace"
+- Qwen is never limited by `mates followers`: send to Qwen on any day, within the
+  3-task cap. Day 1 of the week has no Claude followers (Wai: "1B, except always
+  allow Qwen followers").
 - Off: the only change is no new subagents. Keep working: start the work now,
   sending Qwen what it can do and doing the rest yourself. Never put work off
   until the weekly reset, and never tell Wai that work waits for it.
