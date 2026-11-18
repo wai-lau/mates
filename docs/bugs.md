@@ -42,6 +42,15 @@ unsure how to proceed." Qwen kept working for three hours (two more compactions,
 the same pair each time). `mates wait` reports done only once the pane stops being
 busy, so it timed out after four hours with the work long done.
 
+## 2026-11-17, from the tests batch
+
+### test_qwen_bin.sh's two-callers race flaked once under load
+
+"two qwen server calls at once start one ollama serve" and "both callers get the same
+server" failed once in a `scripts/test` run started while ruff and shellcheck were also
+running; six runs on their own and the next `scripts/test` passed. Likely the 1 s race
+window under CPU load. Watch for a repeat before widening the window.
+
 ## 2026-11-13, from the 11-12 retro
 
 ### The audit log can't compare Qwen's cost with Claude's
