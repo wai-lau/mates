@@ -47,11 +47,21 @@ def _env():
 
 
 def _run(argv, cwd, env, check, input):
-    # bytes in, bytes out (a file's raw content for hash-object); otherwise text
-    r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=not isinstance(input, bytes), input=input)
+    # bytes in, bytes out (a file's raw content for hash-object); otherwise text, decoded with
+    # surrogateescape: a path or a binary diff that is not UTF-8 survives the round trip (a
+    # name `caf\xe9.txt` reaches os.open as the same bytes) instead of raising UnicodeDecodeError
+    r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=not isinstance(input, bytes), input=input,
+                       errors=None if isinstance(input, bytes) else "surrogateescape")
     if check and r.returncode != 0:
-        raise GitError(r.stderr.strip() or f"{' '.join(argv)} exited {r.returncode}")
+        err = r.stderr.strip()
+        raise GitError(lossy(err) if isinstance(err, str) and err else err or f"{' '.join(argv)} exited {r.returncode}")
     return r
+
+
+def lossy(text):
+    """Git text (surrogateescape-decoded) as plain printable text: bytes that were not UTF-8
+    become U+FFFD."""
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
 def git_lead(root, *args, check=True, input=None, attrs=None):

@@ -578,7 +578,12 @@ The run (`mates/cli.py:run_check`, also used by `send --check`):
   `/work` and `/`, so no file Qwen wrote above it (a `pytest.ini`, a
   `conftest.py`) can change what the check does. A check must not use git.
 - After 1800 s the whole process group is killed and the check fails with
-  status 124 (`CHECK_TIMEOUT_S`).
+  status 124 (`CHECK_TIMEOUT_S`). SIGTERM or SIGHUP to `mates check` kills the
+  check's process group too and removes the copy; a check also sweeps copies
+  under `checks/` older than a day (left by a SIGKILL).
+- `send --check` refuses a check that exits 0, 124, 126, 127 or (pytest usage
+  error and no tests collected) 4 or 5, or prints "command not found", "file or
+  directory not found" or "no tests ran": the test must be committed first.
 - mates prints the exit status and the last 20 lines of output, control
   characters made visible.
 
@@ -587,11 +592,22 @@ Exit 0 records the snapshot as the task's `checked_tree` and the command as its
 
 ### Diff
 
-`mates diff N` (`mates/cli.py:diff`) takes a fresh snapshot and prints its full
-diff against the task base (`--text`, so a binary-looking file still shows),
-the stat, and the guard flags (`mates/guard.py:guard_flags`). It stores the
-snapshot as `diffed_tree`, with the flags, and says so when it is not the
-checked snapshot.
+`mates diff N [--part K]` (`mates/cli.py:diff`) takes a fresh snapshot and prints,
+in this order, the stat, the guard flags (`mates/guard.py:guard_flags`) and the
+full diff against the task base (`--text`, so a binary-looking file still
+shows). The stat and flags come first because Claude Code may show the lead only
+the head of a long output. Git text is decoded with `surrogateescape`
+(`gitsafe.py:_run`), so a binary diff or a file name that is not UTF-8 neither
+crashes mates nor changes the bytes `_read_nofollow` opens; the printed diff
+shows such bytes as U+FFFD, and a binary file gets a `binary` flag.
+
+A diff longer than `DIFF_PART_CHARS` (25,000 characters, under the roughly
+30,000 at which Claude Code cuts a tool output, leaving room for the stat and
+flags) prints in parts: `mates diff N` prints part 1 and says how many parts
+there are; `mates diff N --part K` prints part K. `diffed_tree` is stored only
+once every part of that same snapshot has been printed (`diff_parts` in the task
+record tracks which; a new snapshot resets it). It also says so when the diff
+is not the checked snapshot.
 
 | Flag | Raised for |
 |---|---|
@@ -601,9 +617,10 @@ checked snapshot.
 | `assertion-removed` | a removed line holding an assertion, in a test file |
 | `mates-dir` | anything under `.mates/` |
 | `hook-path` | `.githooks/`, `.husky/`, the repo's `core.hooksPath`, or a file named `.git*` or `.lfsconfig` |
-| `owner-side` | a file that runs as Wai or instructs a lead once merged: `.claude/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`, `.envrc`, makefiles, `conftest.py`, `setup.py`, CI configs, editor tasks, package-manager configs (`OWNER_SIDE`) |
-| `symlink` | a new link |
-| `exec-bit` | a new executable file or mode |
+| `owner-side` | a file that runs as Wai or instructs a lead once merged: `.claude/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`, `.envrc`, makefiles, `conftest.py`, `setup.py`, CI configs, editor tasks, package-manager configs (`OWNER_SIDE`), at the repo root or in any folder |
+| `symlink` | a file whose new mode is a link, new or retargeted (git writes the mode on the `index` line when it did not change) |
+| `exec-bit` | a file whose new mode is executable, new or unchanged |
+| `binary` | a file git counts as binary (`--numstat`) |
 | `runtime-input` | `.mates/runtime.sh`, a lockfile it names, or a manifest or lockfile such as `pyproject.toml` or `package.json` |
 | `owner-quote` | an added line with a quoted string and a word such as Wai, owner, approved or decided |
 | `authorship` | an added line naming a model or AI (qwen, claude, gpt, llm and so on) |

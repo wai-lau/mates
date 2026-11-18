@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -996,6 +997,12 @@ def send(args):
             die("the check passes on the base (it proves nothing); fix the check; with no red check, do it yourself")
         if code in (124, 126, 127) or "command not found" in err or "Executable doesn't exist" in err:
             die(f"the check cannot run on the base ({err[-2000:]}); fix the check; with no red check, do it yourself")
+        # pytest exit 4 (usage error, e.g. a file not found) and 5 (no tests collected), or their
+        # messages: the check names a test that is not in the lead's commit, so it is not red on
+        # the base, it does not exist there (and Qwen would write the test that defines done).
+        if code in (4, 5) or "file or directory not found" in err or "no tests ran" in err:
+            die(f"the check cannot run on the base: it names a test that is not there ({err[-2000:]}); "
+                "the test file must be committed first; with no red check, do it yourself")
         print(f"check {a.check} failed on the base (exit {code}) — red on base; sending anyway")
     # Qwen cannot commit, so mates/qwen-N holds no work of its own: moving it to the lead
     # HEAD is the rebase. Anything on it the lead lacks is kept on a ref first.
@@ -1195,6 +1202,17 @@ def _check_args(args):
     return _int(args[0]), (None if not rest else rest[0] if len(rest) == 1 else shlex.join(rest))
 
 
+def _sweep_checks(older_than_s=86400):
+    """Remove unpacked check copies left by a check that was killed past its cleanup (the
+    SIGKILL of a parent); a check lives at most CHECK_TIMEOUT_S, so a day-old folder is stale."""
+    base = fsutil.state_dir("checks")
+    cutoff = time.time() - older_than_s
+    for d in Path(base).iterdir():
+        with contextlib.suppress(OSError):
+            if d.stat().st_mtime < cutoff:
+                _rmtree(d)
+
+
 def run_check(root, state, n, tree, base, cmd):
     """Run `cmd` in the check sandbox (`qwen exec`) on `tree`, unpacked with `base`'s
     attributes: the one runner for `mates check` and `mates send --check`. Returns
@@ -1208,19 +1226,39 @@ def run_check(root, state, n, tree, base, cmd):
     proofs_dir = Path(root) / ".mates" / "proofs"
     if proofs_dir.is_dir():
         env["QWEN_PROOFS"] = str(proofs_dir)
-    with _unpacked(root, n, tree, base) as folder:
-        env["QWEN_CHECK_DIR"] = str(folder)
-        p = subprocess.Popen([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd="/", env=env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             start_new_session=True)
-        try:
-            raw, _ = p.communicate(timeout=CHECK_TIMEOUT_S)
-            code = p.returncode
-        except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            raw, _ = p.communicate()
-            raw += f"\nmates: check timed out after {CHECK_TIMEOUT_S} s and was killed\n".encode()
-            code = 124
+    _sweep_checks()
+    procs = []
+
+    def killed(sig, _frame):
+        for pr in procs:
+            with contextlib.suppress(OSError):
+                os.killpg(pr.pid, signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                pr.wait(timeout=5)
+        raise SystemExit(128 + sig)  # the `with` below removes the unpacked copy on the way out
+
+    old = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            old[sig] = signal.signal(sig, killed)
+    try:
+        with _unpacked(root, n, tree, base) as folder:
+            env["QWEN_CHECK_DIR"] = str(folder)
+            p = subprocess.Popen([session._qwen(), "exec", "--", "sh", "-c", cmd], cwd="/", env=env,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+            procs.append(p)
+            try:
+                raw, _ = p.communicate(timeout=CHECK_TIMEOUT_S)
+                code = p.returncode
+            except subprocess.TimeoutExpired:
+                os.killpg(p.pid, signal.SIGKILL)
+                raw, _ = p.communicate()
+                raw += f"\nmates: check timed out after {CHECK_TIMEOUT_S} s and was killed\n".encode()
+                code = 124
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
     return code, shown(raw.decode("utf-8", "replace"))
 
 
@@ -1264,9 +1302,44 @@ def check(args):
     return code
 
 
+# A diff longer than this prints in parts. Claude Code shows a lead only the head of a long tool
+# output (a 2 KB preview, and it cuts what it keeps near 30,000 characters), so the lead would
+# read less than mates recorded as read. 25,000 leaves room under that cut for the stat, the
+# flags and the part line.
+DIFF_PART_CHARS = 25000
+
+
+def _diff_parts(text, limit):
+    """`text` cut into parts of at most `limit` characters, at line ends (a longer line is
+    cut mid-line). Always at least one part."""
+    parts, cur, size = [], [], 0
+    for whole in text.splitlines(keepends=True):
+        line = whole
+        while len(line) > limit:
+            if cur:
+                parts.append("".join(cur))
+                cur, size = [], 0
+            parts.append(line[:limit])
+            line = line[limit:]
+        if size + len(line) > limit and cur:
+            parts.append("".join(cur))
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line)
+    if cur or not parts:
+        parts.append("".join(cur))
+    return parts
+
+
+def _binary_paths(numstat):
+    """Paths git counts as binary in `diff --numstat -z` output (`-\t-\t<path>\\0`)."""
+    return [rec.split("\t", 2)[2] for rec in numstat.split("\0") if rec.startswith("-\t-\t")]
+
+
 def diff(args):
-    p = _parser("diff", "mates diff N")
+    p = _parser("diff", "mates diff N [--part K]")
     p.add_argument("n", type=int)
+    p.add_argument("--part", type=int, default=1)
     a = p.parse_args(args)
     root = _lead_root()
     state = _load(root)
@@ -1280,20 +1353,41 @@ def diff(args):
         # --text: a binary-looking file still shows its bytes (attributes come from base anyway)
         full = git_safe(root, a.n, "diff", "--text", "--no-color", "--no-renames", base, tree, attrs=base).stdout
         stat_ = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--stat", base, tree, attrs=base).stdout
+        numstat = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--numstat", "-z", base, tree,
+                           attrs=base).stdout
     except GitError as e:
         die(f"git failed on Qwen worktree {a.n}: {e}")
     hooks = git_lead(root, "config", "core.hooksPath", check=False).stdout.strip() or None
     if hooks and os.path.isabs(hooks) and Path(hooks).resolve().is_relative_to(Path(root)):
         hooks = str(Path(hooks).resolve().relative_to(Path(root)))  # an absolute path inside the repo
     flags = guard.guard_flags(full, task["files"], hooks_path=hooks,
-                              runtime_files=runtime.runtime_files(root, base))
-    sys.stdout.write(shown(full))  # Qwen wrote these files: escapes made visible, as for check output
-    print(stat_.rstrip("\n"))
-    print("flags: " + (", ".join(flags) if flags else "none"))
+                              runtime_files=runtime.runtime_files(root, base),
+                              binary_paths=[gitsafe.lossy(x) for x in _binary_paths(numstat)])
+    parts = _diff_parts(full, DIFF_PART_CHARS)
+    if not 1 <= a.part <= len(parts):
+        die(f"this snapshot's diff has {len(parts)} part(s); no part {a.part}")
+    seen = task.get("diff_parts") or {}
+    if seen.get("tree") != tree or seen.get("total") != len(parts):
+        seen = {"tree": tree, "total": len(parts), "seen": []}  # a new snapshot starts the parts over
+    seen["seen"] = sorted({*seen["seen"], a.part})
+    # The stat and flags come first: a long output may reach the lead cut short, and these are what
+    # it must not miss. Qwen wrote these files: escapes made visible, as for check output.
+    if a.part == 1:
+        print(gitsafe.lossy(stat_).rstrip("\n"))
+        print("flags: " + (", ".join(flags) if flags else "none"))
+    if len(parts) > 1:
+        print(f"--- diff part {a.part} of {len(parts)} (snapshot {tree[:12]}); the next: mates diff {a.n} --part "
+              f"{a.part % len(parts) + 1}; the diff counts as read only after every part")
+    sys.stdout.write(shown(gitsafe.lossy(parts[a.part - 1])))
     if task.get("checked_tree") and task["checked_tree"] != tree:
         print(f"mates: this is not the checked snapshot ({task['checked_tree'][:12]}); run mates check {a.n} again",
               file=sys.stderr)
-    task.update(diffed_tree=tree, flags=flags)
+    done = len(seen["seen"]) == len(parts)
+    task.update(diff_parts=seen, flags=flags)
+    if done:
+        task.update(diffed_tree=tree)
+    elif task.get("diffed_tree") != tree:
+        task.update(diffed_tree=None)
     save_state(root, state)
     return 0
 

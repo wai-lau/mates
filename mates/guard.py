@@ -21,14 +21,15 @@ MANIFEST = re.compile(r"^(pyproject\.toml|uv\.lock|requirements[^/]*\.txt|packag
 # Files that run as Wai, or instruct a lead, outside the sandbox once merged (security audit
 # 2026-11-13, finding 4): Claude Code settings, commands and instructions; direnv; build and
 # test entry points; CI; editor tasks; package-manager configs.
-OWNER_SIDE = re.compile(r"""^(?:
-    \.claude/.* | \.mcp\.json | (?:.*/)?CLAUDE(?:\.local)?\.md | (?:.*/)?AGENTS\.md
-  | (?:.*/)?\.envrc
-  | (?:.*/)?(?:GNU)?[Mm]akefile | (?:.*/)?[Jj]ustfile | (?:.*/)?Taskfile\.ya?ml
-  | (?:.*/)?conftest\.py | setup\.py | noxfile\.py | tox\.ini | \.pre-commit-config\.yaml
+OWNER_SIDE = re.compile(r"""^(?:.*/)?(?:
+    \.claude/.* | \.mcp\.json | CLAUDE(?:\.local)?\.md | AGENTS\.md
+  | \.envrc
+  | (?:GNU)?[Mm]akefile | [Jj]ustfile | Taskfile\.ya?ml
+  | conftest\.py | setup\.py | noxfile\.py | tox\.ini | \.pre-commit-config\.yaml
   | \.github/.* | \.gitlab-ci\.yml | \.circleci/.* | \.vscode/.* | \.idea/.*
-  | (?:.*/)?\.npmrc | (?:.*/)?\.yarnrc(?:\.yml)? | \.pypirc | pip\.conf | uv\.toml
+  | \.npmrc | \.yarnrc(?:\.yml)? | \.pypirc | pip\.conf | uv\.toml
 )$""", re.X)
+INDEX_MODE = re.compile(r"^index [0-9a-f]+\.\.[0-9a-f]+ (\d{6})$")
 LINK_MODE, EXEC_MODE = "120000", "100755"
 # Flag kinds merge refuses until `--ack` names them: each runs something as Wai. A
 # `.gitignore` keeps its hook-path flag (it is a `.git*` file) but runs nothing.
@@ -77,7 +78,7 @@ def _unquote(p: str) -> str:
 
 def _files(diff_text: str):
     """Yield (path, added_lines, removed_lines, new_modes) per file in a unified diff:
-    new_modes holds the modes of the file's `new file mode` / `new mode` header lines,
+    new_modes holds the modes of the file's `new file mode` / `new mode` / `index a..b <mode>` header lines,
     read only before its first hunk, like the paths. The path
     comes from the `diff --git` line (so a binary file counts too), then from the
     `---`/`+++` headers, which are read only before the file's first hunk: a hunk
@@ -97,6 +98,8 @@ def _files(diff_text: str):
                 path = b if sep else None
         elif not in_hunk and line.startswith(("new file mode ", "new mode ")):
             modes.add(line.rsplit(" ", 1)[1])
+        elif not in_hunk and (im := INDEX_MODE.match(line)):
+            modes.add(im.group(1))  # git writes the mode here, and only here, when it did not change
         elif not in_hunk and line.startswith("--- "):
             minus = _unquote(line[4:]).removeprefix("a/")
         elif not in_hunk and line.startswith("+++ "):
@@ -127,10 +130,12 @@ def _hook_dirs(hooks_path):
     return out
 
 
-def guard_flags(diff_text: str, brief_files: list[str], hooks_path=None, runtime_files=()) -> list[str]:
+def guard_flags(diff_text: str, brief_files: list[str], hooks_path=None, runtime_files=(),
+                binary_paths=()) -> list[str]:
     named = set(brief_files)
     hook_dirs = _hook_dirs(hooks_path)
     runtime = set(runtime_files)
+    binary = set(binary_paths)
     flags = []
     for path, added, removed, modes in _files(diff_text):
         if path.startswith(".mates/") or path == ".mates":
@@ -143,6 +148,8 @@ def guard_flags(diff_text: str, brief_files: list[str], hooks_path=None, runtime
             flags.append(f"symlink:{path}")
         if EXEC_MODE in modes:
             flags.append(f"exec-bit:{path}")
+        if path in binary:
+            flags.append(f"binary:{path}")
         if path in runtime or MANIFEST.match(posixpath.basename(path)):
             flags.append(f"runtime-input:{path}")
         if path not in named:

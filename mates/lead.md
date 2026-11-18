@@ -84,7 +84,8 @@ hold, with a grep per moved piece for its structure, is a clear auditable outcom
 - Never run code from a Qwen worktree yourself: use `mates check`. A check
   runs on a copy of the snapshot with no git repo around it: it must not use git.
 - Qwen's own "passed" is a claim; only `mates check` counts.
-- `mates merge N` needs `mates check`, then `mates diff N` on that same snapshot.
+- `mates merge N` needs `mates check`, then `mates diff N` on that same snapshot. A diff over
+  25,000 characters prints in parts: read every one (`mates diff N --part K`); only then does merge accept it.
 - A diff flagged `owner-side`, `symlink`, `exec-bit`, `hook-path` or `runtime-input` holds a file
   that runs as Wai (or instructs a lead) outside the sandbox once merged: read
   each one, then name the kinds with `mates merge N --ack <kind>,...`.

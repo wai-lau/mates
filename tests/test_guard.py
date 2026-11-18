@@ -148,3 +148,23 @@ def test_owner_quote_ignores_removed_lines():
     diff = ("diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n"
             "@@ -1 +1 @@\n-Wai: \"old words\"\n+plain line\n")
     assert not any(f.startswith("owner-quote:") for f in guard.guard_flags(diff, ["docs/a.md"]))
+
+
+def test_guard_flags_retargeted_link_and_unchanged_exec_bit():
+    link = ("diff --git a/l b/l\nindex 1111111..2222222 120000\n--- a/l\n+++ b/l\n@@ -1 +1 @@\n-old\n"
+            "\\ No newline at end of file\n+/home/wai/.local/bin/evil\n\\ No newline at end of file\n")
+    assert "symlink:l" in guard.guard_flags(link, ["l"])
+    ex = "diff --git a/run.sh b/run.sh\nindex 1111111..2222222 100755\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-a\n+b\n"
+    assert "exec-bit:run.sh" in guard.guard_flags(ex, ["run.sh"])
+    assert guard.guard_flags(ex.replace("100755", "100644"), ["run.sh"]) == []
+
+
+def test_guard_flags_nested_owner_side_paths():
+    for path in ("web/.claude/settings.json", "web/.mcp.json", "sub/.vscode/tasks.json", "pkg/setup.py",
+                 "a/b/noxfile.py", "a/tox.ini", "a/.pre-commit-config.yaml", "a/.idea/x.xml"):
+        assert f"owner-side:{path}" in guard.guard_flags(d(path, ["x"]), [path]), path
+    assert guard.guard_flags(d("src/mysetup.py", ["x"]), ["src/mysetup.py"]) == []
+
+
+def test_guard_flags_binary_paths():
+    assert "binary:b.bin" in guard.guard_flags(d("b.bin", ["x"]), ["b.bin"], binary_paths=["b.bin"])

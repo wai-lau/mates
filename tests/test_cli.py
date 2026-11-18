@@ -3,6 +3,7 @@ import json
 import os
 import pwd
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -3573,3 +3574,146 @@ def test_a_reply_quiet_for_half_an_hour_reads_idle(m):
 def test_tests_never_reach_the_real_audit_log_or_state(tmp_path):
     """The autouse fixture in conftest.py points both at this test's own folder."""
     assert cli.LOG.is_relative_to(tmp_path) and session.STATE_DIR.is_relative_to(tmp_path)
+
+
+# --- review 2026-11-17: odd file names, binary files, big diffs, links, red-on-base, killed checks ---
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return "Z" not in Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (ProcessLookupError, FileNotFoundError):
+        return False
+
+
+def test_binary_file_and_odd_name_go_through_check_diff_merge(m):
+    m.send()
+    raw = bytes(range(256)) * 4
+    (m.wt / "a.txt").write_text("b\n")
+    (m.wt / "blob.bin").write_bytes(raw)
+    odd = os.fsencode(m.wt) + b"/caf\xe9.txt"
+    with open(odd, "wb") as f:
+        f.write(b"latin1 name\n")
+    code, out, err = m.run("check", 1, "--", "true")
+    assert code == 0, err
+    code, out, err = m.run("diff", 1)
+    assert code == 0, err
+    assert "blob.bin" in out and "binary:blob.bin" in out
+    assert m.task()["diffed_tree"] == m.task()["checked_tree"]
+    assert cli.worktree_dirty(str(m.root), 1)
+    code, _, err = m.run("merge", 1, "--ack", "")
+    assert code == 0, err
+    assert (m.root / "blob.bin").read_bytes() == raw
+    assert os.path.exists(os.fsencode(m.root) + b"/caf\xe9.txt")
+
+
+def test_diff_prints_stat_and_flags_before_the_diff(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    code, out, _ = m.run("diff", 1)
+    assert code == 0
+    assert out.index("flags:") < out.index("+++ b/a.txt")
+    assert out.index("a.txt |") < out.index("+++ b/a.txt")
+
+
+def _big_edit(m, lines=1200):
+    (m.wt / "a.txt").write_text("".join(f"line {i} " + "x" * 40 + "\n" for i in range(lines)))
+
+
+def test_big_diff_comes_in_parts_and_is_read_after_the_last(m, monkeypatch):
+    monkeypatch.setattr(cli, "DIFF_PART_CHARS", 10000)
+    m.send()
+    _big_edit(m)
+    assert m.run("check", 1, "--", "true")[0] == 0
+    code, out, err = m.run("diff", 1)
+    assert code == 0, err
+    assert out.index("flags:") < out.index("+++ b/a.txt")
+    assert "part 1 of " in out and "--part 2" in out
+    total = int(out.split("part 1 of ")[1].split()[0])
+    assert total >= 2 and len(out) < 10000 + 3000
+    assert m.task()["diffed_tree"] is None
+    assert m.run("merge", 1)[0] != 0
+    for k in range(2, total):
+        code, out, err = m.run("diff", 1, "--part", k)
+        assert code == 0, err
+        assert m.task()["diffed_tree"] is None
+    code, out, err = m.run("diff", 1, "--part", total)
+    assert code == 0, err
+    assert m.task()["diffed_tree"] == m.task()["checked_tree"]
+    code, _, err = m.run("merge", 1)
+    assert code == 0, err
+
+
+def test_diff_parts_reset_with_a_new_snapshot(m, monkeypatch):
+    monkeypatch.setattr(cli, "DIFF_PART_CHARS", 10000)
+    m.send()
+    _big_edit(m)
+    total = int(m.run("diff", 1)[1].split("part 1 of ")[1].split()[0])
+    for k in range(2, total):
+        assert m.run("diff", 1, "--part", k)[0] == 0
+    _big_edit(m, 1300)  # a new snapshot: the parts seen so far do not count
+    code, _, _ = m.run("diff", 1, "--part", total)
+    assert code == 0 and m.task()["diffed_tree"] is None
+    assert m.run("diff", 1, "--part", 99)[0] != 0
+
+
+def test_small_diff_is_one_part(m):
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    out = m.run("diff", 1)[1]
+    assert "part 1 of" not in out
+    assert m.task()["diffed_tree"] is not None
+
+
+def test_send_check_refuses_pytest_usage_and_no_tests_as_cannot_run(m):
+    for cmd in ("echo ERROR: file or directory not found: tests/test_new.py >&2; exit 4",
+                "echo 'no tests ran in 0.01s'; exit 5",
+                "echo 'ERROR: file or directory not found: t.py'; exit 1",
+                "echo 'no tests ran'; exit 1"):
+        code, _, err = _send_check(m, cmd)
+        assert code != 0 and "cannot run" in err and "committed" in err and m.buffers() == [], cmd
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+def test_killed_check_leaves_no_copy_and_no_process(m, sig):
+    import threading
+    m.send()
+    pidfile = m.t / "pid"
+    tree = cli.snapshot(str(m.root), 1, m.task()["base"])
+    state = m.state()
+    checks = m.private / "mates" / "checks"
+    prev = signal.getsignal(sig)
+
+    def kill_soon():
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            time.sleep(0.05)
+        os.kill(os.getpid(), sig)
+
+    t = threading.Thread(target=kill_soon)
+    t.start()
+    with pytest.raises(SystemExit):
+        cli.run_check(str(m.root), state, 1, tree, m.task()["base"], f"sleep 60 & echo $! > '{pidfile}'; wait")
+    t.join()
+    assert list(checks.iterdir()) == []
+    assert signal.getsignal(sig) == prev
+    pid = int(pidfile.read_text())
+    for _ in range(50):
+        if not _alive(pid):
+            break
+        time.sleep(0.1)
+    assert not _alive(pid)
+
+
+def test_a_check_sweeps_old_copies(m):
+    m.send()
+    checks = m.private / "mates" / "checks"
+    old, fresh = checks / "1-old", checks / "1-fresh"
+    for d in (old, fresh):
+        d.mkdir(parents=True)
+        (d / "f").write_text("x")
+    t = time.time() - 2 * 86400
+    os.utime(old, (t, t))
+    assert m.run("check", 1, "--", "true")[0] == 0
+    assert not old.exists() and fresh.exists()
