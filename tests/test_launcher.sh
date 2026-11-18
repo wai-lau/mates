@@ -183,6 +183,25 @@ tx new-session -d -s t8c -x 200 -y 50 -c "$T/r8" "$MATES; exec sleep 600"
 check "started lead gone: mates restarts the lead in its pane" 'waitfor "[ \"\$(count r8 claude)\" = 1 ]"'
 check "started lead gone: the stale pid is cleared" 'waitfor "[ -z \"\$(tx show-options -pqv -t $P8 @mates-lead-pid)\" ]"'
 
+# --- /restart on a mates-launched lead: claude is killed after ~/.claude/.restart.<bin/mates pid>
+# is written; bin/mates relaunches it on that conversation with a fresh argv, then the note ---
+mkrepo r9; K9=$(key r9)
+tx new-session -d -s t9 -x 200 -y 50 -c "$T/r9" "$MATES"
+waitfor '[ "$(count r9 claude)" = 1 ] && [ -n "$(tagged "$K9:1")" ]'
+L9=$(tagged "$K9:lead")
+MP=""  # bin/mates itself (claude's parent), which names the restart file after its own pid
+for p in $(pgrep -f -- "$MATES"); do
+  [ "$(readlink "/proc/$p/cwd")" = "$T/r9" ] && MP=$p
+done
+mkdir -p "$T/home/.claude"
+printf 'restart-sid-123\n[/restart] note for the resumed session\n' > "$T/home/.claude/.restart.$MP"
+echo 0 > "$T/ctl/r9.quit"
+check "restart: claude comes back in the same pane" 'waitfor "[ \"\$(count r9 claude)\" = 2 ]"'
+check "restart: it resumes the conversation /restart named" 'grep -q "^r9 .* resume=restart-sid-123$" "$T/claude.log"'
+check "restart: the restart file is used up" '[ ! -e "$T/home/.claude/.restart.$MP" ]'
+check "restart: still the tagged lead pane" '[ "$(tagged "$K9:lead")" = "$L9" ]'
+echo 0 > "$T/ctl/r9.quit"
+
 # --- bin/mates refuses inside a Qwen worktree ------------------------------------------
 QWT=$T/r1/.claude/worktrees/mates-qwen-1
 out=$(cd "$QWT" && "$MATES" 2>&1); rc=$?
