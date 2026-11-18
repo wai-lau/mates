@@ -176,6 +176,13 @@ the build log. Adding a registry means changing the code.
 - Paths listed in `~/.config/qwen/hide`, in any sandbox: each is covered by an
   empty folder or file. It starts with `~/src/emet/data`, emet's raw logs,
   which Wai can read and so a `qwen` she runs in that checkout could too.
+
+Wai's own `qwen` goes first on the model (Wai, 2026-11-18: "ensure that any qwen I run
+myself takes priority over follower qwens"). The model server answers one request at a time,
+and every model relay shares `$STATE/slots`. Hers (`--priority`) holds a claim there while
+her request runs and for 20 seconds after it, the tool calls between her requests. A follower's
+relay holds a new request while a claim is live, and cuts a reply already running: the model
+stops it, OpenCode retries a cut reply by itself, and the retry waits until hers is done.
 - The checkout, during a build. Only the script and the lockfiles it names,
   read from the commit, enter the build sandbox; an uncommitted or ignored file
   never does (`mates/runtime.py:_stage`). Its passwd file names only a `build`

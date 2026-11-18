@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Byte relay between TCP and a unix socket, for the qwen sandbox.
 
-  qwen-relay out --sock S --to 127.0.0.1:PORT      (outside: unix socket -> Ollama, chat API only)
+  qwen-relay out --sock S --to 127.0.0.1:PORT [--slots DIR [--priority]]
+                                                   (outside: unix socket -> Ollama, chat API only)
   qwen-relay in  --sock S --listen 127.0.0.1:11434 (inside, no network: TCP -> unix socket)
   qwen-relay clip --sock S --run PROG               (outside: each connection's bytes -> PROG's stdin)
   qwen-relay egress --sock S [--web]                (outside: HTTPS proxy for a runtime build;
@@ -22,9 +23,20 @@ connects: local services stay out of reach (emet's MCP server listens on
 With --web (a qwen Wai launched by hand: "when I start qwen on my own, it should
 have network access") any host passes, still only port 443 at a public address:
 the web, never loopback, the LAN, the WSL host or the owner's Ollama.
+
+Wai's own qwen goes first on the model (Wai, 2026-11-18: "ensure that any qwen I run myself
+takes priority over follower qwens"; her pick: stop a follower reply that is running and start
+it over after hers). Ollama answers one request at a time. Every `out` relay shares --slots:
+hers (--priority) holds a lock on its claim file there for each chat request and stamps it when
+the request ends, so for PRIORITY_GRACE_S after it (the tool calls between her requests) no
+follower gets in. A follower relay holds a chat request while a claim is live, and cuts one
+already running: the model stops it, OpenCode retries a cut reply by itself ("socket
+connection was closed", "terminated"), and the retry waits here until hers is done.
 """
 import argparse
 import asyncio
+import contextlib
+import fcntl
 import functools
 import ipaddress
 import os
@@ -32,6 +44,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 
 CLIP_MAX = 1 << 20  # a copy bigger than 1 MiB is cut off
 # Removed from clipboard text (Qwen sets Wai's clipboard; a paste into a terminal could run it):
@@ -196,6 +209,82 @@ async def model_request(r):
     return b"\r\n".join([lines[0], *headers, b"Connection: close"]) + b"\r\n\r\n" + body, None
 
 
+PRIORITY_GRACE_S = 20.0  # after Wai's request ends: her next one follows a tool call or two
+PRIORITY_POLL_S = 0.5
+CHAT = b"POST /v1/chat/completions "
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def priority_live(slots, grace=PRIORITY_GRACE_S):
+    """True while a claim in `slots` is held (Wai's request is running) or ended under `grace`
+    seconds ago. The claim of a relay that is gone is removed."""
+    try:
+        names = os.listdir(slots)
+    except OSError:
+        return False
+    live = False
+    for name in names:
+        if not (name.startswith("hand-") and name.endswith(".lock")):
+            continue
+        path = os.path.join(slots, name)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                live = True
+                continue
+            if time.time() - os.fstat(fd).st_mtime < grace:
+                live = True
+            elif name[5:-5].isdigit() and not _pid_alive(int(name[5:-5])):
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+        finally:
+            os.close(fd)
+    return live
+
+
+class Claim:
+    """Wai's relay: one claim file, locked while any of her chat requests runs."""
+
+    def __init__(self, slots):
+        os.makedirs(slots, mode=0o700, exist_ok=True)
+        final = os.path.join(slots, f"hand-{os.getpid()}.lock")
+        tmp = final + ".new"
+        self.fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.utime(self.fd, (0, 0))  # no request yet: no grace
+        os.rename(tmp, final)  # a follower never sees it unlocked and new
+        self.running = 0
+
+    async def __aenter__(self):
+        self.running += 1
+        if self.running == 1:
+            while True:  # a follower's test lock lasts microseconds
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+
+    async def __aexit__(self, *exc):
+        self.running -= 1
+        if self.running == 0:
+            os.utime(self.fd)  # the grace starts now
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+
+
 async def pipe(r, w):
     try:
         while (b := await r.read(65536)):
@@ -215,6 +304,9 @@ async def main():
     ap.add_argument("--listen")
     ap.add_argument("--run", help="clip: program that takes the text on stdin")
     ap.add_argument("--web", action="store_true", help="egress: any host, not just the registries")
+    ap.add_argument("--slots", help="out: the folder all model relays share for Wai's priority")
+    ap.add_argument("--priority", action="store_true", help="out: Wai's own qwen: goes before the followers")
+    ap.add_argument("--grace", type=float, default=PRIORITY_GRACE_S, help=argparse.SUPPRESS)  # tests
     a = ap.parse_args()
     if a.mode == "clip":
         # Write-only: the sandbox can set the clipboard but never read it.
@@ -239,6 +331,29 @@ async def main():
         os.chmod(a.sock, 0o600)
     elif a.mode == "out":
         host, port = a.to.rsplit(":", 1)
+        claim = Claim(a.slots) if a.slots and a.priority else None
+        follower = bool(a.slots) and not a.priority
+
+        async def forward(raw, w, cut_when_live):
+            try:
+                ur, uw = await asyncio.open_connection(host, int(port))
+            except OSError:
+                w.close()
+                return
+            uw.write(raw)
+            await uw.drain()
+            reply = asyncio.create_task(pipe(ur, w))  # the reply only: nothing more goes upstream
+            while cut_when_live and not reply.done():
+                await asyncio.wait({reply}, timeout=PRIORITY_POLL_S)
+                if not reply.done() and priority_live(a.slots, a.grace):
+                    # Wai's request wants the model: closing upstream stops this reply there,
+                    # and the cut reply makes OpenCode retry, which waits in handle().
+                    uw.transport.abort()
+                    w.transport.abort()
+                    break
+            with contextlib.suppress(Exception):
+                await reply
+            uw.close()
 
         async def handle(r, w):
             raw, refusal = await model_request(r)
@@ -247,15 +362,15 @@ async def main():
                 await w.drain()
                 w.close()
                 return
-            try:
-                ur, uw = await asyncio.open_connection(host, int(port))
-            except OSError:
-                w.close()
+            chat = raw.startswith(CHAT)
+            if chat and claim:
+                async with claim:
+                    await forward(raw, w, False)
                 return
-            uw.write(raw)
-            await uw.drain()
-            await pipe(ur, w)  # the reply only: nothing more from the client goes upstream
-            uw.close()
+            if chat and follower:
+                while priority_live(a.slots, a.grace):
+                    await asyncio.sleep(PRIORITY_POLL_S)
+            await forward(raw, w, chat and follower)
 
         if os.path.exists(a.sock):
             os.unlink(a.sock)

@@ -303,6 +303,10 @@ rm -f "$T/ollama-started"
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1) & q=$!  # exec: $q is the qwen pid
 seen=""; for _ in $(seq 40); do [ -e "$T/state/qwen/locks/$q" ] && { seen=1; break; }; sleep 0.1; done
 check "a lock named after the qwen pid exists while the TUI runs" '[ -n "$seen" ]'
+relays() { for p in $(/usr/bin/pgrep -f "qwen-relay out --sock $T/"); do tr '\0' ' ' < "/proc/$p/cmdline"; echo; done; }
+rargs=""; for _ in $(seq 40); do rargs=$(relays); [ -n "$rargs" ] && break; sleep 0.1; done
+check "by hand: its model relay goes first (--priority), in the shared slots folder" \
+  'grep -qF -- "--slots $T/state/qwen/slots --priority" <<<"$rargs"'
 wait $q; rc=$?
 check "the stub TUI run exits 0" '[ "$rc" = 0 ]'
 check "the lock is gone after" '[ ! -e "$T/state/qwen/locks/$q" ] && [ -z "$(ls -A "$T/state/qwen/locks")" ]'
@@ -312,6 +316,11 @@ check "the TUI run started the (stub) server" '[ -e "$T/ollama-started" ]'
 for _ in $(seq 40); do [ -e "$T/state/qwen/locks/$q" ] && break; sleep 0.1; done
 kill -TERM $q; wait $q
 check "the lock is gone after SIGTERM" '[ ! -e "$T/state/qwen/locks/$q" ]'
+(cd "$T/repo" && QWEN_ROOT=$T/repo exec "$QWEN" >/dev/null 2>&1) & q=$!  # as mates runs a pane
+rargs=""; for _ in $(seq 40); do rargs=$(relays); [ -n "$rargs" ] && break; sleep 0.1; done
+kill -TERM $q; wait $q
+check "a mates pane: its model relay shares the slots folder as a follower (no --priority)" \
+  'grep -qF -- "--slots $T/state/qwen/slots" <<<"$rargs" && ! grep -qF -- "--priority" <<<"$rargs"'
 
 # --- OpenCode config ------------------------------------------------------
 # Panes share one slot, so a request can queue behind another pane's 10-minute reply; OpenCode's

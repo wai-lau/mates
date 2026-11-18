@@ -236,6 +236,122 @@ def test_model_relay_refuses_ambiguous_requests(model_relay, raw):
     assert _http(sock, raw).startswith(b"HTTP/1.1 4") and got == []
 
 
+# --- Wai's own qwen goes first (Wai, 2026-11-18: "ensure that any qwen I run myself takes
+# priority over follower qwens"; her pick: stop a follower reply that is running, start it over
+# after hers). All model relays share --slots; hers (--priority) holds a claim per chat request.
+
+class _Slow(socketserver.BaseRequestHandler):
+    """Upstream that streams a chunked reply slowly: one chunk every 0.1 s for 3 s."""
+    log = None
+
+    def handle(self):
+        self.request.settimeout(5)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = self.request.recv(65536)
+            if not chunk:
+                return
+            data += chunk
+        who = b"hand" if b"HAND" in data else b"follower"
+        self.log.append((time.time(), who, "start"))
+        try:
+            self.request.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            for _ in range(30):
+                self.request.sendall(b"2\r\nok\r\n")
+                time.sleep(0.1)
+            self.request.sendall(b"0\r\n\r\n")
+            self.log.append((time.time(), who, "done"))
+        except OSError:
+            self.log.append((time.time(), who, "cut"))
+
+
+@pytest.fixture
+def prio_relays(private_dir):
+    log = []
+    handler = type("H", (_Slow,), {"log": log})
+    up = _Upstream(("127.0.0.1", 0), handler)
+    threading.Thread(target=up.serve_forever, daemon=True).start()
+    slots = private_dir / "slots"
+    procs, socks = [], {}
+    for name, extra in (("hand", ["--priority"]), ("follower", [])):
+        sock = private_dir / f"{name}.sock"
+        procs.append(subprocess.Popen([sys.executable, "-I", str(RELAY), "out", "--sock", str(sock),
+                                       "--to", f"127.0.0.1:{up.server_address[1]}", "--slots", str(slots),
+                                       "--grace", "0.3", *extra], stderr=subprocess.PIPE, text=True))
+        socks[name] = sock
+    for sock in socks.values():
+        for _ in range(50):
+            if sock.exists():
+                break
+            time.sleep(0.05)
+    yield socks, log, slots
+    for p in procs:
+        p.kill()
+        p.wait()
+    up.shutdown()
+
+
+def _chat(sock, tag, out):
+    out[tag] = _http(sock, _post(b"/v1/chat/completions", b'{"model":"m","messages":[],"t":"' + tag + b'"}'))
+
+
+def test_hands_request_cuts_a_running_follower_reply(prio_relays):
+    socks, log, _ = prio_relays
+    got = {}
+    f = threading.Thread(target=_chat, args=(socks["follower"], b"FOLLOWER", got))
+    f.start()
+    time.sleep(0.8)  # the follower's reply is streaming
+    _chat(socks["hand"], b"HAND", got)
+    f.join(10)
+    events = [(who, what) for _, who, what in log]
+    assert (b"follower", "cut") in events and (b"hand", "done") in events
+    assert not got[b"FOLLOWER"].endswith(b"0\r\n\r\n")  # cut short: OpenCode sees an error and retries
+    assert got[b"HAND"].endswith(b"0\r\n\r\n")
+
+
+def test_a_follower_request_waits_while_hers_runs_and_its_grace(prio_relays):
+    socks, log, _ = prio_relays
+    got = {}
+    h = threading.Thread(target=_chat, args=(socks["hand"], b"HAND", got))
+    h.start()
+    time.sleep(0.5)
+    _chat(socks["follower"], b"FOLLOWER", got)  # held, then sent once hers is done
+    h.join(10)
+    hand_done = next(t for t, who, what in log if who == b"hand" and what == "done")
+    follower_start = next(t for t, who, what in log if who == b"follower" and what == "start")
+    assert follower_start >= hand_done + 0.25  # after her grace too
+    assert got[b"FOLLOWER"].endswith(b"0\r\n\r\n")
+
+
+def test_followers_run_freely_with_no_claim(prio_relays):
+    socks, log, _ = prio_relays
+    got = {}
+    t0 = time.time()
+    _chat(socks["follower"], b"FOLLOWER", got)
+    assert got[b"FOLLOWER"].endswith(b"0\r\n\r\n") and time.time() - t0 < 5
+
+
+def test_the_claim_of_a_gone_relay_is_ignored_and_removed(private_dir):
+    import importlib.machinery
+    import os
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("qwen_relay", str(RELAY))
+    spec = importlib.util.spec_from_loader("qwen_relay", loader)
+    relay = importlib.util.module_from_spec(spec)
+    loader.exec_module(relay)
+    slots = private_dir / "slots2"
+    slots.mkdir()
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    stale = slots / f"hand-{dead.pid}.lock"
+    stale.write_text("")
+    os.utime(stale, (0, 0))
+    assert relay.priority_live(str(slots)) is False and not stale.exists()
+    fresh = slots / f"hand-{dead.pid}.lock"
+    fresh.write_text("")  # ended just now: within the grace
+    assert relay.priority_live(str(slots), grace=60) is True
+
+
 # --- the clipboard relay (security audit 2026-11-13, finding 7): Qwen can set Wai's Windows
 # clipboard, so a later paste into a terminal could run what Qwen chose. Escape sequences
 # (an early end-of-bracketed-paste lets the rest run), other control characters, carriage

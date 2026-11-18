@@ -482,7 +482,10 @@ run_sandboxed() {
   fi
   [ "$host" = - ] || stage_digests "$RUN/home"  # a check reads no digests: no Claude call
   if [ "$host" != - ]; then
-    python3 -I "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" & RELAY=$!
+    # --slots: every model relay shares it, so Wai's own qwen (by hand: --priority) goes
+    # first; a follower's running reply is stopped and starts over after hers.
+    local prio=(); by_hand && prio=(--priority)
+    python3 -I "$HERE/qwen-relay" out --sock "$RUN/ollama.sock" --to "$host" --slots "$STATE/slots" "${prio[@]}" & RELAY=$!
     if [ -n "$net" ]; then
       echo "== $(date '+%F %T') pid $$ $mnt" >> "$STATE/web.log"
       python3 -I "$HERE/qwen-relay" egress --web --sock "$RUN/web.sock" 2>> "$STATE/web.log" & WEB=$!
