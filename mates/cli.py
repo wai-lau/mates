@@ -872,8 +872,19 @@ def _chat_squeezed(lines):
     return len(lines[border].strip()) < CHAT_MIN
 
 
+def _focus_lead():
+    """Make the lead the active pane of its window: the tmux tab shows the active pane's title
+    (Wai, 2026-11-18: "after using Qwen pane, always refocus Leader pane so that the tmux titles
+    are accurate"). It never switches the window Wai is looking at."""
+    with contextlib.suppress(Exception):
+        lead = session.find_lead(_lead_root())
+        if lead:
+            _tmux_out("select-pane", "-t", lead)
+
+
 def _reopening_panels(fn):
-    """send and answer: reopen any panel _box_guard closed, however the command ends."""
+    """send and answer: reopen any panel _box_guard closed, then refocus the lead, however the
+    command ends."""
     def run(args):
         try:
             return fn(args)
@@ -882,6 +893,7 @@ def _reopening_panels(fn):
                 with contextlib.suppress(RuntimeError):
                     _tmux_out("send-keys", "-t", pane, "C-x", "b")
             _PANELS_CLOSED.clear()
+            _focus_lead()
     run.__name__, run.__doc__ = fn.__name__, fn.__doc__
     return run
 

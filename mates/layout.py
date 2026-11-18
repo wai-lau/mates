@@ -20,11 +20,12 @@ class NoRoom(Exception):
 
 def split_qwen(lead_pane, qwen_panes, cwd, cmd):
     """Full tmux argv for the next Qwen pane. `qwen_panes` are top to bottom: the first
-    one splits off the lead to the right, the rest split the bottom one downward."""
+    one splits off the lead to the right, the rest split the bottom one downward. -d: the new
+    pane does not take the focus, so the lead stays active and the tmux tab keeps its title."""
     if qwen_panes:
-        argv = ["tmux", "split-window", "-v", "-P", "-F", "#{pane_id}", "-t", qwen_panes[-1]]
+        argv = ["tmux", "split-window", "-d", "-v", "-P", "-F", "#{pane_id}", "-t", qwen_panes[-1]]
     else:
-        argv = ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", lead_pane, "-l", "50%"]
+        argv = ["tmux", "split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", lead_pane, "-l", "50%"]
     return [*argv, "-c", cwd, cmd]
 
 

@@ -119,3 +119,9 @@ def test_real_tmux_stacked(tmp_path, private_tmux, monkeypatch):
         assert [w["pane"] for w in layout.pane_widths(panes)] == ["lead", 1, 2, 3]
     finally:
         subprocess.run([*sock, "kill-server"], capture_output=True)  # the fixture removes the socket
+
+
+def test_a_new_qwen_pane_never_takes_the_focus():
+    """The tmux tab shows the active pane's title: the lead must stay active."""
+    assert "-d" in layout.split_qwen("%0", [], "/w", "qwen")
+    assert "-d" in layout.split_qwen("%0", ["%1"], "/w", "qwen")

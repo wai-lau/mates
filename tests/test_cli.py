@@ -360,7 +360,7 @@ def test_fresh_keeps_worktrees(tmp_path, monkeypatch, capsysbinary):
     st = session.load(str(root))
     assert {q["n"]: q["closed"] for q in st["qwens"]} == {1: False, 2: True}
     calls = log.read_text()
-    assert "split-window -h -P -F #{pane_id} -t %0 -l 50%" in calls
+    assert "split-window -d -h -P -F #{pane_id} -t %0 -l 50%" in calls
     assert f"QWEN_ROOT={wt1}" in calls
     assert "wait-for -S mates-go-%1" in calls
     assert f"set-option -p -t %1 @mates {session.repo_key(str(root))}:1" in calls
@@ -381,7 +381,7 @@ def test_restore_reapplies_the_lead_width_and_stacks(tmp_path, monkeypatch, caps
     calls = log.read_text().splitlines()
     splits = [c for c in calls if c.startswith("split-window")]
     assert "mates-qwen-2" in splits[0] and "-h" in splits[0] and "-t %0 -l 50%" in splits[0]  # saved order: 2 then 1
-    assert "mates-qwen-1" in splits[1] and splits[1].startswith("split-window -v ") and "-t %1 " in splits[1]
+    assert "mates-qwen-1" in splits[1] and splits[1].startswith("split-window -d -v ") and "-t %1 " in splits[1]
     # only the lead's width is put back; the Qwen panes' heights are evened, not restored
     assert [c for c in calls if c.startswith("resize-pane")] == ["resize-pane -t %0 -x 40%"]
 
@@ -1514,7 +1514,7 @@ def test_add_then_restore_has_two(m):
     assert code == 0, err
     calls = m.tmux_calls()
     split = next(c for c in calls if c.startswith("split-window"))
-    assert split.startswith(f"split-window -v -P -F #{{pane_id}} -t %1 -c {m.root} ")  # below the bottom one
+    assert split.startswith(f"split-window -d -v -P -F #{{pane_id}} -t %1 -c {m.root} ")  # below the bottom one
     assert f"QWEN_ROOT={_wt(str(m.root), 2)}" in split
     assert f"set-option -p -t %2 @mates {m.key}:2" in calls
     assert calls.index(f"set-option -p -t %2 @mates {m.key}:2") < calls.index("wait-for -S mates-go-%2")
@@ -1541,7 +1541,7 @@ def test_add_reuses_closed(m):
     assert m.run("add")[0] == 0
     calls = m.tmux_calls()
     assert [c for c in calls if c.startswith("split-window")][-1].startswith(
-        "split-window -h -P -F #{pane_id} -t %0 -l 50% ")
+        "split-window -d -h -P -F #{pane_id} -t %0 -l 50% ")
     assert f"set-option -p -t %6 @mates {m.key}:1" in calls
     assert {q["n"]: q["closed"] for q in m.state()["qwens"]} == {1: False, 2: True, 3: True}
 
@@ -4561,3 +4561,11 @@ def test_an_older_bin_mates_parent_gets_a_pane_theme_made(m, monkeypatch, tmp_pa
     assert (Path.home() / ".claude" / "themes" / "pane-4243.json").exists()
     monkeypatch.setattr(cli.os, "getppid", lambda: 1)  # not bin/mates: no theme
     assert "--settings" not in cli._claude_argv(m.root, [], [])
+
+
+def test_send_and_answer_refocus_the_lead(m):
+    """Wai, 2026-11-18: "after using Qwen pane, always refocus Leader pane so that the tmux
+    titles are accurate"."""
+    m.lead_pane("%0")
+    m.send("FOCUS task")
+    assert m.tmux_calls()[-1] == "select-pane -t %0"
