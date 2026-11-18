@@ -1,0 +1,59 @@
+#!/bin/bash
+# Run everything, one summary at the end: lint, the unit tests, the two shell test files, the
+# end-to-end tests. Exit 0 only if every step passed. Nothing here touches real state: the
+# tests use private tmux servers, temp HOMEs and fake OpenCode / qwen stubs.
+#
+# Python and the linters come from the runtime venv (.mates/runtime.sh builds it; see
+# docs/runtime.md). Set MATES_TEST_VENV to its folder; the default is the one built for this
+# repo's runtime.sh on 2026-11-17, and failing that the newest venv under
+# $XDG_STATE_HOME/mates/runtimes/mates/.
+cd "$(dirname "$0")/.." || exit 2
+VENV=${MATES_TEST_VENV:-/home/wai/.local/state/mates/runtimes/mates/e8c65fd44457100c/venv}
+if [ ! -x "$VENV/bin/python" ]; then
+  # shellcheck disable=SC2012  # newest by mtime; the names are hex hashes
+  VENV=$(ls -dt "${XDG_STATE_HOME:-$HOME/.local/state}"/mates/runtimes/mates/*/venv 2>/dev/null | head -n 1)
+fi
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "scripts/test: no runtime venv; build it (docs/runtime.md) or set MATES_TEST_VENV" >&2
+  exit 2
+fi
+export PATH=$VENV/bin:$PATH
+PY=$VENV/bin/python
+# A private, short runtime folder (unix sockets and the tests' private folders need a short path).
+RT=$(mktemp -d "/run/user/$(id -u)/m.XXXX") || exit 2
+export XDG_RUNTIME_DIR=$RT
+trap 'rm -rf "$RT"' EXIT
+
+names=() results=() notes=()
+step() {  # step <name> <command...>: run it, record pass or fail and any skips it reported
+  local name=$1 out rc note=""
+  shift
+  echo "=== $name"
+  out=$("$@" 2>&1)
+  rc=$?
+  printf '%s\n' "$out"
+  if printf '%s\n' "$out" | grep -q "SKIPPED"; then note="SKIPPED parts, see above"
+  elif printf '%s\n' "$out" | grep -Eq "^SKIP"; then note="skipped, see above"
+  elif printf '%s\n' "$out" | grep -Eq "[0-9]+ skipped"; then
+    note=$(printf '%s\n' "$out" | grep -Eo "[0-9]+ skipped" | tail -n 1)
+  fi
+  names+=("$name")
+  results+=("$rc")
+  notes+=("$note")
+}
+
+step lint scripts/lint
+step "unit tests" "$PY" -m pytest -q -p no:cacheprovider -m 'not e2e' -rs tests
+step "launcher tests" bash tests/test_launcher.sh
+step "qwen bin tests" bash tests/test_qwen_bin.sh
+step "e2e tests" "$PY" -m pytest -q -p no:cacheprovider -m e2e -rs tests
+
+echo
+echo "=== summary"
+fail=0
+for i in "${!names[@]}"; do
+  if [ "${results[$i]}" = 0 ]; then word=PASS; else word=FAIL; fail=1; fi
+  printf '%-16s %s%s\n' "${names[$i]}" "$word" "${notes[$i]:+  (${notes[$i]})}"
+done
+if [ $fail = 0 ]; then echo "all passed"; else echo "FAILED"; fi
+exit $fail

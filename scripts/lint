@@ -1,7 +1,20 @@
 #!/bin/sh
 # Lint mates: ruff (ruff.toml) on the Python, shellcheck on the shell scripts. Exit 0 = clean.
-# Needs ruff and shellcheck on PATH (Qwen's runtime has both; see .mates/runtime.sh).
-set -e
-cd "$(dirname "$0")/.."
-ruff check .
-shellcheck -x -s bash bin/mates bin/qwen tests/test_launcher.sh tests/test_qwen_bin.sh
+# Both linters always run: a ruff failure does not hide the shellcheck findings. A missing
+# linter is a loud SKIPPED line (and exit 1 with MATES_REQUIRE_LINT=1), never a silent pass.
+# Qwen's runtime has ruff and shellcheck (see .mates/runtime.sh); scripts/test puts it on PATH.
+cd "$(dirname "$0")/.." || exit 2
+rc=0
+if command -v ruff >/dev/null 2>&1; then
+  ruff check . || rc=1
+else
+  echo "lint: SKIPPED ruff (not on PATH)" >&2
+  [ -n "$MATES_REQUIRE_LINT" ] && rc=1
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -x -s bash bin/mates bin/qwen tests/test_launcher.sh tests/test_qwen_bin.sh scripts/test || rc=1
+else
+  echo "lint: SKIPPED shellcheck (not on PATH)" >&2
+  [ -n "$MATES_REQUIRE_LINT" ] && rc=1
+fi
+exit $rc
