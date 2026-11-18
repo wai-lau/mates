@@ -20,8 +20,9 @@ Chat lines are capped per day (CHAT_MAX, 300000 characters); when the cap is hit
 the oldest lines go first, and a line says how many were dropped. Each chat
 line is at most 2000 characters (long messages are cut).
 
-With no --date it covers every day after the last retro file, up to yesterday (UTC,
-the log's clock), so a late or missed run loses nothing.
+With no --date it covers every log day before today (UTC, the log's clock) that has
+no retro file, oldest first, so a late or missed run (or a manual --date run) loses
+nothing. --date takes a finished day only: today or later is refused.
 """
 import argparse
 import datetime
@@ -600,15 +601,17 @@ def _days(recs, date):
     if date:
         return [date]
     have = sorted({_day(r) for r in recs if _day(r)})
-    last = max((p.stem for p in _retros_dir().glob("*.md") if re.fullmatch(r"\d{4}-\d\d-\d\d", p.stem)), default="")
-    yesterday = (_today() - datetime.timedelta(days=1)).isoformat()
-    return [d for d in have if last < d <= yesterday]
+    done = {p.stem for p in _retros_dir().glob("*.md")}
+    today = _today().isoformat()
+    return [d for d in have if d < today and d not in done]
 
 
 def main(args):
     p = argparse.ArgumentParser(prog="mates retro", usage="mates retro [--date YYYY-MM-DD]")
     p.add_argument("--date", type=lambda s: datetime.date.fromisoformat(s).isoformat())
     a = p.parse_args(args)
+    if a.date and a.date >= _today().isoformat():
+        cli.die(f"retro {a.date}: that day is not over yet (today is {_today().isoformat()}, UTC)", 1)
     cli.LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(cli.LOG.parent / "retro.lock", "w") as lk:  # one retro at a time
         fcntl.flock(lk, fcntl.LOCK_EX)
@@ -616,7 +619,7 @@ def main(args):
         names = _names(recs)
         days = _days(recs, a.date)
         if not days:
-            print("retro: nothing to do (no log lines since the last retro)")
+            print("retro: nothing to do (every finished log day has a retro)")
         # Chat data is read once: all repos, all days the retro covers
         repos = {r.get("repo") for r in recs if r.get("repo")}
         chat_dbs = {}

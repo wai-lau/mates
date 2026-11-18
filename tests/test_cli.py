@@ -2077,16 +2077,39 @@ def test_retro_catches_up_missed_days(rt, monkeypatch):
     code, out, err = rt.run()
     assert code == 0, err
     calls = rt.calls()
-    assert len(calls) == 3  # 06, 08, 09; 07 has no lines; 10 is today
-    assert ["task on 2026-11-06" in calls[0]["stdin"], "task on 2026-11-08" in calls[1]["stdin"],
-            "task on 2026-11-09" in calls[2]["stdin"]] == [True] * 3
-    assert "PRIOR-RETRO-TEXT" in calls[0]["stdin"]
-    assert "Retro 2026-11-06" in calls[1]["stdin"] and "PRIOR-RETRO-TEXT" in calls[1]["stdin"]  # last 7 retros
-    for day in ("2026-11-06", "2026-11-08", "2026-11-09"):
+    assert len(calls) == 4  # 04, 06, 08, 09 (oldest first); 05 has a retro, 07 has no lines, 10 is today
+    assert ["task on 2026-11-04" in calls[0]["stdin"], "task on 2026-11-06" in calls[1]["stdin"],
+            "task on 2026-11-08" in calls[2]["stdin"], "task on 2026-11-09" in calls[3]["stdin"]] == [True] * 4
+    assert "PRIOR-RETRO-TEXT" in calls[1]["stdin"]
+    assert "Retro 2026-11-06" in calls[2]["stdin"] and "PRIOR-RETRO-TEXT" in calls[2]["stdin"]  # last 7 retros
+    for day in ("2026-11-04", "2026-11-06", "2026-11-08", "2026-11-09"):
         assert rt.retro_file(day).exists()
     assert not rt.retro_file("2026-11-07").exists() and not rt.retro_file("2026-11-10").exists()
     assert len(rt.git("log", "--format=%s").splitlines()) == 1  # lessons unchanged: no commits
-    assert rt.run()[0] == 0 and len(rt.calls()) == 3  # caught up: nothing to do
+    assert rt.run()[0] == 0 and len(rt.calls()) == 4  # caught up: nothing to do
+
+
+def test_retro_manual_later_date_does_not_skip_earlier_days(rt, monkeypatch):
+    import datetime
+    monkeypatch.setattr(rt.retro, "_today", lambda: datetime.date(2026, 11, 10))
+    for day in ("2026-11-05", "2026-11-06", "2026-11-08"):
+        rt.line(day, summary=f"task on {day}")
+    assert rt.run("--date", "2026-11-08")[0] == 0
+    assert len(rt.calls()) == 1 and rt.retro_file("2026-11-08").exists()
+    assert rt.run()[0] == 0  # the timer's run still covers the earlier days, oldest first
+    calls = rt.calls()[1:]
+    assert len(calls) == 2
+    assert "task on 2026-11-05" in calls[0]["stdin"] and "task on 2026-11-06" in calls[1]["stdin"]
+
+
+def test_retro_refuses_today_and_later(rt, monkeypatch):
+    import datetime
+    monkeypatch.setattr(rt.retro, "_today", lambda: datetime.date(2026, 11, 10))
+    rt.line("2026-11-10")
+    for day in ("2026-11-10", "2026-11-11"):
+        code, out, err = rt.run("--date", day)
+        assert code != 0 and "not over" in err
+    assert rt.calls() == [] and not rt.retro_file("2026-11-10").exists()
 
 
 def test_retro_bad_reply_writes_nothing(rt):

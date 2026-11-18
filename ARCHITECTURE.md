@@ -928,9 +928,10 @@ flowchart LR
 
 ### Which days
 
-With no `--date`, the retro covers every day in the log after the newest retro
-file, up to yesterday in UTC, so a late or missed run loses nothing
-(`retro.py:_days`). One retro runs at a time (`retro.lock`).
+With no `--date`, the retro covers every log day before today (UTC) that has
+no retro file, oldest first, so a late or missed run, or a manual `--date` run,
+loses nothing (`retro.py:_days`). `--date` refuses today and later (the day is
+not over). One retro runs at a time (`retro.lock`).
 
 ### What it reads
 

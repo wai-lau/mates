@@ -1,6 +1,6 @@
 # Wai: "daily retro should run at 4:30 AM if the computer is on, if not it should run
 # as soon as it can". Persistent=true runs a missed 4:30 at the next start of the user
-# systemd; with no --date the retro covers every day since the last one, up to yesterday.
+# systemd; with no --date the retro covers every finished day that has no retro yet.
 [Unit]
 Description=mates daily retro at 04:30
 
