@@ -1,7 +1,7 @@
 # Local LLM Learning
 
-Local LLM inference on this machine: what runs, how to use it, and what was
-tried. Updated 2026-11-11.
+Running local LLMs on one Windows + WSL2 workstation: what runs, how to use it,
+and what was tried. Updated 2026-11-18.
 
 - Daily use of the local coding model: [`docs/qwen.md`](docs/qwen.md)
 - Every model tried, with measurements: [`docs/models.md`](docs/models.md)
@@ -84,16 +84,16 @@ from the model's Modelfile.
 
 ## What didn't work
 
-- **Default Q4 `qwen3.8:27b` from the Ollama library** (17 GB): spills 5.3 GB
+- Default Q4 `qwen3.8:27b` from the Ollama library (17 GB): spills 5.3 GB
   to CPU even at 32K and generates at 2 tok/s. Replaced by smaller quants.
-- **unsloth GGUF chat templates with Claude Code**: their Jinja template raises
+- unsloth GGUF chat templates with Claude Code: their Jinja template raises
   "System message must be at the beginning" on Claude Code's multi-part system
   prompt, so every request is HTTP 500. Fix: import the weights with Ollama's
   own `RENDERER qwen3.8` / `PARSER qwen3.5` (see `ollama/*.Modelfile`).
-- **Long Hugging Face repo names**: Ollama rejects them ("invalid model name").
+- Long Hugging Face repo names: Ollama rejects them ("invalid model name").
   Download the GGUF with `curl` and `ollama create` from the file.
-- **Two workers at once on one 27B model**: 0.4-0.5 tok/s each. One at a time.
-- **Older attempts (gpt-oss era)**: the `gpt_oss.chat` reference
+- Two workers at once on one 27B model: 0.4-0.5 tok/s each. One at a time.
+- Older attempts (gpt-oss era): the `gpt_oss.chat` reference
   implementation needs unpublished `triton_kernels`; Homebrew's llama.cpp is
   CPU-only (the official llama.cpp CUDA build works, in
   `~/.local/opt/llama.cpp-b12257/` until 2026-11-10, but Ollama's automatic MoE placement made it
@@ -110,7 +110,7 @@ from the model's Modelfile.
 | `~/.local/state/qwen/` | server log, OpenCode sessions (one folder per repo), GPU locks |
 | `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
 | `~/.claude/mates/` | mates state per repo and the task log (local only) |
-| `~/.local/state/mates/` | mates runtimes and check snapshots (only Wai can write there) |
+| `~/.local/state/mates/` | mates runtimes and check snapshots (only the owner, Wai, can write there) |
 | `/srv/mates/` | the old pilot's shared area; no longer used, can be deleted |
 
 ## Cleanup if abandoning
