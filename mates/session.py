@@ -213,22 +213,81 @@ def opencode_db(root):
     return Path(out.strip()) / "opencode.db"
 
 
+# The database file is bound read-write into Qwen's sandbox, so Qwen controls what mates reads:
+# a recursive view in place of `message` would make a query run forever, and a corrupt or
+# unreadable file raises. Every connection therefore gets a time budget (a progress handler
+# aborts the running query with sqlite3.OperationalError once it is spent), is read-only and
+# query_only, and must hold real tables `session`, `message` and `part`. Any failure is a
+# sqlite3.Error; each caller has its own can't-read answer.
+DB_BUDGET_S = 5.0
+CHATS_BUDGET_S = 30.0  # the retro reads a whole day of every session
+DB_TABLES = ("session", "message", "part")
+
+
 @contextlib.contextmanager
-def _ro(db):
-    con = sqlite3.connect(Path(db).absolute().as_uri() + "?mode=ro", uri=True)
+def _ro(db, budget=None, need=DB_TABLES):
+    deadline = time.monotonic() + (DB_BUDGET_S if budget is None else budget)
+    con = sqlite3.connect(Path(db).absolute().as_uri() + "?mode=ro", uri=True, timeout=2)
     try:
+        con.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
+        con.execute("PRAGMA query_only = ON")
+        real = {n for (n,) in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'")}
+        if not set(need) <= real:
+            raise sqlite3.DatabaseError(f"the OpenCode database lacks a real {'/'.join(need)} table")
         yield con
     finally:
         con.close()
+
+
+def _data(raw):
+    """A message's data as a dict, or None when it is not valid JSON or not an object."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _completed(data):
+    """`time.completed` of a message (epoch ms), or None; a `time` that is no object is None."""
+    t = data.get("time")
+    return t.get("completed") if isinstance(t, dict) else None
+
+
+def reply_finished(data):
+    """The one rule for "is this assistant message a finished reply" (state, mid-reply and
+    usage all use it): completed (`time.completed` set), and not a step that ends in tool
+    calls, unless that step stopped on an error (an Escape abort ends the reply)."""
+    if data.get("role") != "assistant" or not _completed(data):
+        return False
+    return data.get("finish") != "tool-calls" or bool(data.get("error"))
+
+
+def reply_compaction(data):
+    """True for an assistant message that is a compaction (`summary` set, or `mode`/`agent`
+    "compaction"): stored as a finished reply, but OpenCode carries on after an automatic one."""
+    return data.get("role") == "assistant" and bool(
+        data.get("summary") or "compaction" in (data.get("mode"), data.get("agent")))
+
+
+def _last_write(con, session):
+    """When OpenCode last wrote a message or part of `session` (epoch ms), or None."""
+    return con.execute("SELECT max(t) FROM (SELECT max(time_updated) t FROM message WHERE session_id = ? "
+                       "UNION ALL SELECT max(time_updated) FROM part WHERE session_id = ?)",
+                       (session, session)).fetchone()[0]
 
 
 def opencode_session(worktree, db):
     """The newest top-level OpenCode session run in `worktree`, or None."""
     if not Path(db).exists():
         return None
-    with _ro(db) as con:
-        row = con.execute("SELECT id FROM session WHERE directory = ? AND parent_id IS NULL "
-                          "ORDER BY time_updated DESC LIMIT 1", (str(worktree),)).fetchone()
+    try:
+        with _ro(db, need=("session",)) as con:
+            row = con.execute("SELECT id FROM session WHERE directory = ? AND parent_id IS NULL "
+                              "ORDER BY time_updated DESC LIMIT 1", (str(worktree),)).fetchone()
+    except sqlite3.Error:
+        return None  # can't read: as if there were no session
     return row[0] if row else None
 
 
@@ -243,18 +302,17 @@ def opencode_state(session, db, since):
     now = time.time()
     newest, last = None, None
     if Path(db).exists():
-        with _ro(db) as con:
-            newest = con.execute("SELECT time_created, data FROM message WHERE session_id = ? "
-                                 "ORDER BY time_created DESC, id DESC LIMIT 1", (session,)).fetchone()
-            last = con.execute("SELECT max(t) FROM (SELECT max(time_updated) t FROM message WHERE session_id = ?1 "
-                               "UNION ALL SELECT max(time_updated) FROM part WHERE session_id = ?1)",
-                               (session,)).fetchone()[0]
+        try:
+            with _ro(db) as con:
+                newest = con.execute("SELECT time_created, data FROM message WHERE session_id = ? "
+                                     "ORDER BY time_created DESC, id DESC LIMIT 1", (session,)).fetchone()
+                last = _last_write(con, session)
+        except sqlite3.Error:
+            newest, last = None, None  # can't read: as with no database, so only the clock decides
     if newest and newest[0] > since * 1000:
-        data = json.loads(newest[1])
+        data = _data(newest[1])
         # A compaction is stored as a finished reply, but OpenCode carries on after it.
-        compaction = data.get("summary") is True or "compaction" in (data.get("mode"), data.get("agent"))
-        if data.get("role") == "assistant" and (data.get("time") or {}).get("completed") \
-                and data.get("finish") != "tool-calls" and not compaction:
+        if data and reply_finished(data) and not reply_compaction(data):
             return "idle"
     quiet = last is None or now - last / 1000 > STALE_S
     if quiet and now - since > STALE_S:
@@ -290,18 +348,20 @@ def auto_continued(worktree, db, since):
     if not Path(db).exists():
         return False
     own = []
-    with _ro(db) as con:
-        rows = con.execute("SELECT m.id, m.data FROM session s JOIN message m ON m.session_id = s.id "
-                           "WHERE s.directory = ? AND s.parent_id IS NULL AND m.time_created >= ?",
-                           (str(worktree), int(since * 1000))).fetchall()
-        for mid, raw in rows:
-            try:
-                role = json.loads(raw).get("role")
-            except (ValueError, AttributeError):
-                return False
-            if role == "user":
-                parts = [p for (p,) in con.execute("SELECT data FROM part WHERE message_id = ?", (mid,))]
-                own.append(_opencode_own(parts))
+    try:
+        with _ro(db) as con:
+            rows = con.execute("SELECT m.id, m.data FROM session s JOIN message m ON m.session_id = s.id "
+                               "WHERE s.directory = ? AND s.parent_id IS NULL AND m.time_created >= ?",
+                               (str(worktree), int(since * 1000))).fetchall()
+            for mid, raw in rows:
+                data = _data(raw)
+                if data is None:
+                    return False
+                if data.get("role") == "user":
+                    parts = [p for (p,) in con.execute("SELECT data FROM part WHERE message_id = ?", (mid,))]
+                    own.append(_opencode_own(parts))
+    except sqlite3.Error:
+        return False  # can't read: never claim OpenCode alone spoke
     return bool(own) and all(own)
 
 
@@ -313,25 +373,20 @@ def opencode_mid_reply(session, db):
     OpenCode starts a new reply, after a /compact by hand none comes."""
     if session is None or not Path(db).exists():
         return None
-    with _ro(db) as con:
-        newest = None
-        for (raw,) in con.execute("SELECT data FROM message WHERE session_id = ? "
-                                  "ORDER BY time_created DESC, id DESC", (session,)):
-            try:
-                data = json.loads(raw)
-            except ValueError:
-                continue
-            if isinstance(data, dict) and data.get("role") == "assistant":
-                newest = data
-                break
-        if newest is None:
-            return None
-        if (newest.get("time") or {}).get("completed") and \
-                not (newest.get("finish") == "tool-calls" and not newest.get("error")):
-            return None
-        last = con.execute("SELECT max(t) FROM (SELECT max(time_updated) t FROM message WHERE session_id = ? "
-                           "UNION ALL SELECT max(time_updated) FROM part WHERE session_id = ?)",
-                           (session, session)).fetchone()[0]
+    try:
+        with _ro(db) as con:
+            newest = None
+            for (raw,) in con.execute("SELECT data FROM message WHERE session_id = ? "
+                                      "ORDER BY time_created DESC, id DESC", (session,)):
+                data = _data(raw)
+                if data and data.get("role") == "assistant":
+                    newest = data
+                    break
+            if newest is None or reply_finished(newest):
+                return None
+            last = _last_write(con, session)
+    except sqlite3.Error:
+        return None  # can't read: not mid-reply (the screen decides busy)
     return last / 1000 if last else None
 
 
@@ -345,7 +400,7 @@ def opencode_chats(repo, db, day):
     end_ms = int((start + dt.timedelta(days=1)).timestamp() * 1000)  # the whole day, to midnight
     prefix = f"{repo}/.claude/worktrees/mates-qwen-"
     out = []
-    with _ro(db) as con:
+    with _ro(db, CHATS_BUDGET_S) as con:
         sessions = con.execute(
             "SELECT id FROM session WHERE parent_id IS NULL AND directory LIKE ?",
             (prefix + "%",)).fetchall()
@@ -371,23 +426,23 @@ def opencode_usage(worktree, db, since):
     tokens, compactions, last = 0, 0, None
     if not Path(db).exists():
         return tokens, compactions, last
-    with _ro(db) as con:
+    with _ro(db) as con:  # a failure is sqlite3.Error: the callers say what they do about it
         rows = con.execute("SELECT m.data FROM session s JOIN message m ON m.session_id = s.id "
                            "WHERE s.directory = ? AND s.parent_id IS NULL AND m.time_created >= ?",
                            (str(worktree), int(since * 1000))).fetchall()
     for (raw,) in rows:
+        data = _data(raw)
+        if data is None or data.get("role") != "assistant":
+            continue
         try:
-            data = json.loads(raw)
-        except ValueError:
-            continue
-        if data.get("role") != "assistant":
-            continue
-        t = data.get("tokens") or {}
-        tokens += int(t.get("input") or 0) + int(t.get("output") or 0)
-        if data.get("summary") or data.get("mode") == "compaction" or data.get("agent") == "compaction":
+            t = data.get("tokens") or {}
+            tokens += int(t.get("input") or 0) + int(t.get("output") or 0)
+        except (ValueError, TypeError, AttributeError):
+            pass  # a token count Qwen mangled is not a count
+        if reply_compaction(data):
             compactions += 1
-        done = (data.get("time") or {}).get("completed")
-        if done and (last is None or done / 1000 > last):
+        done = _completed(data)
+        if isinstance(done, (int, float)) and done and (last is None or done / 1000 > last):
             last = done / 1000
     return tokens, compactions, last
 

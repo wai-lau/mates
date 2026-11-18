@@ -1774,6 +1774,8 @@ def main(argv=None):
         die(f"git failed: {e}", 3)
     except RuntimeError as e:  # tmux failures (paste, display, capture-pane)
         die(str(e), 3)
+    except sqlite3.Error as e:  # a safety net: Qwen controls OpenCode's database; readers handle it themselves
+        die(f"cannot read OpenCode's database: {e}", 3)
 
 
 if __name__ == "__main__":

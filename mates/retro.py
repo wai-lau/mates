@@ -31,6 +31,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -140,56 +141,32 @@ def _chat_db(repo):
     return p if p.exists() else None
 
 
-def _qwen_line(p, from_role, ts):
-    """One chat line as the retro sees it."""
-    out = {"from": from_role, "time": ts}
-    for part in p:
-        if part.get("type") == "text":
-            out["text"] = (out.get("text") or "") + part.get("text", "")
-        elif part.get("type") == "tool":
-            tool = part.get("tool")
-            state = part.get("state") or {}
-            inp = state.get("input") or {}
-            if tool == "bash":
-                cmd = inp.get("command")
-            elif tool == "read":
-                cmd = f"read {inp.get('filePath')}"
-            elif tool == "edit":
-                cmd = f"edit {inp.get('filePath')}"
-            elif tool == "write":
-                cmd = f"write {inp.get('filePath')}"
-            else:
-                cmd = tool
-            if cmd:
-                out.setdefault("tools", []).append(cmd)
-    if out.get("text"):
-        out["text"] = " ".join(out["text"].split())
-    return out
-
-
 def _chat_lines(repo, db, day):
     """The messages sent INTO Qwen's chats on `day` in this repo, each as a JSON object:
     "from" is "lead" (starting [from Claude]) or "other" (Wai typing, or a lead pasting by
     hand). Qwen's own replies and tool calls never go in: only Claude authors lessons, and
-    Qwen's words must not reach them (Wai, 2026-11-13: "retro should not use Qwen at all")."""
+    Qwen's words must not reach them (Wai, 2026-11-13: "retro should not use Qwen at all").
+    OpenCode's own user messages (its compaction request and continue line) are left out.
+    The database is Qwen's to write, so a row that does not parse or is not shaped like a
+    message is skipped; a database that cannot be read gives no lines."""
     lines = []
-    for mid, ms, raw, parts in session.opencode_chats(repo, db, day):
-        ts = datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%H:%M:%S")
-        msg = json.loads(raw)
-        role = msg.get("role")
-        p = [json.loads(part_data) for _, part_data in parts]
-        if role == "user":
-            text = "".join(pt.get("text", "") for pt in p if pt.get("type") == "text")
-            if text.startswith("[from Claude]"):
-                fr = "lead"
-            else:
-                fr = "other"
-            line = _qwen_line(p, fr, ts)
-            if "text" in line:
-                t = line["text"]
-                t = ASK_FOOTER.sub("", t)
-                line["text"] = " ".join(t.split())
-            lines.append(line)
+    try:
+        chats = session.opencode_chats(repo, db, day)
+    except sqlite3.Error as e:
+        print(f"retro: cannot read the chats of {repo} for {day}: {e}", file=sys.stderr)
+        return lines
+    for _, ms, raw, parts in chats:
+        try:
+            if json.loads(raw).get("role") != "user" or session._opencode_own([d for _, d in parts]):
+                continue
+            ts = datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).strftime("%H:%M:%S")
+            text = "".join(pt.get("text") or "" for pt in (json.loads(d) for _, d in parts)
+                           if pt.get("type") == "text")
+            text = " ".join(ASK_FOOTER.sub("", text).split())
+            lines.append({"from": "lead" if text.startswith("[from Claude]") else "other", "time": ts,
+                          **({"text": text} if text else {})})
+        except (ValueError, TypeError, AttributeError, OverflowError, OSError):
+            continue
     return lines
 
 
@@ -393,25 +370,25 @@ def _write(path, text):
 def _chat_prompt(day, chats):
     """The chat section of the retro prompt. CHAT_MAX caps the day's chat lines across all
     repos together; past it, the oldest lines go first."""
-    rows = []  # (time, repo, unused, json line), every repo
+    rows = []  # (time, repo, json line), every repo
     for repo, lines in chats.items():
         for l in lines:
             l = dict(l)
             if len(l.get("text") or "") > CHAT_PER_LINE:  # cut the text, so each line stays JSON
                 l["text"] = l["text"][:CHAT_PER_LINE] + " [cut]"
-            rows.append((l.get("time") or "", repo, l.get("from") == "qwen", json.dumps(l, sort_keys=True)))
-    total = sum(len(r[3]) + 1 for r in rows)
+            rows.append((l.get("time") or "", repo, json.dumps(l, sort_keys=True)))
+    total = sum(len(r[2]) + 1 for r in rows)
     drop = set()
     for i in sorted(range(len(rows)), key=lambda i: rows[i][0]):
         if total <= CHAT_MAX:
             break
         drop.add(i)
-        total -= len(rows[i][3]) + 1
+        total -= len(rows[i][2]) + 1
     parts = []
     if drop:
         parts.append(f"[{len(drop)} earlier chat line(s) dropped to stay under {CHAT_MAX} characters]")
     for repo in chats:
-        kept = [r[3] for i, r in enumerate(rows) if r[1] == repo and i not in drop]
+        kept = [r[2] for i, r in enumerate(rows) if r[1] == repo and i not in drop]
         parts.append(f"## Messages sent to Qwen on {day} in {Path(repo).name} (one JSON line per message)")
         parts.append("Each line is a message sent to Qwen: \"from\": \"lead\" (a lead's brief or answer) or \"other\" (Wai, or a lead pasting by hand).")
         parts.append("\n".join(kept))

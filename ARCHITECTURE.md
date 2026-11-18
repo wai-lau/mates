@@ -128,7 +128,13 @@ Out of the Qwen sandbox:
   verified snapshot) and the protocol files, which mates reads without following
   links.
 - OpenCode writes rows to its sqlite database, which mates opens read-only
-  (`mates/session.py:_ro`).
+  (`mates/session.py:_ro`). Qwen can rewrite that file, so every read has a 5 s
+  budget (a sqlite progress handler aborts the query), is `query_only`, and needs
+  real `session`, `message` and `part` tables (a view or a corrupt file is
+  refused). A failed read is a `sqlite3.Error`: state reads as no database
+  (the clock decides), mid-reply and `auto_continued` say no, `opencode_session`
+  says none, the reaper leaves the pane alone, costs print a note, and the retro
+  skips that repo's chats.
 
 Out of the check sandbox: its exit status and output, nothing else. mates
 prints the output with control characters shown as `?` (`mates/cli.py:shown`).

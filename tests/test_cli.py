@@ -2510,6 +2510,62 @@ def test_retro_without_an_opencode_db(rt, monkeypatch):
     assert len(rt.calls()) == 1
 
 
+def _chat_raw(db, when, mdata, pdata=(), n=1, repo="/home/x/src/widget"):
+    """A message row with `mdata` as its data text, as is, and `pdata` part texts as is."""
+    ms = int(datetime.datetime.fromisoformat(when).replace(tzinfo=datetime.UTC).timestamp() * 1000)
+    sid = f"ses_raw_{n}"
+    con = sqlite3.connect(db)
+    con.execute("INSERT OR IGNORE INTO session VALUES (?, 'p', NULL, ?, 't', ?, ?)",
+                (sid, f"{repo}/.claude/worktrees/mates-qwen-{n}", ms, ms))
+    mid = uuid.uuid4().hex
+    con.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", (mid, sid, ms, ms, mdata))
+    for i, d in enumerate(pdata):
+        con.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)", (uuid.uuid4().hex, mid, sid, ms + i, ms + i, d))
+    con.commit()
+    con.close()
+
+
+def test_retro_skips_bad_rows_and_keeps_the_good_ones(rt, monkeypatch):
+    """One bad row from a Qwen-controlled database must not switch off the learning loop."""
+    db = _chat_db(rt, monkeypatch)
+    rt.line("2026-11-09")
+    _chat_raw(db, "2026-11-09T09:00:00", "not json at all", n=2)
+    _chat_raw(db, "2026-11-09T09:01:00", '"a json string"', n=2)
+    _chat_raw(db, "2026-11-09T09:02:00", '{"role": "user"}', ['"a string part"'], n=2)
+    _chat_raw(db, "2026-11-09T09:03:00", '{"role": "user"}', ["{broken"], n=2)
+    _chat_raw(db, "2026-11-09T09:04:00", '{"role": "user"}', ['{"type": "text", "text": 5}'], n=2)
+    _chat_msg(db, "2026-11-09T10:00:00", "[from Claude] GOOD-ONE")
+    code, _, err = rt.run("--date", "2026-11-09")
+    assert code == 0, err
+    assert "GOOD-ONE" in rt.calls()[0]["stdin"]
+
+
+def test_retro_skips_a_repo_whose_database_cannot_be_read(rt, monkeypatch):
+    db = _chat_db(rt, monkeypatch)
+    db.write_bytes(b"garbage" * 500)
+    rt.line("2026-11-09")
+    code, _, err = rt.run("--date", "2026-11-09")
+    assert code == 0, err
+    assert "Traceback" not in err
+    assert len(rt.calls()) == 1
+
+
+def test_retro_leaves_out_opencodes_own_messages(rt, monkeypatch):
+    """After a compaction OpenCode sends itself an empty request and its continue line: they are
+    not Wai's words and do not go to the retro as "other"."""
+    db = _chat_db(rt, monkeypatch)
+    rt.line("2026-11-09")
+    _chat_msg(db, "2026-11-09T10:00:00", "[from Claude] LEAD-BRIEF")
+    _chat_msg(db, "2026-11-09T10:10:00", parts=[{"type": "compaction", "auto": True}])
+    _chat_msg(db, "2026-11-09T10:11:00", session.OPENCODE_CONTINUE)
+    _chat_msg(db, "2026-11-09T10:12:00", "WAI-TYPED continue with the parser")
+    assert rt.run("--date", "2026-11-09")[0] == 0
+    s = rt.calls()[0]["stdin"]
+    assert "LEAD-BRIEF" in s and "WAI-TYPED" in s
+    assert "Continue if you have next steps" not in s
+    assert s.count('"from": "other"') == 1
+
+
 def test_input_empty_wide_pane_side_column(m):
     """A wide pane (127 columns) prints a side column (path, branch) to the right of the
     input box, past the end of its bottom border: only the box's own columns count."""
@@ -3471,6 +3527,28 @@ def test_no_spinner_and_a_finished_reply_reads_idle(m):
 def test_a_step_stopped_by_escape_reads_idle(m):
     _mid_step(m, completed_ago=40, finish="tool-calls", error={"name": "MessageAbortedError"})
     assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def _loop_view(m):
+    """Qwen replaces `message` in OpenCode's database with a view that never ends."""
+    con = sqlite3.connect(m.db)
+    con.execute("DROP TABLE message")
+    con.execute("CREATE VIEW message AS WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r) "
+                "SELECT x AS id, 's' AS session_id, x AS time_created, x AS time_updated, '{}' AS data FROM r")
+    con.commit()
+    con.close()
+
+
+def test_a_hostile_database_does_not_hang_wait_or_the_reaper(m, capsys):
+    _mid_step(m, IDLE_FOOTER, completed_ago=40, finish="stop")
+    _loop_view(m)
+    t0 = time.time()
+    code, out, err = m.run("wait", 1, "--timeout", "0.5")  # no spinner, the database unreadable: the screen decides
+    assert code in (0, 1) and out in ("idle\n", "timeout\n") and "Traceback" not in err
+    assert cli._newest_message_time(_q1(m), m.db) is None  # the reaper leaves the pane alone
+    assert "cannot read" in capsys.readouterr().err
+    cli._costs(m.root, _q1(m), {"attempt_ts": t0 - 5})  # costs: tokens unknown, no crash
+    assert time.time() - t0 < 30
 
 
 def test_a_reply_a_killed_pane_left_reads_idle(m):
