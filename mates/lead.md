@@ -104,8 +104,8 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 1. `mates send N --reason "<why Qwen>" --files a,b --check "<cmd>" "<task + files>"`
    (`--continue` keeps the OpenCode session, for a task that builds on what
    Wai and Qwen just discussed).
-2. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `dead`
-   or `failed` and exits 0; `timeout` exits 1: rerun it only on exit 1; any other
+2. A Monitor on `mates wait N` (it prints `done:`, `question:`, `idle`, `stalled`,
+   `dead` or `failed` and exits 0; `timeout` exits 1: rerun it only on exit 1; any other
    non-zero exit is an error to read, not to retry). On `question:`,
    `mates answer N "<answer>"`.
 3. `mates check N` (reuses the check sent with `--check`), then `mates diff N`.
