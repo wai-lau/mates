@@ -2727,6 +2727,7 @@ def test_launch_starts_panes_a_few_seconds_apart(m, monkeypatch):
     assert stamps[0] - t0 < 0.4 and stamps[1] - stamps[0] >= 0.4
 
 
+@pytest.mark.real_stagger
 def test_pane_stagger_default():
     assert getattr(cli, "PANE_STAGGER_S", None) == 5  # the measured race window was ~2 s
 
@@ -2955,6 +2956,7 @@ def test_reap_watch_ends_with_the_lead(m):
 # and `mates add` restart the 30-minute clock, add clears the idle mark, and the close is
 # logged as a pane event, not as an accepted Qwen task.
 
+@pytest.mark.real_reaper
 def test_launch_starts_the_reap_watcher(m, monkeypatch):
     started = []
 
@@ -3468,3 +3470,8 @@ def test_a_reply_a_killed_pane_left_reads_idle(m):
 def test_a_reply_quiet_for_half_an_hour_reads_idle(m):
     _mid_step(m, ago=cli.MID_REPLY_S + 60)
     assert m.run("wait", 1, "--timeout", "1")[1] == "idle\n"
+
+
+def test_tests_never_reach_the_real_audit_log_or_state(tmp_path):
+    """The autouse fixture in conftest.py points both at this test's own folder."""
+    assert cli.LOG.is_relative_to(tmp_path) and session.STATE_DIR.is_relative_to(tmp_path)

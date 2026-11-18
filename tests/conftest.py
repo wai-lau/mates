@@ -39,6 +39,25 @@ def private_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path, monkeypatch, request):
+    """No test reaches real state (structure review 2026-11-17): cli.LOG and session.STATE_DIR
+    are fixed when the modules load, so a test that logs without its own harness wrote Wai's
+    real audit log; launch tests started a detached reaper against her real tmux server; and
+    the 5 s pane stagger slowed every launch test. Opt back in with the `real_reaper` or
+    `real_stagger` marker."""
+    import cli
+    import session
+    monkeypatch.setattr(cli, "LOG", tmp_path / "audit-log.jsonl")
+    monkeypatch.setattr(session, "STATE_DIR", tmp_path / "state-sessions")
+    if "real_reaper" not in request.keywords:
+        monkeypatch.setattr(cli, "start_reaper", lambda root: None)
+    if "real_stagger" not in request.keywords:
+        monkeypatch.setattr(cli, "PANE_STAGGER_S", 0)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "e2e: end-to-end tests on a private tmux server with a fake OpenCode "
                                        "(tests/e2e; about 20 s; deselect with -m 'not e2e')")
+    config.addinivalue_line("markers", "real_reaper: keep cli.start_reaper (the autouse fixture stubs it)")
+    config.addinivalue_line("markers", "real_stagger: keep cli.PANE_STAGGER_S (the autouse fixture sets 0)")
