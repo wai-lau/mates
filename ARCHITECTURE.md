@@ -161,9 +161,16 @@ the build log. Adding a registry means changing the code.
   they use Wai's Claude subscription login, which stays outside.
 - Any network traffic beyond the relays above, in every sandbox mates starts.
   The one exception is `qwen` that Wai runs herself (no `QWEN_ROOT`): its
-  agent, `qwen shell` and `qwen sandbox-test` share the host's network (Wai,
-  2026-11-18: "when I start qwen on my own, it should have network access"),
-  with web fetch on and Ollama at its own address; `qwen exec` stays offline.
+  agent, `qwen shell` and `qwen sandbox-test` also get the web (Wai,
+  2026-11-18: "when I start qwen on my own, it should have network access",
+  then "try to make it as safe as possible"). The sandbox keeps its own empty
+  network; HTTPS goes through one more socket to `qwen-relay egress --web`,
+  which tunnels to port 443 of any public address, so loopback services, the
+  LAN, the WSL host and Ollama's raw API stay out. Every tunnel is logged to
+  `~/.local/state/qwen/web.log`. Secret-looking files in the mount (`.env*`,
+  keys, `.netrc`, `.npmrc`, `.pypirc`) read as empty, git remote credentials
+  are blanked (`bin/qwen:mask_secrets`), and web fetch is on. `qwen exec`
+  stays offline.
   Run by hand, `qwen` mounts only a git repo under `~/src` (Wai, 2026-11-18:
   "only subfolders that are git repos"); anywhere else it refuses.
 - Paths listed in `~/.config/qwen/hide`, in any sandbox: each is covered by an
@@ -364,7 +371,7 @@ into `-` (`session.py:repo_key`), the rule `~/.claude/projects` uses.
   hosaka text-to-speech service, which needs the same GPUs; `qwen stop` brings
   it back.
 - OpenCode runs with every tool allowed, since the sandbox is the limit. Web
-  fetch and search are off, and every rule that would stop to ask is `deny`, so
+  fetch and search are off (web fetch is on in a hand launch), and every rule that would stop to ask is `deny`, so
   no prompt waits on Wai (the `cfg` block; its comment quotes Wai: "should ask
   claude instead of me").
 - Qwen's standing instructions are `bin/qwen-sandbox.md` (no internet, ask
