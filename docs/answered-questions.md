@@ -4,6 +4,7 @@ Decisions Wai made on open questions, newest first.
 
 | When | Question | Wai's answer | Reading taken |
 |---|---|---|---|
+| 2026-11-18 | Wai's personal email is on all 258 commits: swap it for her GitHub no-reply address before the repo goes public? | "isn't my email in my other public repos?" | It is, on all 14 of her public repos (hundreds of commits), so swapping it here would hide nothing: the repo went public as it is |
 | 2026-11-18 | Before the repo goes public: keep the mentions of Wai's other projects and machine setup (emet's walled user, Spire, Human Music, paths under /home/wai)? They are names and layout, not data or secrets. | "that's also OK" | Keep them; publish the docs and code as written |
 | 2026-11-18 | When Wai's own qwen and a follower's both want the model (one server slot), how hard should hers win? | "actually 1A" | Stop and requeue: a follower reply already running is stopped, hers runs at once, and the stopped one starts over after hers. Her qwen goes through the same relay as the followers so mates can see its requests |
 | 2026-11-18 | Should a hand-launched qwen also open a folder under ~/src that is not a git repo? (Its edits there would have no history to show or undo them.) | "wait qwen should not be running in ~/src directly, only subfolders that are git repos" | Run by hand, qwen mounts only a git repo under ~/src; a folder there in no repo of its own is refused ("git init it first"). Replaces the no-git reading of the answer below |
