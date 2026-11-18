@@ -3717,3 +3717,374 @@ def test_a_check_sweeps_old_copies(m):
     os.utime(old, (t, t))
     assert m.run("check", 1, "--", "true")[0] == 0
     assert not old.exists() and fresh.exists()
+
+
+# --- 2026-11-17 reviews: a command that works for minutes writes only what it owns. A whole-state
+# save from the copy loaded at the start undid what other commands did meanwhile (a `send 2`
+# during a long `check 1` lost pane 2's task; `parallel on` reverted). Each command now changes
+# its own entry, and only its own fields, through session.update under the lock.
+
+def _two_panes(m):
+    st = m.state()
+    st["qwens"].append(_q(str(m.root), 2))
+    session.save(str(m.root), st)
+
+
+def _elsewhere(m, parallel=True):
+    """What other commands do meanwhile: pane 2 gets a task, parallel turns on."""
+    def apply(st):
+        st["parallel"] = parallel
+        next(q for q in st["qwens"] if q["n"] == 2)["task"] = {"id": "sent-meanwhile", "direct": False, "attempts": 1}
+    session.update(str(m.root), apply)
+
+
+def _kept_elsewhere(m):
+    st = m.state()
+    pane2 = next(q for q in st["qwens"] if q["n"] == 2)
+    assert st["parallel"] is True, "parallel on was reverted"
+    assert (pane2["task"] or {}).get("id") == "sent-meanwhile", "pane 2's task was lost"
+
+
+def test_check_keeps_what_other_commands_wrote_meanwhile(m, monkeypatch):
+    _two_panes(m)
+    m.send()
+    monkeypatch.setattr(cli, "run_check", lambda *a, **k: (_elsewhere(m), (0, "ok"))[1])
+    assert m.run("check", 1, "--", "true")[0] == 0
+    _kept_elsewhere(m)
+    assert m.task()["checked_tree"] and m.task()["check_cmd"] == "true"
+
+
+def test_check_of_direct_work_keeps_what_others_wrote(m, monkeypatch):
+    _two_panes(m)
+    monkeypatch.setattr(cli, "run_check", lambda *a, **k: (_elsewhere(m), (0, "ok"))[1])
+    assert m.run("check", 1, "--", "true")[0] == 0
+    _kept_elsewhere(m)
+    assert m.task()["direct"] and m.task()["checked_tree"]
+
+
+def test_runtime_keeps_what_other_commands_wrote_meanwhile(m, monkeypatch):
+    _rt_commit(m)
+    _two_panes(m)
+    build = runtime.ensure_runtime
+
+    def slow(*a, **k):
+        d = build(*a, **k)
+        _elsewhere(m)
+        return d
+    monkeypatch.setattr(runtime, "ensure_runtime", slow)
+    assert m.run("runtime", "--reason", "r")[0] == 0
+    _kept_elsewhere(m)
+    assert m.state()["runtime"] and m.state()["qwens"][0]["runtime"] == m.state()["runtime"]
+
+
+def test_send_check_keeps_what_other_commands_wrote_meanwhile(m, monkeypatch):
+    _two_panes(m)
+    monkeypatch.setattr(cli, "run_check", lambda *a, **k: (_elsewhere(m), (1, "red"))[1])
+    code, _, err = m.run("send", 1, "--reason", "r", "--check", "false", "task")
+    assert code == 0, err
+    _kept_elsewhere(m)
+    assert m.task()["send_check"] == "false"
+
+
+def test_discard_keeps_what_other_commands_wrote_meanwhile(m, monkeypatch):
+    _two_panes(m)
+    m.send()
+    reset = cli._reset_worktree
+    monkeypatch.setattr(cli, "_reset_worktree", lambda *a, **k: (_elsewhere(m), reset(*a, **k))[1])
+    assert m.run("discard", 1)[0] == 0
+    _kept_elsewhere(m)
+    assert m.task() is None
+
+
+def test_sync_and_diff_keep_what_others_wrote(m):
+    _two_panes(m)
+    m.send()
+    (m.wt / "a.txt").write_text("b\n")
+    _checked_and_diffed(m)
+    _elsewhere(m)
+    m.lead_commit("b.txt", "lead\n")
+    assert m.run("sync", 1)[0] == 0
+    _kept_elsewhere(m)
+    assert m.run("diff", 1)[0] == 0
+    _kept_elsewhere(m)
+
+
+def test_parallel_changes_only_its_own_field(m):
+    _two_panes(m)
+    m.send()
+    st = m.state()
+    st["parallel"] = False
+    session.save(str(m.root), st)
+    assert m.run("parallel", "on", "--reason", "r")[0] == 0
+    assert m.state()["parallel"] is True and m.task() is not None
+
+
+def test_answer_writes_only_its_task(m, monkeypatch):
+    _two_panes(m)
+    m.send()
+    real = cli.busy
+
+    def busy_then_elsewhere(*a, **k):
+        _elsewhere(m)
+        return real(*a, **k)
+    monkeypatch.setattr(cli, "busy", busy_then_elsewhere)
+    assert m.run("answer", 1, "go on")[0] == 0
+    _kept_elsewhere(m)
+    assert m.task()["questions"][0]["a"] == "go on"
+
+
+def test_reaper_marking_a_gone_pane_closed_keeps_other_entries(m, monkeypatch):
+    """The reaper's _find saved its stale copy when another pane was gone."""
+    _two_panes(m)
+    m.lead_pane()  # pane 2 has no tmux pane: it is gone while the lead is there
+    _idle_since(m, 1900, n=2)
+    real = session.find_pane
+
+    def gone_then_elsewhere(root, n):
+        if n == 2:
+            _elsewhere(m)  # a send reaches pane 2 while the reaper is looking
+        return real(root, n)
+    monkeypatch.setattr(session, "find_pane", gone_then_elsewhere)
+    _reap(m)
+    st = m.state()
+    pane2 = next(q for q in st["qwens"] if q["n"] == 2)
+    assert (pane2["task"] or {}).get("id") == "sent-meanwhile" and not pane2.get("closed")
+    assert st["parallel"] is True
+
+
+# --- send checks the pane, then acts minutes later: what it checked first holds again before it
+# resets the worktree and pastes.
+
+def _during_base_check(m, monkeypatch, what, code=1):
+    def run_check(*a, **k):
+        what()
+        return code, "red"
+    monkeypatch.setattr(cli, "run_check", run_check)
+
+
+def test_send_check_refuses_a_worktree_dirtied_during_the_base_check(m, monkeypatch):
+    _during_base_check(m, monkeypatch, lambda: (m.wt / "a.txt").write_text("Wai's hand edit\n"))
+    code, _, err = m.run("send", 1, "--reason", "r", "--check", "false", "task")
+    assert code != 0 and "not merged" in err and m.buffers() == []
+    assert (m.wt / "a.txt").read_text() == "Wai's hand edit\n" and m.task() is None
+
+
+def test_send_check_refuses_a_pane_that_got_busy_during_the_base_check(m, monkeypatch):
+    m.ses("ses_1")
+    _during_base_check(m, monkeypatch, lambda: m.msg("ses_1", "user", time.time()))
+    code, _, err = m.run("send", 1, "--reason", "r", "--check", "false", "task")
+    assert code != 0 and "busy" in err and m.buffers() == [] and m.task() is None
+
+
+def test_send_check_refuses_text_typed_during_the_base_check(m, monkeypatch):
+    _during_base_check(m, monkeypatch, lambda: m.input("┃  half a sentence Wai is typ\n"))
+    code, _, err = m.run("send", 1, "--reason", "r", "--check", "false", "task")
+    assert code != 0 and "input box" in err and m.buffers() == [] and m.task() is None
+
+
+def test_send_check_refuses_a_pane_closed_during_the_base_check(m, monkeypatch):
+    """The reaper killed the pane during the base check; send then pasted into a dead pane."""
+    _during_base_check(m, monkeypatch, m.no_panes)
+    code, _, err = m.run("send", 1, "--reason", "r", "--check", "false", "task")
+    assert code != 0 and "gone" in err and m.buffers() == [] and m.task() is None
+
+
+def test_send_and_answer_stamp_idle_since_right_after_the_pane_check(m, monkeypatch):
+    """So the reaper's 30-minute clock restarts before the long base check, not after."""
+    _idle_since(m, 1900)
+    seen = []
+    real = cli.busy
+
+    def spy(*a, **k):
+        seen.append(m.state()["qwens"][0]["idle_since"])
+        return real(*a, **k)
+    monkeypatch.setattr(cli, "busy", spy)
+    m.send()
+    assert time.time() - seen[0] < 60
+    _idle_since(m, 1900)
+    assert m.run("answer", 1, "go")[0] == 0
+    assert time.time() - seen[-1] < 60
+
+
+def test_reaper_rechecks_the_fresh_entry_before_it_kills(m, monkeypatch):
+    _idle_since(m, 1900)
+    _old_chat(m, 1900)
+    real = cli.input_empty
+
+    def send_stamps(pane):  # a send starts while the reaper looks, and stamps the clock
+        session.update(str(m.root), lambda st: st["qwens"][0].update(idle_since=time.time()))
+        return real(pane)
+    monkeypatch.setattr(cli, "input_empty", send_stamps)
+    _reap(m)
+    assert not m.state()["qwens"][0].get("closed")
+    assert not any(c.startswith("kill-pane") for c in m.tmux_calls())
+
+
+# --- sync and merge reset the worktree: a running Qwen is stopped first, and the work is on a
+# ref before anything is overwritten.
+
+def _refs(m):
+    return m.git("for-each-ref", "refs/mates/discarded/").splitlines()
+
+
+def _go_busy(m):
+    """The open task's pane is replying (the spinner shows)."""
+    (m.t / "capture").write_text(_used_screen(EMPTY_BOX, SPIN_FOOTER))
+    st = m.state()
+    st["qwens"][0]["task"]["paste_ts"] = time.time() - 600
+    session.save(str(m.root), st)
+
+
+def test_sync_stops_a_busy_pane_first_and_refuses_when_it_cannot(m, monkeypatch):
+    m.send()
+    (m.wt / "a.txt").write_text("qwen's line\n")
+    m.lead_commit("b.txt", "lead\n")
+    monkeypatch.setattr(cli, "STOP_S", 0.5, raising=False)
+    monkeypatch.setattr(cli, "STOP_ARM_S", 0.3, raising=False)
+    _go_busy(m)
+    code, _, err = m.run("sync", 1)
+    assert code != 0 and "still replying" in err
+    assert (m.wt / "a.txt").read_text() == "qwen's line\n" and not (m.wt / "b.txt").exists()
+
+
+def test_sync_stops_a_busy_pane_that_will_stop(m):
+    m.send()
+    (m.wt / "a.txt").write_text("qwen's line\n")
+    m.lead_commit("b.txt", "lead\n")
+    _go_busy(m)
+    _escapes(m)
+    code, _, err = m.run("sync", 1)
+    assert code == 0, err
+    assert _escape_presses(m) == 2 and (m.wt / "b.txt").exists()
+
+
+def test_merge_stops_a_busy_pane_first_and_refuses_when_it_cannot(m, monkeypatch):
+    m.send()
+    _checked_and_diffed(m)
+    monkeypatch.setattr(cli, "STOP_S", 0.5, raising=False)
+    monkeypatch.setattr(cli, "STOP_ARM_S", 0.3, raising=False)
+    _go_busy(m)
+    before = m.git("rev-parse", "HEAD")
+    code, _, err = m.run("merge", 1)
+    assert code != 0 and "still replying" in err
+    assert m.git("rev-parse", "HEAD") == before and m.task() is not None
+
+
+def test_sync_keeps_the_work_on_a_ref_before_it_resets(m, monkeypatch):
+    m.send()
+    (m.wt / "a.txt").write_text("qwen's line\n")
+    m.lead_commit("b.txt", "lead\n")
+    seen = []
+
+    def spy(*a, **k):
+        seen.append(_refs(m))
+        raise RuntimeError("killed between the reset and the read-tree")
+    monkeypatch.setattr(cli, "_reset_worktree", spy)
+    assert m.run("sync", 1)[0] == 3  # the RuntimeError ends the command; nothing else ran
+    assert len(seen[0]) == 1
+    assert m.git("show", seen[0][0].split()[-1] + ":a.txt") == "qwen's line"
+
+
+def test_sync_read_tree_failure_keeps_the_work_on_the_ref(m, monkeypatch):
+    m.send()
+    (m.wt / "a.txt").write_text("qwen's line\n")
+    (m.wt / "new.py").write_text("n = 1\n")
+    m.lead_commit("b.txt", "lead\n")
+    real = cli.git_safe
+
+    def failing(root, n, *args, **k):
+        if args[:2] == ("read-tree", "-m"):
+            raise cli.GitError("read-tree broke")
+        return real(root, n, *args, **k)
+    monkeypatch.setattr(cli, "git_safe", failing)
+    code, _, err = m.run("sync", 1)
+    assert code == 1 and "refs/mates/discarded/" in err
+    (ref,) = _refs(m)
+    ref = ref.split()[-1]
+    assert m.git("show", f"{ref}:a.txt") == "qwen's line" and m.git("show", f"{ref}:new.py") == "n = 1"
+
+
+def test_sync_with_the_lead_at_the_base_does_nothing(m):
+    m.send()
+    (m.wt / "a.txt").write_text("qwen's line\n")
+    before = m.task()
+    code, out, err = m.run("sync", 1)
+    assert code == 0 and "nothing to sync" in out
+    assert m.task() == before and _refs(m) == [] and (m.wt / "a.txt").read_text() == "qwen's line\n"
+
+
+def test_merge_closes_the_task_before_it_logs(m, monkeypatch):
+    """A kill between the two used to leave the task open on merged code: a re-merge made an
+    empty duplicate commit and a second accepted line."""
+    m.send()
+    _checked_and_diffed(m)
+
+    def killed(*a, **k):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(cli, "log_attempt", killed)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["merge", "1"])
+    assert m.task() is None and m.git("log", "-1", "--format=%s").startswith("mates qwen-1")
+
+
+# --- the 3-task cap holds when two leads send at once.
+
+def _other_repo_tasks(m, count):
+    other = str(m.t / "elsewhere")
+    st = {"root": other, "qwens": [_q(other, i, task={"id": f"t{i}", "direct": False}) for i in range(1, count + 1)]}
+    session.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (session.STATE_DIR / "elsewhere.json").write_text(json.dumps(st))
+
+
+def test_cap_is_rechecked_right_before_the_task_is_written(m, monkeypatch):
+    _during_base_check(m, monkeypatch, lambda: _other_repo_tasks(m, cli.QWEN_TASK_CAP))
+    code, _, err = m.run("send", 1, "--reason", "r", "--check", "false", "task")
+    assert code != 0 and "cap" in err and m.buffers() == [] and m.task() is None
+
+
+def test_cap_count_and_reservation_run_under_a_machine_wide_lock(m, monkeypatch):
+    import fcntl
+    held = []
+    real = cli._open_qwen_tasks
+
+    def spy():
+        cli.cap_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        with open(cli.cap_lock_path(), "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+        return real()
+    monkeypatch.setattr(cli, "_open_qwen_tasks", spy)
+    m.send()
+    assert held and held[-1] is True
+
+
+# --- `mates launch --fresh` drops no open task silently.
+
+def test_fresh_keeps_each_open_tasks_work_logs_it_escalated_and_clears_it(tmp_path, monkeypatch, capsysbinary):
+    root = _repo(tmp_path / "repo")
+    _stub_tmux(tmp_path, monkeypatch)
+    for n in (1, 2):
+        session.ensure_worktree(root, n)
+    base = _git(root, "rev-parse", "HEAD")
+    (root / ".claude/worktrees/mates-qwen-1/a.txt").write_text("work one\n")
+    (root / ".claude/worktrees/mates-qwen-2/a.txt").write_text("work two\n")
+    task = {"id": "t", "summary": "s", "reason": "r", "files": [], "base": base, "direct": False,
+            "sent_ts": 1, "attempt_ts": 1, "paste_ts": 1, "attempts": 1, "opencode_session": None,
+            "questions": [], "diffed_tree": None, "flags": [], "checked_tree": None, "check_cmd": None}
+    old = session.new_state(str(root))
+    old["qwens"] = [_q(str(root), 1, task=dict(task, id="t1")), _q(str(root), 2, closed=True, task=dict(task, id="t2"))]
+    session.save(str(root), old)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("TMUX_PANE", "%0")
+    assert cli.main(["launch", "--fresh"]) == 0
+    capsysbinary.readouterr()
+    st = session.load(str(root))
+    assert [q["task"] for q in st["qwens"]] == [None, None]
+    lines = [json.loads(x) for x in cli.LOG.read_text().splitlines()]
+    assert sorted((r["task_id"], r["outcome"]) for r in lines) == [("t1", "escalated"), ("t2", "escalated")]
+    refs = _git(root, "for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
+    assert len(refs) == 2
+    assert sorted(_git(root, "show", f"{r}:a.txt") for r in refs) == ["work one", "work two"]

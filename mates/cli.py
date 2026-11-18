@@ -145,8 +145,9 @@ def _qwen_entries(st, root, restore, warnings):
         if q1 is None:
             q1 = _entry(root, 1)
             st["qwens"].append(q1)
-        q1.update(closed=False, opencode_session=None, task=None)
+        q1.update(closed=False, opencode_session=None)
         for q in st["qwens"]:
+            q["task"] = None  # launch has kept each open task's work and logged it (_drop_open_tasks)
             if q["n"] != 1:
                 q["closed"] = True
         return [q1]
@@ -456,6 +457,23 @@ def start(args):
     return 0
 
 
+def _drop_open_tasks(root, old, warnings):
+    """`launch --fresh` forgets every open task: keep each one's work on a ref and log it as
+    escalated first, as discard does, so no task vanishes without a line (2026-11-17 review).
+    launch's stdout is the lead's argv, so keep_work's message goes to stderr."""
+    for q in old["qwens"]:
+        task = q.get("task")
+        if not task:
+            continue
+        try:
+            if Path(q["worktree"]).exists():
+                with contextlib.redirect_stdout(sys.stderr):
+                    keep_work(root, q["n"], task)
+            log_attempt(root, dict(q), "escalated")
+        except (GitError, Unsafe, OSError, RuntimeError, subprocess.CalledProcessError) as e:
+            warnings.append(f"mates: could not keep or log Qwen pane {q['n']}'s open task {task.get('id')} ({e})")
+
+
 def launch(args):
     fresh, lead_only, claude_args = _parse_launch(args)
     lead = os.environ.get("TMUX_PANE") or die("launch runs in the lead's tmux pane (start it with bin/mates)")
@@ -471,6 +489,7 @@ def launch(args):
         state, argv = plan["state"], plan["claude_argv"]
         warnings += plan["warnings"]
         if fresh and old:
+            _drop_open_tasks(root, old, warnings)
             for q in old["qwens"]:
                 if Path(q["worktree"]).exists():
                     try:
@@ -566,12 +585,26 @@ def _tmux_out(*args):
     return r.stdout
 
 
+def _change(root, n, fn, task_id=None):
+    """Change entry n, and only it, under the state lock on the saved state as it is now.
+    A command that works for minutes holds an old copy of the state: writing that copy back
+    undid what other commands did meanwhile (2026-11-17 reviews), so a command writes only
+    the fields it owns through here. With `task_id`, fn runs only while the entry's task is
+    still that one."""
+    def apply(st):
+        e = next((x for x in st.get("qwens", []) if x["n"] == n), None)
+        if e is None or (task_id is not None and (e.get("task") or {}).get("id") != task_id):
+            return
+        fn(e)
+    session.update(root, apply)
+
+
 def _find(root, state, q):
-    """(pane_id, status) for entry q; a pane Wai closed is marked closed and saved
-    (session.mark_closed: never while the lead pane is gone too)."""
+    """(pane_id, status) for entry q; a pane Wai closed is marked closed, in `state` and
+    in the saved entry only (session.mark_closed: never while the lead pane is gone too)."""
     hit = session.find_pane(root, q["n"])
     if hit is None and session.mark_closed(state, q["n"]):
-        save_state(root, state)
+        session.update(root, lambda st: session.mark_closed(st, q["n"]))
     return hit
 
 
@@ -944,6 +977,59 @@ def _parser(name, usage):
 
 # --- send, wait, answer ------------------------------------------------------------------
 
+def cap_lock_path():
+    """The one lock all leads on this machine take to count and reserve a Qwen task slot."""
+    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    return base / "mates" / "task-cap.lock"
+
+
+@contextlib.contextmanager
+def _cap_lock():
+    path = cap_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
+def _stamp_idle(root, n):
+    """Restart the pane's idle clock now, so the reaper does not close it under a command."""
+    _change(root, n, lambda e: e.update(idle_since=time.time()))
+
+
+def _send_guards(a, root, state, q, db, pane, cap):
+    """The refusals that must hold when send acts: the pane is not replying, is wide enough, has an
+    empty input box, no other pane's task blocks it, and the worktree has no unmerged work. Send runs
+    them before its base check (up to 30 minutes) and again after it."""
+    if busy(q, db, pane):
+        die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
+    # At most QWEN_TASK_CAP open Qwen tasks machine-wide (Wai, 2026-11-13: "A" = 3; the one model
+    # slot made each reply wait ~7.5 min with 5 panes). Open: a lead's task (not Wai's direct
+    # work) on a pane not closed, in any repo's saved state. Re-sending an open task is free.
+    if cap and (not q.get("task") or q["task"].get("direct")):
+        holding = _open_qwen_tasks()
+        if len(holding) >= QWEN_TASK_CAP:
+            die(_cap_message(holding))
+    _refuse_narrow(a.n, pane)
+    _box_guard(a.n, pane, a.clear_box)
+    if not state.get("parallel"):
+        others = [o["n"] for o in state["qwens"] if o["n"] != a.n and o.get("task") and not o.get("closed")]
+        if others:
+            die(f"pane {others[0]} has an open task and parallel is off: merge or discard it first")
+    try:
+        dirty = worktree_dirty(root, a.n)
+    except GitError as e:
+        die(f"cannot read Qwen worktree {a.n}: {e}")
+    if dirty:
+        die(f"Qwen worktree {a.n} has work not merged ({', '.join(dirty[:10])}): "
+            f"mates merge {a.n} or mates discard {a.n} first")
+
+
+def _cap_message(holding):
+    return (f"the Qwen task cap is reached ({QWEN_TASK_CAP} open tasks: {', '.join(holding)}); "
+            "merge or discard one first")
+
+
 def send(args):
     p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] [--clear-box] "<text>"')
     p.add_argument("n", type=int)
@@ -959,30 +1045,9 @@ def send(args):
     state = _load(root)
     q = _qentry(state, a.n)
     pane = _live_pane(root, state, q)
+    _stamp_idle(root, a.n)  # before the base check, which can take 30 minutes
     db = _db(root)
-    if busy(q, db, pane):
-        die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
-    # At most QWEN_TASK_CAP open Qwen tasks machine-wide (Wai, 2026-11-13: "A" = 3; the one model
-    # slot made each reply wait ~7.5 min with 5 panes). Open: a lead's task (not Wai's direct
-    # work) on a pane not closed, in any repo's saved state. Re-sending an open task is free.
-    if not q.get("task") or q["task"].get("direct"):
-        holding = _open_qwen_tasks()
-        if len(holding) >= QWEN_TASK_CAP:
-            die(f"the Qwen task cap is reached ({QWEN_TASK_CAP} open tasks: {', '.join(holding)}); "
-                "merge or discard one first")
-    _refuse_narrow(a.n, pane)
-    _box_guard(a.n, pane, a.clear_box)
-    if not state.get("parallel"):
-        others = [o["n"] for o in state["qwens"] if o["n"] != a.n and o.get("task") and not o.get("closed")]
-        if others:
-            die(f"pane {others[0]} has an open task and parallel is off: merge or discard it first")
-    try:
-        dirty = worktree_dirty(root, a.n)
-    except GitError as e:
-        die(f"cannot read Qwen worktree {a.n}: {e}")
-    if dirty:
-        die(f"Qwen worktree {a.n} has work not merged ({', '.join(dirty[:10])}): "
-            f"mates merge {a.n} or mates discard {a.n} first")
+    _send_guards(a, root, state, q, db, pane, cap=True)
     lead = _lead_head(root)
     if a.check:
         try:
@@ -1004,6 +1069,13 @@ def send(args):
             die(f"the check cannot run on the base: it names a test that is not there ({err[-2000:]}); "
                 "the test file must be committed first; with no red check, do it yourself")
         print(f"check {a.check} failed on the base (exit {code}) — red on base; sending anyway")
+        # Minutes passed: the pane may be gone, busy or typed in, and the worktree edited. Look
+        # again, on the state as it is now, before anything is reset or pasted.
+        state = _load(root)
+        q = _qentry(state, a.n)
+        pane = _live_pane(root, state, q)
+        _stamp_idle(root, a.n)
+        _send_guards(a, root, state, q, db, pane, cap=False)
     # Qwen cannot commit, so mates/qwen-N holds no work of its own: moving it to the lead
     # HEAD is the rebase. Anything on it the lead lacks is kept on a ref first.
     head = git_safe(root, a.n, "rev-parse", "HEAD").stdout.strip()
@@ -1013,58 +1085,77 @@ def send(args):
     _unsafe(clear_protocol, q["worktree"])
     files = [f for f in a.files.split(",") if f]
     summary = text.splitlines()[0][:120]
-    old = q.get("task")
-    if old and not old.get("direct"):  # the same task sent again: its last attempt is over
-        log_attempt(root, q, "sent-back")
-        now = time.time()
-        old.update(summary=summary, reason=a.reason, files=files, base=lead, attempts=old["attempts"] + 1,
-                   attempt_ts=now, paste_ts=now)
-        _clear_review(old)
-        task = old
-    else:
-        task = _task(lead, summary=summary, reason=a.reason, files=files)
-    if a.check:
-        task.update(check_cmd=a.check, send_check=a.check, red_on_base=True)
-    q["task"] = task
     before = session.opencode_session(q["worktree"], db)
-    if before:
-        q["opencode_session"] = before
-    if a.cont:
-        task["opencode_session"] = before
-    save_state(root, state)
+    task = _reserve_task(root, a, q, lead, summary, files, before)
     if not a.cont:
         paste(pane, "/new")  # a clean context per task (Task 0: works; the row comes with the message)
-    task["paste_ts"] = time.time()
+    _patch_task(root, a.n, task["id"], paste_ts=time.time())
     sent_text = text
     if a.check:
         sent_text = text + "\n\nCheck: " + a.check
     paste(pane, _message(sent_text, q["worktree"]))
-    if task["opencode_session"] is None:
+    sid = task["opencode_session"]
+    if sid is None:
         deadline = time.time() + SESSION_WAIT_S
         while True:
-            sid = session.opencode_session(q["worktree"], db)
-            if sid and sid != before:
-                task["opencode_session"] = q["opencode_session"] = sid
+            found = session.opencode_session(q["worktree"], db)
+            if found and found != before:
+                sid = found
+                _patch_task(root, a.n, task["id"], opencode_session=sid)
                 break
             if time.time() >= deadline:
                 print(f"mates: no new OpenCode session for pane {a.n} yet; mates wait keeps looking", file=sys.stderr)
                 break
             time.sleep(SESSION_POLL_S)
-    save_state(root, state)
     print(f"sent to Qwen pane {a.n} (task {task['id']}, attempt {task['attempts']})")
     _remind(a.n, task)
     return 0
 
 
+def _reserve_task(root, a, q, lead, summary, files, before):
+    """Write the task into pane a.n's saved entry and return it: a new one, or the open one sent
+    again (its last attempt logged as sent-back). A new task takes its slot under the machine-wide
+    cap lock, counted again there: two leads sending at once each passed the count made minutes
+    earlier (2026-11-17 review). Only this entry's task, opencode_session and lead_since are written."""
+    def write(entry, task):
+        def apply(e):
+            e["task"] = task
+            e["lead_since"] = entry.get("lead_since")
+            if before:
+                e["opencode_session"] = before
+        _change(root, a.n, apply)
+        return task
+
+    def attach(task):
+        if a.cont:
+            task["opencode_session"] = before
+        if a.check:
+            task.update(check_cmd=a.check, send_check=a.check, red_on_base=True)
+        return task
+
+    entry = _qentry(_load(root), a.n)  # the entry as it is now
+    old = entry.get("task")
+    if old and not old.get("direct"):  # the same task sent again: its last attempt is over
+        log_attempt(root, entry, "sent-back")
+        now = time.time()
+        old.update(summary=summary, reason=a.reason, files=files, base=lead, attempts=old["attempts"] + 1,
+                   attempt_ts=now, paste_ts=now)
+        _clear_review(old)
+        return write(entry, attach(old))
+    with _cap_lock():
+        holding = _open_qwen_tasks()
+        if len(holding) >= QWEN_TASK_CAP:
+            die(_cap_message(holding))
+        return write(entry, attach(_task(lead, summary=summary, reason=a.reason, files=files)))
+
+
 def _patch_task(root, n, task_id, **fields):
     """Set fields on pane n's task in the saved state, if it is still task_id."""
-    state = session.load(root)
-    q = next((x for x in state["qwens"] if x["n"] == n), None) if state else None
-    if q and q.get("task") and q["task"]["id"] == task_id:
-        q["task"].update(fields)
+    def apply(e):
+        e["task"].update(fields)
         if "opencode_session" in fields:
-            q["opencode_session"] = fields["opencode_session"]
-        save_state(root, state)
+            e["opencode_session"] = fields["opencode_session"]
+    _change(root, n, apply, task_id=task_id)
 
 
 def wait(args):
@@ -1083,9 +1174,7 @@ def wait(args):
     while True:
         hit = session.find_pane(root, a.n)
         if hit is None:  # mark it closed in the state as it is now (wait may have run for a while)
-            now_state = session.load(root)
-            if now_state and session.mark_closed(now_state, a.n):
-                save_state(root, now_state)
+            session.update(root, lambda st: session.mark_closed(st, a.n))
             print("dead")
             return 0
         if hit[1] == "failed":
@@ -1146,6 +1235,7 @@ def answer(args):
     if not task:
         die(f"Qwen pane {a.n} has no open task (mates send starts one)")
     pane = _live_pane(root, state, q)
+    _stamp_idle(root, a.n)
     db = _db(root)
     if busy(q, db, pane):
         die(f"Qwen pane {a.n} is busy (OpenCode is replying); wait for it")
@@ -1153,16 +1243,22 @@ def answer(args):
     _box_guard(a.n, pane, a.clear_box)
     question = _unsafe(read_protocol, q["worktree"], "question.md")
     _unsafe(clear_protocol, q["worktree"])
-    if question is not None or not a.sendback:
-        task["questions"].append({"q": question, "a": text})
     now = time.time()
     if a.sendback:
         log_attempt(root, q, "sent-back")
-        task["attempts"] += 1
-        task["attempt_ts"] = now
-        _clear_review(task)
-    task["paste_ts"] = now
-    save_state(root, state)
+
+    def apply(e):  # only this task's fields: the same change on the saved entry and on ours
+        t = e["task"]
+        if question is not None or not a.sendback:
+            t["questions"].append({"q": question, "a": text})
+        if a.sendback:
+            t["attempts"] += 1
+            t["attempt_ts"] = now
+            _clear_review(t)
+            e["lead_since"] = q.get("lead_since")
+        t["paste_ts"] = now
+    apply(q)
+    _change(root, a.n, apply, task_id=task["id"])
     paste(pane, _message(text, q["worktree"]))
     print(f"answered Qwen pane {a.n}" + (f" (sent back: attempt {task['attempts']})" if a.sendback else ""))
     if a.sendback:
@@ -1294,11 +1390,15 @@ def check(args):
     print(f"check exit {code} on tree {tree[:12]}")
     for line in output.splitlines()[-CHECK_TAIL:]:
         print(line)
-    if code == 0:
-        task.update(checked_tree=tree, check_cmd=cmd)
-    else:
-        task.update(checked_tree=None)
-    save_state(root, state)
+    fields = {"checked_tree": tree, "check_cmd": cmd} if code == 0 else {"checked_tree": None}
+    task.update(fields)
+
+    def apply(e):  # this task's check fields only; a direct task is attached if still none
+        if e.get("task") is None:
+            e["task"] = task
+        elif e["task"].get("id") == task["id"]:
+            e["task"].update(fields)
+    _change(root, n, apply)
     return code
 
 
@@ -1383,12 +1483,14 @@ def diff(args):
         print(f"mates: this is not the checked snapshot ({task['checked_tree'][:12]}); run mates check {a.n} again",
               file=sys.stderr)
     done = len(seen["seen"]) == len(parts)
-    task.update(diff_parts=seen, flags=flags)
-    if done:
-        task.update(diffed_tree=tree)
-    elif task.get("diffed_tree") != tree:
-        task.update(diffed_tree=None)
-    save_state(root, state)
+
+    def apply(e):
+        e["task"].update(diff_parts=seen, flags=flags)
+        if done:
+            e["task"].update(diffed_tree=tree)
+        elif e["task"].get("diffed_tree") != tree:
+            e["task"].update(diffed_tree=None)
+    _change(root, a.n, apply, task_id=task["id"])
     return 0
 
 
@@ -1468,17 +1570,26 @@ def merge(args):
     clash = sorted(_changed_paths(root, base, checked) & _lead_dirty(root))
     if clash:
         die("the lead checkout has uncommitted changes in paths this merge touches: " + ", ".join(clash[:10]))
+    _stop_reply(root, state, q, a.n)  # the worktree is reset below: a running Qwen would edit the new one
     try:
         message = a.summary or commit_subject(a.n, summary)
         commit = git_lead(root, "commit-tree", checked, "-p", base, "-m", message).stdout.strip()
         git_lead(root, "merge", "--ff-only", "-q", commit, attrs=base)
     except GitError as e:
         die(f"merge failed: {e}", 1)
-    task["summary"] = summary  # merged: log it and close the task before the worktree tidy-up
-    log_attempt(root, q, "accepted")
+    task["summary"] = summary  # merged: close the task, then log it, then tidy the worktree
+    logged = dict(q)  # still holding the task, for the log line
     q["task"] = None
-    q["idle_since"] = time.time()  # the 30-minute idle clock restarts when a task ends
-    save_state(root, state)
+    now = time.time()  # the 30-minute idle clock restarts when a task ends
+
+    def close(e):
+        e["task"] = None
+        e["idle_since"] = now
+    # Closed before it is logged: a kill in between loses a log line, where the other order left the
+    # task open on merged code (a re-merge made an empty duplicate commit and a second accepted line).
+    _change(root, a.n, close, task_id=task["id"])
+    log_attempt(root, logged, "accepted")
+    _change(root, a.n, lambda e: e.update(lead_since=logged.get("lead_since")))
     print(f"merged Qwen pane {a.n}: {commit[:12]} {message.splitlines()[0]}")
     try:
         now_tree = snapshot(root, a.n, base)
@@ -1506,6 +1617,7 @@ def sync(args):
     if lead == base:
         print(f"nothing to sync: the lead is still at the task base {base[:12]}")
         return 0
+    _stop_reply(root, state, q, a.n)  # the worktree is reset below: a running Qwen would edit the new one
     try:
         snap = _snapshot_commit(root, a.n, base, snapshot(root, a.n, base), "snapshot for sync")
         r = git_lead(root, "merge-tree", "--write-tree", "-z", "--name-only", "--no-messages",
@@ -1521,6 +1633,10 @@ def sync(args):
         merged = r.stdout.split("\0")[0].strip()
     except GitError as e:
         die(f"sync failed: {e}", 1)
+    try:  # Qwen's work is on a ref before anything is overwritten (a kill between the reset and the read-tree)
+        kept = _keep(root, a.n, snap)
+    except GitError as e:
+        die(f"sync failed: {e}", 1)
     try:
         _reset_worktree(root, a.n, q["branch"], lead)
         _, admin, _ = gitsafe.dirs(root, a.n)
@@ -1528,11 +1644,10 @@ def sync(args):
             idx = Path(tmp) / "index"
             shutil.copyfile(admin / "index", idx)  # matches the worktree, which is at `lead` now
             git_safe(root, a.n, "read-tree", "-m", "-u", lead, merged, index=idx, attrs=lead)
-    except GitError as e:  # the worktree may be half-written now: Qwen's work must survive on a ref
-        die(f"sync failed after the reset ({e}); Qwen's work is kept on {_keep(root, a.n, snap)}", 1)
-    task["base"] = lead
-    _clear_review(task)
-    save_state(root, state)
+    except GitError as e:  # the worktree may be half-written now: the ref holds Qwen's work
+        die(f"sync failed after the reset ({e}); Qwen's work is kept on {kept}", 1)
+    git_lead(root, "update-ref", "-d", kept, check=False)  # it synced: the ref is not needed
+    _change(root, a.n, lambda e: (e["task"].update(base=lead), _clear_review(e["task"])), task_id=task["id"])
     print(f"synced Qwen pane {a.n} onto {lead[:12]}; run mates check {a.n} -- <cmd> again")
     return 0
 
@@ -1615,9 +1730,14 @@ def discard(args):
         die(f"discard failed: {e}", 1)
     if task:
         log_attempt(root, q, "failed" if a.failed else "escalated")
-        q["task"] = None
-    q["idle_since"] = time.time()
-    save_state(root, state)
+
+    def apply(e):  # this task, the idle clock and the lead-token mark only
+        if task and (e.get("task") or {}).get("id") == task["id"]:
+            e["task"] = None
+        e["idle_since"] = time.time()
+        if "lead_since" in q:
+            e["lead_since"] = q["lead_since"]
+    _change(root, a.n, apply)
     print(f"discarded Qwen pane {a.n}'s task; its worktree is at the lead HEAD")
     return 0
 
@@ -1698,8 +1818,13 @@ def runtime_cmd(args):
     except (RuntimeError, OSError, fsutil.UnsafeDir) as e:
         _log_runtime(root, base, a.reason, h, "failed", [])
         die(f"runtime build failed, panes left as they were: {e}", 1)
-    state["runtime"] = dest
-    save_state(root, state)
+    def built(st):  # the top-level runtime, and the old one on entries that had none
+        st["runtime"] = dest
+        for q, _ in open_:
+            e = next((x for x in st["qwens"] if x["n"] == q["n"]), None)
+            if e is not None:
+                e.setdefault("runtime", old)
+    session.update(root, built)
     restarted = []
     for q, pane in open_:
         if q.get("runtime") == dest:
@@ -1711,7 +1836,7 @@ def runtime_cmd(args):
         sid = session.opencode_session(q["worktree"], db)
         _restart_pane(root, pane, q, sid, dest)
         q["runtime"] = dest
-        save_state(root, state)
+        _change(root, q["n"], lambda e: e.update(runtime=dest))
         restarted.append(q["n"])
         print(f"restarted Qwen pane {q['n']} ({pane}) on runtime {h}" + (" with its chat" if sid else ", new chat"))
     if not restarted and dest == old and all(q.get("runtime") == dest for q, _ in open_):
@@ -1728,9 +1853,8 @@ def parallel_cmd(args):
     p.add_argument("--reason", required=True)
     a = p.parse_args(args)
     root = _lead_root()
-    state = _load(root)
-    state["parallel"] = a.mode == "on"
-    save_state(root, state)
+    _load(root)  # refuses with no state
+    session.update(root, lambda st: st.update(parallel=a.mode == "on"))
     logrec.append(LOG, {"repo": str(root), "task_id": uuid.uuid4().hex[:12],
                         "route": "parallel", "summary": f"parallel {a.mode}", "reason": a.reason,
                         "outcome": "accepted"})
@@ -1792,7 +1916,7 @@ def reap(args):
     for q in state["qwens"]:
         if q.get("closed") or q.get("task"):
             continue
-        n, hit = q["n"], _find(root, state, q)
+        n, hit = q["n"], session.find_pane(root, q["n"])  # not _find: that saves; change() writes the one entry
         if hit is None:
             change(n, lambda e: e.update(closed=True))
             continue
@@ -1810,7 +1934,11 @@ def reap(args):
             continue
         closed = []
 
-        def close(e, pane=hit[0], closed=closed):
+        def close(e, pane=hit[0], closed=closed, newest=newest):
+            # On the entry as it is now: a send or answer that stamped idle_since while reap looked
+            # means the pane is in use (it closed a pane during send's base check, 2026-11-17).
+            if time.time() - max(e.get("idle_since") or 0, newest) < IDLE_CLOSE_S:
+                return
             r = subprocess.run([layout.TMUX, "kill-pane", "-t", pane], capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"mates reap: cannot close {pane}: {r.stderr.strip()}", file=sys.stderr)

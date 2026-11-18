@@ -230,7 +230,9 @@ more. They are listed in [`docs/audit-2026-11-13.md`](docs/audit-2026-11-13.md).
    its child. If claude exits with an error, a shell is left in the pane.
 
 `mates --fresh` starts a new Claude conversation and one Qwen pane; the
-worktrees and their work are kept.
+worktrees and their work are kept. Each open task is closed first: its work goes
+on a `refs/mates/discarded/` ref, it is logged as `escalated`, and the task is
+cleared, so `mates add` never reopens a pane with an old task.
 
 ### `mates launch`
 
@@ -369,7 +371,9 @@ from both `launch` and `start`. One watcher per repo holds a lock
 since both its `idle_since` and its newest OpenCode reply, its screen shows no
 reply running, and its input box is empty (`IDLE_CLOSE_S`). It changes the
 state through `session.py:update`, which re-reads it under the lock and acts
-only if the entry still has no task, so a task sent meanwhile survives. Each
+only if the entry still has no task, and kills only if that fresh entry is still
+unused for `IDLE_CLOSE_S` (`send` and `answer` stamp `idle_since` first thing),
+so a task sent meanwhile survives. Each
 close is a log line with route `pane`. The worktree stays, and `mates add`
 reopens it.
 
@@ -452,6 +456,11 @@ again); `mates discard` gives up on the task and keeps Qwen's work on a ref.
 8. with `--check`: the check passes on the lead's HEAD (it proves nothing), or
    cannot run there (exit 124, 126 or 127, "command not found", or Playwright's
    "Executable doesn't exist").
+
+`send` stamps the entry's `idle_since` right after the first pane check (so the
+reaper does not close the pane during a long base check). After a base check it
+loads the state again and repeats the pane check and guards 2, 5, 6 and 7 before
+touching the worktree.
 
 Then it:
 
@@ -646,7 +655,10 @@ fast-forwards the lead's branch (`merge --ff-only`, with attributes from the
 base, so a merged `.gitattributes` triggers no filter as it lands). The message
 is `-m`, or `mates qwen-N: <first sentence of the brief>` cut to 72 characters
 (`commit_subject`). It logs the attempt as `accepted`, closes the task and
-restarts the pane's idle clock. Edits Qwen made after the check are kept on a
+restarts the pane's idle clock; the task is closed in the saved state before the
+log line is written, so a kill between them cannot leave it open on merged code.
+A busy Qwen is stopped first (`_stop_reply`, as in discard), and merge refuses if
+it will not stop. Edits Qwen made after the check are kept on a
 `refs/mates/discarded/` ref, and the worktree is reset to the new commit.
 
 ### Sync
@@ -656,7 +668,9 @@ snapshot on the old base and merges it with the lead's HEAD in memory
 (`git merge-tree --write-tree`). On a conflict it prints `conflict` and the
 paths and changes nothing. Otherwise it resets the worktree to the lead's HEAD,
 writes the merged tree into it, moves the task base and clears the review:
-check and diff again. If writing fails halfway, Qwen's work is kept on a ref.
+check and diff again. Like merge, it stops a busy Qwen first and refuses if it
+cannot. Qwen's work goes on a ref before the reset; the ref is removed once the
+sync completes, and stays if writing fails halfway.
 
 ### Discard
 
@@ -699,9 +713,17 @@ keeping a snapshot on a ref (`panes.py:remove`).
 `session.py:save` writes the state atomically (temp file, fsync, rename) under
 an exclusive `flock`. It never drops an entry: one on disk that the caller's
 copy lacks is kept, and a pane that is gone is marked closed rather than
-removed. Only `mates remove` deletes an entry (`session.py:drop`). The reaper
-uses `session.py:update`, which re-reads the file under the lock before
-changing one entry.
+removed. Only `mates remove` deletes an entry (`session.py:drop`).
+
+`save` writes the caller's whole copy, so only a command that does not run long
+may use it (`launch`, `add`, `remove`). Every command that works for minutes
+(`check`, `runtime`, `send --check`, `merge`, `sync`, `discard`, `wait`, the
+reaper) changes the state through `session.py:update`, which re-reads the file
+under the lock: `cli.py:_change` rewrites one entry, and only the fields that
+command owns (a task's check fields, its base and review, its close, the
+entry's `idle_since`, `runtime`; `parallel` and the top-level `runtime` for
+their own commands). Writing the stale copy once lost a task sent to another
+pane meanwhile and reverted `parallel on`.
 
 | Level | Fields |
 |---|---|
@@ -827,7 +849,10 @@ quotes Wai:
 At most three open lead tasks run across every repo on the machine
 (`cli.py:QWEN_TASK_CAP`). `_open_qwen_tasks` counts them from every saved state:
 a task that is not Wai's own work, on a pane that is not closed. Sending an open
-task again does not count twice. The code comment gives the reason: the server
+task again does not count twice. `send` refuses early on the count, then counts
+again and writes the task under one machine-wide `flock`
+(`cli.py:cap_lock_path`), so two leads sending at once cannot both take the last
+slot. The code comment gives the reason: the server
 has one model slot, and with 5 panes each reply waited about 7.5 minutes. Wai
 chose the cap of 3 on 2026-11-13 ([`docs/answered-questions.md`](docs/answered-questions.md)).
 
