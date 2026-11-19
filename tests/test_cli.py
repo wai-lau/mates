@@ -16,6 +16,7 @@ import pytest
 
 import cli
 import layout
+import usage
 import panes
 import runtime
 import session
@@ -1309,7 +1310,7 @@ def test_merge_ignores_tracked_hooks(m):
     assert m.run("merge", 1, "--ack", "hook-path,exec-bit")[0] == 0
     assert (m.root / ".githooks" / "post-merge").exists()  # merged: the lead read the flag
     m.send("next")
-    assert m.run("discard", 1)[0] == 0
+    assert m.run("discard", 1, "--share", "0")[0] == 0
     assert not canary.exists()
 
 
@@ -1317,7 +1318,7 @@ def test_discard_keeps_snapshot_ref(m):
     m.send()
     (m.wt / "a.txt").write_text("a bad try\n")
     (m.wt / "junk.py").write_text("j = 1\n")
-    code, out, err = m.run("discard", 1)
+    code, out, err = m.run("discard", 1, "--share", "0")
     assert code == 0, err
     (ref,) = m.git("for-each-ref", "--format=%(refname)", "refs/mates/discarded/").splitlines()
     assert ref in out
@@ -1394,7 +1395,7 @@ def test_discard_stops_a_busy_pane_first(m):
     _busy_pane(m)
     _escapes(m)
     (m.wt / "a.txt").write_text("half done\n")
-    code, out, err = m.run("discard", 1)
+    code, out, err = m.run("discard", 1, "--share", "0")
     assert code == 0, err
     assert _escape_presses(m) == 2 and _stopped(m)
     assert (m.wt / "a.txt").read_text() == "a\n" and m.task() is None
@@ -1405,7 +1406,7 @@ def test_stop_presses_again_only_once_the_interrupt_is_armed(m):
     to interrupt" before pressing again."""
     _busy_pane(m)
     _escapes(m, arm_after=0.6)
-    code, _, err = m.run("discard", 1)
+    code, _, err = m.run("discard", 1, "--share", "0")
     assert code == 0, err
     assert _escape_presses(m) == 2 and _stopped(m)
 
@@ -1413,7 +1414,7 @@ def test_stop_presses_again_only_once_the_interrupt_is_armed(m):
 def test_stop_needs_one_press_when_the_interrupt_is_armed_already(m):
     _busy_pane(m)
     _escapes(m, armed=True)  # someone pressed Escape once already
-    code, _, err = m.run("discard", 1)
+    code, _, err = m.run("discard", 1, "--share", "0")
     assert code == 0, err
     assert _escape_presses(m) == 1 and _stopped(m)
 
@@ -1435,7 +1436,7 @@ def test_discard_refuses_a_pane_that_keeps_replying(m, monkeypatch):
     monkeypatch.setattr(cli, "STOP_ARM_S", 0.3, raising=False)
     _busy_pane(m)
     (m.wt / "a.txt").write_text("half done\n")
-    code, _, err = m.run("discard", 1)
+    code, _, err = m.run("discard", 1, "--share", "0")
     assert code != 0 and "still replying" in err and "mates remove 1" in err
     assert (m.wt / "a.txt").read_text() == "half done\n" and m.task() is not None
 
@@ -1495,7 +1496,7 @@ def test_no_filter_runs_from_qwen_attributes(m):
     m.send("next")
     (m.wt / "a.txt").write_text("again\n")
     assert m.run("check", 1, "--", "true")[0] == 0
-    assert m.run("discard", 1)[0] == 0
+    assert m.run("discard", 1, "--share", "0")[0] == 0
     assert not canary.exists()
 
 
@@ -1814,7 +1815,7 @@ def test_log_line_has_cost_fields(m):
         st["qwens"][0]["task"]["attempt_ts"] = t0 + 10
         st["qwens"][0]["lead_since"] = t0 + 10
         session.save(str(m.root), st)
-        assert m.run("discard", 1)[0] == 0
+        assert m.run("discard", 1, "--share", "0")[0] == 0
         rec2 = m.log()[-1]
         assert rec2["answered_by"] is None and (rec2["lead_tokens"], rec2["lead_cache_read"]) == (0, 0)
         assert rec2["worker_tokens"] == 0 and rec2["outcome"] == "escalated"
@@ -3066,7 +3067,7 @@ def test_reap_starts_the_clock_on_an_entry_without_one(m):
 def test_task_end_starts_the_clock(m):
     """merge and discard both start it; so does `mates add` for a new pane."""
     m.send()
-    code, out, err = m.run("discard", 1)
+    code, out, err = m.run("discard", 1, "--share", "0")
     assert code == 0, err
     assert time.time() - m.state()["qwens"][0]["idle_since"] < 60
 
@@ -3892,7 +3893,7 @@ def test_discard_keeps_what_other_commands_wrote_meanwhile(m, monkeypatch):
     m.send()
     reset = cli._reset_worktree
     monkeypatch.setattr(cli, "_reset_worktree", lambda *a, **k: (_elsewhere(m), reset(*a, **k))[1])
-    assert m.run("discard", 1)[0] == 0
+    assert m.run("discard", 1, "--share", "0")[0] == 0
     _kept_elsewhere(m)
     assert m.task() is None
 
@@ -4194,7 +4195,7 @@ def test_fresh_keeps_each_open_tasks_work_logs_it_escalated_and_clears_it(tmp_pa
 def test_send_check_is_logged_even_when_review_clears_the_check(m):
     m.on_enter_creates_session("ses_1")
     assert _send_check(m, "test -f done.txt")[0] == 0
-    assert m.run("discard", 1)[0] == 0
+    assert m.run("discard", 1, "--share", "0")[0] == 0
     (rec,) = m.log()
     assert rec["send_check"] == "test -f done.txt" and rec["red_on_base"] is True
 
@@ -4429,7 +4430,7 @@ def test_send_writes_the_brief_for_the_panel_and_merge_clears_it(m):
 
 def test_discard_clears_the_brief(m):
     m.send("PANEL-BRIEF fix a.txt")
-    assert m.run("discard", 1)[0] == 0
+    assert m.run("discard", 1, "--share", "0")[0] == 0
     assert not (cli.brief_dir(str(m.root), 1) / "brief.md").exists()
 
 
@@ -4618,3 +4619,96 @@ def test_a_sent_back_attempt_logs_its_guard_flags_without_a_diff(m):
     assert code == 0, err
     (rec,) = m.log()
     assert rec["outcome"] == "sent-back" and "unnamed-file:scratch.txt" in rec["flags"]
+
+
+# --- the retro for 11-18's fix offers (Wai, 2026-11-19: "build 1-5 and check if 6 fixed, if not,
+# fix it") ------------------------------------------------------------------------------------
+
+def test_a_third_attempt_is_refused_by_name(m):
+    """lead.md: a second failed attempt means discard and do it yourself; the log store got a third."""
+    m.send()
+    assert m.run("answer", 1, "--sendback", "try again")[0] == 0  # attempt 2
+    sent = len(m.buffers())
+    code, _, err = m.run("answer", 1, "--sendback", "and again")
+    assert code != 0 and "mates discard 1" in err and "yourself" in err
+    assert m.task()["attempts"] == 2 and len(m.buffers()) == sent
+    assert [r["outcome"] for r in m.log()] == ["sent-back"]
+    assert m.run("answer", 1, "plain answer, no new attempt")[0] == 0
+
+
+def test_every_discard_of_a_task_gives_a_share(m):
+    m.send()
+    code, _, err = m.run("discard", 1)
+    assert code != 0 and "--share" in err and "--fixed" in err and m.task() is not None
+    assert m.run("discard", 1, "--failed")[0] == 0  # failed: Qwen's share is 0 by definition
+    assert (m.log()[-1]["outcome"], m.log()[-1]["qwen_share"]) == ("failed", 0)
+    assert m.run("discard", 1)[0] == 0  # no task: nothing to share
+
+
+def test_a_takeover_of_an_escalated_task_points_to_fixed(m):
+    m.send()
+    tid = m.task()["id"]
+    assert m.run("discard", 1, "--share", "40")[0] == 0
+    code, _, err = m.run("log-route", "claude-self", "finished from Qwen's diff", "review fixes", "--for", tid)
+    assert code == 0 and "escalated" in err and "--fixed" in err
+    m.send("next")
+    tid = m.task()["id"]
+    assert m.run("discard", 1, "--fixed", "--share", "60")[0] == 0
+    code, _, err = m.run("log-route", "claude-self", "fixes", "review fixes", "--for", tid)
+    assert code == 0 and "--fixed" not in err
+
+
+def test_a_follower_logs_a_start_and_a_close_that_names_it(m):
+    code, out, err = m.run("log-route", "claude-subagent", "survey, haiku", "wide read", "--outcome", "started")
+    assert code == 0, err
+    sid = m.log()[-1]["task_id"]
+    assert sid in out and m.log()[-1]["outcome"] == "started"
+    code, _, err = m.run("log-route", "claude-subagent", "survey merged", "wide read")
+    assert code != 0 and sid in err and "--for" in err and len(m.log()) == 1
+    assert m.run("log-route", "claude-subagent", "survey merged", "wide read", "--for", sid)[0] == 0
+    assert m.log()[-1]["for_task"] == sid
+    assert m.run("log-route", "claude-subagent", "one-shot, haiku", "small")[0] == 0  # nothing open
+
+
+def test_follower_rows_record_the_followers_switch(m, monkeypatch):
+    monkeypatch.setattr(usage, "read", lambda *a, **k: {"on": False, "day": 1, "endgame": False})
+    assert m.run("log-route", "claude-subagent", "survey, haiku", "wide read")[0] == 0
+    assert m.log()[-1]["followers"] == {"state": "off", "day": 1}
+    monkeypatch.setattr(usage, "read", lambda *a, **k: {"on": True, "day": 7, "endgame": True})
+    assert m.run("log-route", "claude-subagent", "survey 2, sonnet", "wide read")[0] == 0
+    assert m.log()[-1]["followers"] == {"state": "endgame", "day": 7}
+    monkeypatch.setattr(usage, "read", lambda *a, **k: {"on": False, "why": "no usable usage data"})
+    assert m.run("log-route", "claude-subagent", "survey 3, haiku", "wide read")[0] == 0
+    assert m.log()[-1]["followers"] == {"state": "off", "day": None, "why": "no usable usage data"}
+    assert m.run("log-route", "claude-self", "mine", "small")[0] == 0
+    assert "followers" not in m.log()[-1]
+
+
+def test_a_takeover_row_counts_the_fixes_made_before_the_discard(m):
+    """The lead fixes Qwen's diff, then discards and logs its takeover a second later: the window
+    must reach back past the task's closing row (4 takeover rows logged 0 tokens on 11-18)."""
+    import logrec
+    now = time.time()
+    repo = str(m.root.resolve())
+
+    def line(task, outcome, ago, route="qwen"):
+        logrec.append(cli.LOG, {"repo": repo, "task_id": task, "summary": "s", "route": route, "reason": "r",
+                                "outcome": outcome, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - ago))})
+    line("other", "accepted", 400)
+    line("X", "sent-back", 200)
+    line("X", "escalated", 5)
+    _lead_transcript(m, [_asst(now - 300, "old", "ls", _usage(9000, 0, 9000, 9000)),
+                         _asst(now - 100, "fix", "uv run pytest", _usage(10, 100, 5, 1000))])
+    assert m.run("log-route", "claude-self", "finished X", "review fixes", "--for", "X")[0] == 0
+    assert m.log()[-1]["lead_tokens"] == 115  # since the sent-back row, not since the closing one
+
+
+def test_a_sent_back_row_names_the_check_it_was_sent_with(m):
+    """The retro for 11-18: sent-back rows logged check: null although send_check was set."""
+    assert _send_check(m, "test -f done.txt")[0] == 0
+    m.run("check", 1)  # a review clears the check fields; the row still names the send's check
+    assert m.run("answer", 1, "--sendback", "not yet")[0] == 0
+    assert m.run("discard", 1, "--share", "0")[0] == 0
+    for rec in m.log():
+        assert rec["check"] == "test -f done.txt", rec["outcome"]
+        assert rec["check_sha"] == hashlib.sha256(b"test -f done.txt").hexdigest()

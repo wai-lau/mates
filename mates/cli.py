@@ -1110,10 +1110,13 @@ def log_attempt(root, entry, outcome, qwen_share=None):
     the share (0-100) of the task Qwen completed, weighed by difficulty, when the task ends."""
     t = entry["task"]
     checked = t.get("checked_tree")
+    # a review clears check_cmd (sendback, sync): the row then names the check the task was sent with
+    # (the retro for 11-18: sent-back and escalated rows logged check: null while send_check was set)
+    check = t.get("check_cmd") or t.get("send_check")
     rec = {"repo": str(root), "task_id": t["id"], "summary": t.get("summary") or "", "route": "qwen",
            "reason": t.get("reason"), "attempts": t.get("attempts", 0), "outcome": outcome, "pane": entry["n"],
-           "check": t.get("check_cmd"), "send_check": t.get("send_check"),
-           "check_sha": hashlib.sha256(t["check_cmd"].encode()).hexdigest() if t.get("check_cmd") else None,
+           "check": check, "send_check": t.get("send_check"),
+           "check_sha": hashlib.sha256(check.encode()).hexdigest() if check else None,
            "tree": checked, "flags": t.get("flags") or [],
             "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
             "red_on_base": t.get("red_on_base"),
@@ -1129,10 +1132,13 @@ def log_attempt(root, entry, outcome, qwen_share=None):
     logrec.write(LOG, rec)
 
 
+MAX_ATTEMPTS = 2  # lead.md: two failed attempts, then the lead does the task itself
+
+
 def _remind(n, task):
-    if task["attempts"] >= 2:
-        print(f"mates: this is attempt {task['attempts']} on this task; if it fails, "
-              f"mates discard {n} and do it yourself", file=sys.stderr)
+    if task["attempts"] >= MAX_ATTEMPTS:
+        print(f"mates: this is attempt {task['attempts']} on this task, the last; if it fails, "
+              f"mates discard {n} --share P and do it yourself", file=sys.stderr)
 
 
 def _parser(name, usage):
@@ -1434,7 +1440,7 @@ def wait(args):
         if still and (age := _quiet_s(q["worktree"], db, since)) > STALL_S:
             print("stalled")
             print(f"mates: Qwen pane {a.n} reads busy but OpenCode wrote nothing for {int(age // 60)} minutes; "
-                  f"`mates discard {a.n}` and do it yourself", file=sys.stderr)
+                  f"`mates discard {a.n} --share P` and do it yourself", file=sys.stderr)
             return 0
         stopped = 0 if still else stopped + 1
         if stopped >= 2:
@@ -1461,6 +1467,12 @@ def answer(args):
     task = q.get("task")
     if not task:
         die(f"Qwen pane {a.n} has no open task (mates send starts one)")
+    if a.sendback and task.get("attempts", 0) >= MAX_ATTEMPTS:
+        # lead.md: "A second failed attempt ... mates discard N and do the task yourself". The log
+        # store got a third one anyway (the retro for 11-18; Wai said yes to refusing it).
+        die(f"attempt {task['attempts']} on this task failed: no attempt {task['attempts'] + 1} (lead.md: a second "
+            f"failed attempt means discard and do it yourself). mates discard {a.n} --share P (or --fixed "
+            f"--share P if you finish Qwen's diff), then do the task yourself")
     pane = _live_pane(root, state, q)
     _stamp_idle(root, a.n)
     db = _db(root)
@@ -1946,7 +1958,7 @@ def _stop_reply(root, state, q, n):
 
 
 def discard(args):
-    p = _parser("discard", "mates discard N [--failed | --fixed --share P | --share P]")
+    p = _parser("discard", "mates discard N (--share P | --fixed --share P | --failed)")
     p.add_argument("n", type=int)
     p.add_argument("--failed", action="store_true")
     p.add_argument("--fixed", action="store_true",
@@ -1964,6 +1976,12 @@ def discard(args):
     state = _load(root)
     q = _qentry(state, a.n)
     task = q.get("task")
+    if task and a.share is None and not a.failed:
+        # The retro for 11-18: an escalation logged no share, and it was really Qwen's diff the lead
+        # finished. Wai said yes to asking for the share on every discard.
+        die(f"mates discard {a.n} needs --share P: the share (0-100) of the task Qwen completed, weighed by "
+            f"difficulty. If you finish Qwen's diff yourself, that is --fixed --share P (accepted-with-fixes, "
+            f"not escalated); --failed if nothing of it is usable")
     _stop_reply(root, state, q, a.n)
     try:
         keep_work(root, a.n, task)

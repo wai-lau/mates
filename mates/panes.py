@@ -18,6 +18,7 @@ import gitsafe
 import layout
 import logrec
 import session
+import usage
 from gitsafe import GitError, git_lead
 
 NO_ROOM = "no room for another Qwen pane: widen the window or close a pane"
@@ -244,26 +245,57 @@ def log(args):
     return 0
 
 
+def _followers_now():
+    """The `mates followers` switch as a follower row records it: on, off or endgame, and the day
+    (1-7) of the usage week (the retro for 11-18 could not tell whether two followers were allowed)."""
+    h = usage.read()
+    rec = {"state": "endgame" if h.get("endgame") else "on" if h.get("on") else "off", "day": h.get("day")}
+    if "why" in h:
+        rec["why"] = h["why"]
+    return rec
+
+
 def log_route(args):
     p = argparse.ArgumentParser(prog="mates log-route",
-                                usage='mates log-route <route> "<summary>" "<reason>" [--outcome accepted] '
+                                usage='mates log-route <route> "<summary>" "<reason>" [--outcome accepted|started|...] '
                                       '[--model NAME] [--for TASK_ID]')
     p.add_argument("route", choices=sorted(logrec.ROUTES - {"qwen", "runtime", "pane"}))  # those come from their commands
     p.add_argument("summary")
     p.add_argument("reason")
     p.add_argument("--outcome", choices=sorted(logrec.OUTCOMES), default="accepted")
     p.add_argument("--model", help="the follower's model")
-    p.add_argument("--for", dest="for_task", help="the Qwen task id this takeover finishes")
+    p.add_argument("--for", dest="for_task",
+                   help="the Qwen task id this takeover finishes, or the started row this one closes")
     a = p.parse_args(args)
     task_id = uuid.uuid4().hex[:12]
     root = cli._lead_root()
+    recs = _records() or []
+    mine = [r for r in recs if r.get("repo") == root]
+    if a.outcome != "started" and not a.for_task:
+        # A follower logs `started` at launch and its close names that row (the retro for 11-18: 4
+        # followers were logged accepted at launch and again on merge, so each counted twice).
+        closed = {r.get("for_task") for r in mine}
+        open_ = [r["task_id"] for r in mine if r.get("route") == a.route and r.get("outcome") == "started"
+                 and r.get("task_id") not in closed]
+        if open_:
+            cli.die(f"{a.route} rows started and not closed: {', '.join(open_)}. If this row closes one, "
+                    f"add --for <its id>; log-route --outcome started for a new one")
+    if a.for_task:
+        rows = [r for r in mine if r.get("task_id") == a.for_task and r.get("route") == "qwen"]
+        if rows and rows[-1].get("outcome") == "escalated":
+            print(f"mates: task {a.for_task} was logged escalated. When you finish Qwen's diff yourself, close it "
+                  f"with mates discard N --fixed --share P instead (accepted-with-fixes)", file=sys.stderr)
     rec = {"repo": root, "task_id": task_id, "summary": a.summary, "route": a.route,
            "reason": a.reason, "outcome": a.outcome}
     if a.model:
         rec["model"] = a.model
     if a.for_task:
         rec["for_task"] = a.for_task
-    since = logrec.last_ts(cli.LOG, root)  # the lead's work since this repo's last log line
+    if a.route == "claude-subagent":
+        rec["followers"] = _followers_now()
+    # the lead's work since this repo's last log line; a takeover's since the line before its Qwen
+    # task closed, since the lead fixes Qwen's diff before the discard (4 rows logged 0 on 11-18)
+    since = logrec.last_ts(cli.LOG, root, skip_close_of=a.for_task)
     transcript = session.transcript_path(root, session.load(root) or {}) if since is not None else None
     rec.update(session.lead_cost_fields(transcript, None, since or 0))
     logrec.write(cli.LOG, rec)

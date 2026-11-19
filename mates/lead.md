@@ -73,7 +73,10 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 - Model: the cheapest that can do the task (per token, haiku is 1/40 of opus,
   sonnet 1/2). Brief it like Qwen (behaviour, check, files) and check what it
   returns yourself.
-- Log: `mates log-route claude-subagent "<task, model>" "<why>"`.
+- Log at launch: `mates log-route claude-subagent "<task, model>" "<why>" --outcome started`
+  (it prints the row's id); when it returns, close that row:
+  `mates log-route claude-subagent "<what came back>" "<why>" --for <id>`
+  (with `--outcome` if it was not accepted). A follower done within one turn needs one plain row.
 
 ## Briefs
 
@@ -127,11 +130,13 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 - Wai's own work with Qwen merges when she asks: `mates check N -- <cmd>`,
   `mates diff N`, then `mates merge N -m "<commit message>"`.
 - A second failed attempt, or a pane with no new tool call for 30 minutes (when
-  `mates wait` says stalled): `mates discard N` and do the task yourself.
+  `mates wait` says stalled): `mates discard N --share P` and do the task yourself
+  (`answer --sendback` refuses a third attempt).
 - After a crash or pane restart Qwen's edits stay but its chat may not: send
   `mates answer N --sendback` with the goal, files and check restated whole (that
   counts as an attempt). To start clean, `mates discard N` and send the brief from
   its file. A task that crashes twice: discard it and do it yourself.
+- Every discard of a task gives `--share P`, or `--failed` when nothing of it is usable.
 - Work you do yourself: `mates log-route claude-self "<summary>" "<reason>"`.
 - Qwen's work that you finish and merge yourself (its diff applied, then fixed): close
   the task with `mates discard N --fixed --share P` (logged `accepted-with-fixes`, not

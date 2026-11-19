@@ -183,7 +183,7 @@ def test_discard_stops_a_reply_with_two_escapes(w):
     w.add()
     w.mates("send", 1, "--reason", "e2e", "--files", "a.txt", "Work forever. FAKE:hang")
     w.until(lambda: "esc interrupt" in w.screen())
-    w.mates("discard", 1)
+    w.mates("discard", 1, "--share", "0")
     assert "interrupt" not in w.screen()
 
 

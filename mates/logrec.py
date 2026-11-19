@@ -13,14 +13,16 @@ FIELDS = ("ts", "repo", "task_id", "summary", "route", "reason", "check", "check
           # 2026-11-18: "assign a completion percentage, weighed by difficulty"): merge 100, else the lead's
           "qwen_share",
           "model", "for_task",  # a follower's model; the Qwen task a takeover finishes
-          "lead_input", "lead_cache_write", "lead_output")  # lead_tokens = their sum
+          "lead_input", "lead_cache_write", "lead_output",  # lead_tokens = their sum
+          "followers")  # a follower row: the `mates followers` switch and the usage day when it was logged
 PILOT_FIELDS = ("arm", "full_diff_read", "lead_cache_read", "detail", "commit", "tree")
 REQUIRED = ("repo", "task_id", "summary", "route", "reason", "outcome")
 # runtime: a `mates runtime` build; pane: a pane event (idle close); parallel: toggle `mates parallel on|off`
 ROUTES = {"qwen", "claude-subagent", "claude-self", "runtime", "pane", "parallel"}
 # accepted-with-fixes: Qwen did most of the task and the lead finished it and merged it (Wai,
 # 2026-11-18: "YES"); not an escalation, which the retro counts against routing to Qwen.
-OUTCOMES = {"accepted", "accepted-with-fixes", "sent-back", "escalated", "failed", "closed"}  # closed: a pane event
+# started: a follower at launch; the row that closes it names it with for_task
+OUTCOMES = {"accepted", "accepted-with-fixes", "sent-back", "escalated", "failed", "closed", "started"}  # closed: a pane event
 
 
 def validate(rec: dict) -> dict:
@@ -57,8 +59,9 @@ def write(path, rec: dict) -> None:
     append(path, rec)
 
 
-def last_ts(path, repo):
-    """Epoch seconds of the newest line of `repo` in the log at `path`, or None (no log, no line)."""
+def last_ts(path, repo, skip_close_of=None):
+    """Epoch seconds of the newest line of `repo` in the log at `path`, or None (no log, no line).
+    `skip_close_of`: a Qwen task id whose closing lines (any outcome but sent-back) are passed over."""
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
@@ -67,6 +70,9 @@ def last_ts(path, repo):
         try:
             r = json.loads(line)
             if isinstance(r, dict) and r.get("repo") == repo:
+                if skip_close_of and r.get("task_id") == skip_close_of and r.get("route") == "qwen" \
+                        and r.get("outcome") != "sent-back":
+                    continue
                 return calendar.timegm(time.strptime(r["ts"], "%Y-%m-%dT%H:%M:%SZ"))
         except (ValueError, KeyError, TypeError, OverflowError):
             continue

@@ -503,7 +503,9 @@ Then it:
   (`paste`), then watches up to 30 s for the new OpenCode session id.
 
 From the second attempt on, `send` and `answer --sendback` print a reminder:
-if this one fails, discard the task and do it yourself (`_remind`).
+if this one fails, discard the task and do it yourself (`_remind`). A
+`--sendback` once the task has had 2 attempts is refused and names that rule
+(`MAX_ATTEMPTS`): there is no third attempt.
 
 ### The protocol
 
@@ -698,7 +700,10 @@ sync completes, and stays if writing fails halfway.
 
 ### Discard
 
-`mates discard N [--failed]` (`mates/cli.py:discard`) first stops a busy Qwen
+`mates discard N (--share P | --fixed --share P | --failed)` (`mates/cli.py:discard`)
+needs the share of the task Qwen completed whenever a task is open, so no
+escalation is logged without one; the refusal points to `--fixed` for Qwen work
+the lead finishes. It first stops a busy Qwen
 (`stop_pane`, shared with `wait`): one Escape, then a second once the footer
 says "esc again to interrupt" (OpenCode's first press only arms the interrupt,
 and a second press sent too soon is lost) or after 3 s, then up to 20 s for two
@@ -706,7 +711,8 @@ not-busy readings in a row. If Qwen keeps replying, discard refuses and changes
 nothing. (A Qwen once kept editing a reset worktree for hours; see
 [`docs/bugs.md`](docs/bugs.md).) Then it keeps the work on
 `refs/mates/discarded/<n>-<time>` (`keep_work`), resets the worktree to the
-lead's HEAD, and logs the task as `escalated`, or `failed` with `--failed`.
+lead's HEAD, and logs the task as `escalated`, `accepted-with-fixes` with
+`--fixed`, or `failed` (share 0) with `--failed`.
 
 `mates remove N --force` also closes an open task, logged as `failed`, after
 keeping a snapshot on a ref (`panes.py:remove`).
@@ -807,7 +813,8 @@ or an unknown route or outcome. `ts` is UTC.
 
 - Routes: `qwen`, `claude-self`, `claude-subagent`, `runtime`, `pane`,
   `parallel`.
-- Outcomes: `accepted`, `sent-back`, `escalated`, `failed`, `closed`.
+- Outcomes: `accepted`, `accepted-with-fixes`, `sent-back`, `escalated`,
+  `failed`, `closed`, `started` (a follower at launch).
 
 Each finished Qwen attempt is one line (`cli.py:log_attempt`):
 
@@ -817,7 +824,7 @@ Each finished Qwen attempt is one line (`cli.py:log_attempt`):
 | `repo`, `task_id`, `pane` | which repo, task and pane |
 | `summary`, `reason` | the brief's first line; why Qwen |
 | `attempts`, `outcome` | the attempt count, and how this attempt ended |
-| `check`, `check_sha` | the task's check command, and its sha256 |
+| `check`, `check_sha` | the task's check command (the send check when a review cleared it), and its sha256 |
 | `send_check` | the command sent with `mates send --check`; `check` is blanked when a review clears, so this is the one that survives |
 | `red_on_base` | the check failed on the base at send |
 | `tree` | the checked snapshot |
@@ -833,11 +840,18 @@ Other lines: `runtime` (the files, the hash, the panes restarted), `parallel`,
 `pane` (`event: idle-close`), and `claude-self` or `claude-subagent` from
 `mates log-route <route> "<summary>" "<reason>" [--outcome O] [--model NAME]
 [--for TASK_ID]`. A log-route line adds `model` (the follower's model) and
-`for_task` (the Qwen task a takeover finishes) when given, and the lead's
-cost fields counted over every assistant message since this repo's last log
-line (`logrec.py:last_ts`; null when the repo has no earlier line). That
+`for_task` (the Qwen task a takeover finishes, or the `started` row this one
+closes) when given, and the lead's cost fields counted over every assistant
+message since this repo's last log line (`logrec.py:last_ts`; null when the
+repo has no earlier line). A takeover's window starts before its Qwen task's
+closing line, since the lead fixes Qwen's diff before it discards. That
 window can include tokens a Qwen row already counted, so compare rows, do not
-sum them. `mates log` skips lines that are not JSON objects.
+sum them. A `claude-subagent` line also records `followers`: the `mates
+followers` switch (`on`, `off` or `endgame`) and the usage day (1-7) when it
+was logged. A follower logs `--outcome started` at launch and its close names
+that row with `--for`; while a started row is open, a same-route line without
+`--for` is refused, so no follower is counted twice. A takeover `--for` an
+escalated Qwen task prints a pointer to `discard --fixed`. `mates log` skips lines that are not JSON objects.
 
 ### Retros and lessons
 
