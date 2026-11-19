@@ -79,7 +79,7 @@ def test_launch_plan_fresh(tmp_path):
     root = _root(tmp_path)
     plan = cli.launch_plan(None, root, False, [])
     argv = plan["claude_argv"]
-    assert argv[:6] == ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", "claude"]
+    assert argv[:7] == ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", "MIMALLOC_PURGE_HOLES=0", "claude"]
     sid = _after(argv, "--session-id")
     assert str(uuid.UUID(sid)) == sid
     assert _after(argv, "-n") == "mates r"
@@ -4600,3 +4600,21 @@ def test_restart_refuses_typed_input(m):
 def test_restart_needs_an_open_pane(m):
     code, _, err = m.run("restart", 2)
     assert code != 0 and "no open Qwen pane 2" in err
+
+
+def test_the_lead_runs_without_mimallocs_hole_purge(m):
+    """Bun 1.4.4 segfaulted in mimalloc's idle purge-holes step (Spire, 2026-11-18): the lead's
+    claude runs with that step off."""
+    argv = cli._claude_argv(m.root, [], [])
+    assert "MIMALLOC_PURGE_HOLES=0" in argv[:argv.index(cli._claude())]
+
+
+def test_a_sent_back_attempt_logs_its_guard_flags_without_a_diff(m):
+    """The retro for 11-17: an attempt left scratch files at the repo root and logged flags: []
+    because the lead sent it back before running mates diff."""
+    m.send()
+    (m.wt / "scratch.txt").write_text("notes\n")
+    code, _, err = m.run("answer", 1, "--sendback", "the result must be b")
+    assert code == 0, err
+    (rec,) = m.log()
+    assert rec["outcome"] == "sent-back" and "unnamed-file:scratch.txt" in rec["flags"]

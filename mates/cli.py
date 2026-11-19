@@ -280,7 +280,12 @@ def _claude_argv(root, session_args, claude_args):
     # claude() wrapper in ~/.zshrc does), which ~/.claude/statusline-command.sh recolours.
     theme = _pane_theme()
     settings = ["--settings", json.dumps({"theme": f"custom:{theme}"})] if theme else []
-    return ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", _claude(), *settings,
+    # MIMALLOC_PURGE_HOLES=0: Claude Code's Bun 1.4.4 segfaulted in its allocator's idle "purge
+    # holes" step after hours (Spire, 2026-11-18, exit 139: mi_page_holes_madvisable from the
+    # mimalloc scavenger); Bun's mimalloc 3.6.0 reads this switch, and it turns off only that step
+    # (Wai said yes to trying it). bin/mates still resumes a lead that crashes.
+    return ["env", "-u", "ANTHROPIC_API_KEY", "MATES_LEAD=1", f"MATES_ROOT={root}", "MIMALLOC_PURGE_HOLES=0",
+            _claude(), *settings,
             *session_args, "--append-system-prompt", _lead_prompt(), *claude_args]
 
 
@@ -1115,6 +1120,12 @@ def log_attempt(root, entry, outcome, qwen_share=None):
             "questions": t.get("questions") or [], **_costs(root, entry, t)}
     if qwen_share is not None:
         rec["qwen_share"] = qwen_share
+    if not rec["flags"] and outcome != "accepted" and t.get("base"):
+        # An attempt that ends before `mates diff` ran (sent back, escalated, failed) still gets its
+        # guard flags, from the worktree as it is (the retro for 11-17: one left 4 scratch files at
+        # the repo root and logged flags: []; Wai said yes to this). Never fails the log line.
+        with contextlib.suppress(Exception):
+            rec["flags"] = _snapshot_diff(root, entry["n"], t)[4]
     logrec.write(LOG, rec)
 
 
@@ -1649,6 +1660,25 @@ def _binary_paths(numstat):
     return [rec.split("\t", 2)[2] for rec in numstat.split("\0") if rec.startswith("-\t-\t")]
 
 
+def _snapshot_diff(root, n, task):
+    """(tree, full diff, stat, numstat, guard flags) for Qwen worktree n's snapshot against the
+    task's base. Raises GitError."""
+    base = task["base"]
+    tree = snapshot(root, n, base)
+    # --text: a binary-looking file still shows its bytes (attributes come from base anyway)
+    full = git_safe(root, n, "diff", "--text", "--no-color", "--no-renames", base, tree, attrs=base).stdout
+    stat_ = git_safe(root, n, "diff", "--no-color", "--no-renames", "--stat", base, tree, attrs=base).stdout
+    numstat = git_safe(root, n, "diff", "--no-color", "--no-renames", "--numstat", "-z", base, tree,
+                       attrs=base).stdout
+    hooks = git_lead(root, "config", "core.hooksPath", check=False).stdout.strip() or None
+    if hooks and os.path.isabs(hooks) and Path(hooks).resolve().is_relative_to(Path(root)):
+        hooks = str(Path(hooks).resolve().relative_to(Path(root)))  # an absolute path inside the repo
+    flags = guard.guard_flags(full, task["files"], hooks_path=hooks,
+                              runtime_files=runtime.runtime_files(root, base),
+                              binary_paths=[gitsafe.lossy(x) for x in _binary_paths(numstat)])
+    return tree, full, stat_, numstat, flags
+
+
 def diff(args):
     p = _parser("diff", "mates diff N [--part K]")
     p.add_argument("n", type=int)
@@ -1660,22 +1690,10 @@ def diff(args):
     task = q.get("task")
     if not task:
         die(f"Qwen pane {a.n} has no open task (mates check N -- <cmd> opens one for Wai's own work)")
-    base = task["base"]
     try:
-        tree = snapshot(root, a.n, base)
-        # --text: a binary-looking file still shows its bytes (attributes come from base anyway)
-        full = git_safe(root, a.n, "diff", "--text", "--no-color", "--no-renames", base, tree, attrs=base).stdout
-        stat_ = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--stat", base, tree, attrs=base).stdout
-        numstat = git_safe(root, a.n, "diff", "--no-color", "--no-renames", "--numstat", "-z", base, tree,
-                           attrs=base).stdout
+        tree, full, stat_, numstat, flags = _snapshot_diff(root, a.n, task)
     except GitError as e:
         die(f"git failed on Qwen worktree {a.n}: {e}")
-    hooks = git_lead(root, "config", "core.hooksPath", check=False).stdout.strip() or None
-    if hooks and os.path.isabs(hooks) and Path(hooks).resolve().is_relative_to(Path(root)):
-        hooks = str(Path(hooks).resolve().relative_to(Path(root)))  # an absolute path inside the repo
-    flags = guard.guard_flags(full, task["files"], hooks_path=hooks,
-                              runtime_files=runtime.runtime_files(root, base),
-                              binary_paths=[gitsafe.lossy(x) for x in _binary_paths(numstat)])
     parts = _diff_parts(full, DIFF_PART_CHARS)
     if not 1 <= a.part <= len(parts):
         die(f"this snapshot's diff has {len(parts)} part(s); no part {a.part}")
