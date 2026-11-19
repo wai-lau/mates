@@ -75,9 +75,12 @@ go_to() { # show window $1 and stop; $2 says why
 # Undo the terminal modes a claude that died left on (alt screen, hidden cursor, paste/focus/mouse
 # reporting, key modes): with mouse reporting left on, every mouse move types junk into the shell
 # (2026-11-18: a killed lead's pane filled with "35;127;45M..." and zsh ran it as commands).
+# The kitty keyboard mode is popped all the way (<100u) and zeroed (=0;1u): left on, Ctrl+C
+# arrives as an escape code instead of interrupting (Wai, 2026-11-18: "make sure that we leave the
+# mouse tracking mode or whatever is making it not possible for me to ctrl+c").
 reset_term() {
   stty sane 2>/dev/null  # a SIGKILLed claude leaves the tty raw
-  printf '\033[?1049l\033[?25h\033[0m\033[?2004l\033[?1004l\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[<u\033[>4m' 2>/dev/null
+  printf '\033[?1049l\033[?25h\033[0m\033[?2004l\033[?1004l\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[<100u\033[=0;1u\033[>4m' 2>/dev/null
 }
 
 # Prompt bar = title colour, as the claude() wrapper in ~/.zshrc does it: the lead's claude runs on
@@ -95,6 +98,11 @@ pane_theme() {
   [ -f "$d/pane-$$.json" ] || printf '{"name":"pane-%s","base":"dark","overrides":{}}\n' "$$" > "$d/pane-$$.json"
 }
 
+# A claude that died on a signal: SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGKILL (the OOM killer), SIGSEGV.
+# Not SIGHUP (the pane closed), SIGINT or SIGTERM (stopped on purpose).
+CRASH_MIN_S=${MATES_CRASH_MIN_S:-60} CRASH_MAX=3 CRASH_WINDOW_S=600
+crashed() { case $1 in 132|134|135|136|137|139) return 0 ;; esac; return 1; }
+
 run_lead() { # this pane becomes the lead: cli.py starts the Qwen panes, then claude runs here as our child
   local out rc argv
   pane_theme
@@ -108,19 +116,33 @@ run_lead() { # this pane becomes the lead: cli.py starts the Qwen panes, then cl
   cd "$ROOT" || die "cannot cd to $ROOT"
   tm set-option -p -u -t "$TMUX_PANE" @mates-lead-pid  # a lead `mates start` made, now gone
   tm set-option -p -t "$TMUX_PANE" @mates-lead-live 1
-  local rf="$HOME/.claude/.restart.$$" sid note i
+  local rf="$HOME/.claude/.restart.$$" sid note i started crashes=()
   while :; do
+    started=$SECONDS
     "${argv[@]}"; rc=$?
     # /restart (~/.claude/restart.sh) SIGKILLs claude after writing this file (line 1: the session
     # id; the rest: a note for the resumed session), so its background shells live on. Relaunch on
     # that conversation with a freshly built argv: today's lead.md and lessons load.
-    [ -f "$rf" ] || break
-    sid=$(head -1 "$rf"); note=$(tail -n +2 "$rf"); rm -f "$rf"
+    if [ -f "$rf" ]; then
+      sid=$(head -1 "$rf"); note=$(tail -n +2 "$rf"); rm -f "$rf"
+    elif crashed "$rc" && [ $((SECONDS - started)) -ge "$CRASH_MIN_S" ]; then
+      # Claude Code died on a signal (2026-11-18: Bun 1.4.4 segfaults, exit 139, after hours; Wai:
+      # "it's happening a lot"). Bring it back on the same conversation instead of a shell, unless
+      # it keeps crashing (CRASH_MAX in CRASH_WINDOW_S) or died within CRASH_MIN_S of starting.
+      crashes+=("$SECONDS")
+      while [ "${#crashes[@]}" -gt 0 ] && [ $((SECONDS - crashes[0])) -gt "$CRASH_WINDOW_S" ]; do crashes=("${crashes[@]:1}"); done
+      [ "${#crashes[@]}" -le "$CRASH_MAX" ] || break
+      sid=""
+      note="[mates] Claude Code crashed (exit $rc: a signal, such as a Bun segfault) and mates relaunched it on this conversation. Background Bash tasks may still be running (check ps); subagents and workflow runs died, and continue from their transcripts (SendMessage to an agent id, Workflow resumeFromRunId). Then carry on with what was in progress."
+      echo "mates: claude crashed (exit $rc); resuming the same conversation" >&2
+    else
+      break
+    fi
     reset_term
     out=$(mktemp) || break
     python3 "$CLI" launch --lead-only > "$out" || { rm -f "$out"; echo "mates: relaunch failed; a shell instead" >&2; break; }
     mapfile -d '' -t argv < "$out"; rm -f "$out"
-    for i in "${!argv[@]}"; do  # resume exactly the conversation /restart named
+    [ -z "$sid" ] || for i in "${!argv[@]}"; do  # resume exactly the conversation /restart named
       case "${argv[$i]}" in --resume|--session-id) argv[i]=--resume; argv[i+1]=$sid ;; esac
     done
     case " ${argv[*]} " in *" -- "*) argv+=("$note") ;; *) argv+=(-- "$note") ;; esac

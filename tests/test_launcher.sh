@@ -23,7 +23,7 @@ cleanup() {
 trap cleanup EXIT
 unset TMUX TMUX_PANE MATES_LEAD
 mkdir -p "$T/home" "$T/ctl" "$T/oc"
-export HOME=$T/home SHELL=/bin/sh MATES_CLAUDE=$T/claude MATES_QWEN=$T/qwen
+export HOME=$T/home SHELL=/bin/sh MATES_CLAUDE=$T/claude MATES_QWEN=$T/qwen MATES_CRASH_MIN_S=0
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
 # claude: logs "<repo> <session args>"; with --session-id writes a transcript titled by -n;
@@ -211,6 +211,20 @@ check "theme: the lead's claude runs on bin/mates' pane theme, each launch" \
 check "theme: bin/mates made the theme file" '[ -f "$T/home/.claude/themes/pane-$MP.json" ]'
 check "theme: a gone process's theme is pruned" '[ ! -e "$T/home/.claude/themes/pane-999999999.json" ]'
 echo 0 > "$T/ctl/r9.quit"
+
+# --- a crashed claude (a signal: 2026-11-18, Bun segfaults, exit 139) comes back on the same
+# conversation; one that keeps crashing (over 3 in 10 minutes) leaves a shell ---
+mkrepo r10
+tx new-session -d -s t10 -x 200 -y 50 -c "$T/r10" "$MATES"
+waitfor '[ "$(count r10 claude)" = 1 ]'
+echo 139 > "$T/ctl/r10.quit"
+check "crash: claude comes back" 'waitfor "[ \"\$(count r10 claude)\" = 2 ]"'
+check "crash: on the same conversation" '[ "$(grep "^r10 " "$T/claude.log" | sed -n 2p | sed "s/.*resume=//")" = "$(grep "^r10 " "$T/claude.log" | sed -n 1p | sed "s/.* sid=\([^ ]*\) .*/\1/")" ]'
+for n in 3 4; do echo 139 > "$T/ctl/r10.quit"; waitfor "[ \"\$(count r10 claude)\" = $n ]"; done
+echo 139 > "$T/ctl/r10.quit"
+P10=$(tx display -p -t t10 '#{pane_id}')
+check "crash loop: the 4th crash in 10 minutes leaves a shell" 'waitfor "tx capture-pane -p -t \"$P10\" | grep -q \"claude exited 139\""'
+check "crash loop: three relaunches, then no more" '[ "$(count r10 claude)" = 4 ]'
 
 # --- bin/mates refuses inside a Qwen worktree ------------------------------------------
 QWT=$T/r1/.claude/worktrees/mates-qwen-1
