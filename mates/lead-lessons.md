@@ -11,6 +11,7 @@
 - Keep other queued tasks' red tests off main, or no full-suite check can pass. Keep a check from modifying the tree it judges, and try it on a known-bad tree.
 - Before sending a contract that changes behaviour, run the whole suite against a rough sketch of the change, fix the old tests it breaks yourself, and settle every value (defaults, URLs, key presence); otherwise Qwen stops to ask and a wrong lead check costs a send-back.
 - In a refactor, comments move with their code; fix any that name an old file, function or line, and drop none silently.
+- When a change moves files, fixtures or data that another suite reads (end-to-end, browser), put that suite in the check; a unit-only check passed while 7 end-to-end tests broke and the lead's fix cost four times the hand-off.
 
 ### Writing briefs
 
@@ -18,6 +19,7 @@
 - Size each task to fit Qwen's 64K context: one plan task, a few functions, plan sections by pointer, line ranges or grep patterns into big files. Each compaction loses detail.
 - Keep each brief in a file that survives a restart and send it once, whole, into a fresh chat; leftover context from the last task or a second paste leaves Qwen re-reading.
 - When Qwen writes docs or history, write the quotes, dates and numbers yourself; forbid author or credit lines in code and commits, and read those diffs line by line.
+- A brief spanning a new module plus its wiring in several callers comes back with only the checked part done. Give every numbered step its own check case before the send, or split it into one send per checked piece.
 
 ### Review, merge and logging
 
