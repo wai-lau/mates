@@ -4453,6 +4453,8 @@ def test_tui_config_loads_the_brief_plugin():
     assert "sidebar_content" in js and "/opt/mates-brief/brief.md" in js
     # todo > brief (Wai, 2026-11-18): the brief hides while OpenCode's todo section shows
     assert "api.state.session.todo(" in js and 'status !== "completed"' in js
+    # the todo list right under the title (Wai, 2026-11-20): OpenCode's own section is off
+    assert tui["plugin_enabled"] == {"internal:sidebar-todo": False} and "MARK" in js
 
 
 # --- a chat squeezed by the side panel (Wai, 2026-11-18: "close pane, send work, then reopen

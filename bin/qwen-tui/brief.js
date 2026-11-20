@@ -1,7 +1,9 @@
 // mates: OpenCode's side panel shows either Qwen's todo list or a short brief, never both (Wai,
 // 2026-11-18: "show the overall plan and/or the instigating prompt in that Qwen panel", then
-// "show TODO expanded OR short brief, not both / todo > brief"). OpenCode's own todo section
-// shows, expanded, while any item is open; until then this shows the first line of the lead's
+// "show TODO expanded OR short brief, not both / todo > brief"), right under the panel's title
+// (Wai, 2026-11-20: "move todo in the qwen right pane right under title"): OpenCode's own todo
+// section sits below Context and LSP, so tui.json turns it off and this draws the list, expanded,
+// while any item is open, the same rule OpenCode's used. Until then it shows the first line of the lead's
 // brief, which mates writes to a folder bin/qwen mounts read-only at /opt/mates-brief, so Qwen
 // cannot change what the panel says it was asked. Re-checked every few seconds. Anything
 // unexpected (a newer OpenCode without this API) leaves the panel as it was.
@@ -21,13 +23,15 @@ function shortBrief() {
   }
 }
 
-function todoShowing(api, sessionID) {
-  // the same rule as OpenCode's todo section: some item not completed
+const MARK = { completed: "[✓]", in_progress: "[•]", cancelled: "[-]" }
+
+function openTodos(api, sessionID) {
+  // OpenCode's rule for showing its todo section: some item not completed
   try {
     const todos = api.state.session.todo(sessionID) ?? []
-    return todos.length > 0 && todos.some((t) => t.status !== "completed")
+    return todos.length > 0 && todos.some((t) => t.status !== "completed") ? todos : []
   } catch {
-    return false
+    return []
   }
 }
 
@@ -47,8 +51,11 @@ export default {
             box.add(body)
             const update = () => {
               try {
-                const text = todoShowing(api, props?.session_id) ? "" : shortBrief()
-                const title = text ? "Task (from the lead)" : ""
+                const todos = openTodos(api, props?.session_id)
+                const text = todos.length
+                  ? todos.map((t) => `${MARK[t.status] ?? "[ ]"} ${t.content}`).join("\n")
+                  : shortBrief()
+                const title = todos.length ? "Todo" : text ? "Task (from the lead)" : ""
                 if (head.content !== title) head.content = title
                 if (body.content !== text) body.content = text
                 box.visible = Boolean(text)
