@@ -55,6 +55,9 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
   > "remember to be more aggressive with subagents when we have >1d worth of usage before hitting pace"
 - Qwen is a follower too, and it has no pace: send to Qwen on any day, at any usage,
   within the 3-task cap (Wai: "qwen is always allowed as a follower! qwen needs no pace").
+  That holds through the 5-hour pause too ("ensure qwen followers are always allowed,
+  regardless of pacing"): Bash calls made only of `mates` commands still run, so keep
+  sending to, waiting on and merging your Qwen panes while you pause other work.
   While Claude followers are off, Qwen takes the work a Claude follower would have had,
   whenever a red check proves it done. Day 1 of the week has no Claude followers (Wai: "1B, except always
   allow Qwen followers").
