@@ -12,6 +12,7 @@
 - Before sending a contract that changes behaviour, run the whole suite against a rough sketch of the change, fix the old tests it breaks yourself, and settle every value (defaults, URLs, key presence); otherwise Qwen stops to ask and a wrong lead check costs a send-back.
 - In a refactor, comments move with their code; fix any that name an old file, function or line, and drop none silently.
 - When a change moves files, fixtures or data that another suite reads (end-to-end, browser), put that suite in the check; a unit-only check passed while 7 end-to-end tests broke and the lead's fix cost four times the hand-off.
+- When a contract fakes fetch or another platform API, make the fake reject what the real one rejects (a signal that is not an AbortSignal, a bad header or URL); a fake that accepted anything passed a call that threw on every real request.
 
 ### Writing briefs
 
