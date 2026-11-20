@@ -49,8 +49,10 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
   > "above 75% turn off followers"
 - While on, be aggressive: run independent work in parallel followers.
   > "remember to be more aggressive with subagents when we have >1d worth of usage before hitting pace"
-- Qwen is never limited by `mates followers`: send to Qwen on any day, within the
-  3-task cap. Day 1 of the week has no Claude followers (Wai: "1B, except always
+- Qwen is a follower too, and it has no pace: send to Qwen on any day, at any usage,
+  within the 3-task cap (Wai: "qwen is always allowed as a follower! qwen needs no pace").
+  While Claude followers are off, Qwen takes the work a Claude follower would have had,
+  whenever a red check proves it done. Day 1 of the week has no Claude followers (Wai: "1B, except always
   allow Qwen followers").
 - When Wai has snoozed the pace cap (`pace-snooze`; `mates followers` says so), work
   through the paced limits; Claude followers still follow the switch ("for pace-snooze,

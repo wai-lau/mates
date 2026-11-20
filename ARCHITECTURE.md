@@ -918,7 +918,12 @@ that need judgement or for more throughput when Qwen's slot is full.
 the cheapest model that can do the task, to brief it like Qwen, to check what it
 returns itself, and to log it as `claude-subagent`. While `mates followers`
 says on, the lead should run independent work in parallel followers. When it
-says off, the lead keeps working: only new subagents stop.
+says off, the lead keeps working: only new subagents stop. Qwen is never paced
+(Wai, 2026-11-20: "qwen is always allowed as a follower! qwen needs no pace"), so
+the line opens with "Qwen followers: always on, no pace" and each state names
+Claude followers; while they are off, Qwen takes what a Claude follower would have
+had, whenever a red check proves it done. A bare "followers off" read as Qwen off
+too: both leads sent Qwen nothing from 11-19 13:20 to 11-20 01:30.
 
 In the endgame, the last 3 hours before the weekly reset, `mates followers`
 says "endgame". Wai sets a pace to reach 99 % of the week's usage at the reset

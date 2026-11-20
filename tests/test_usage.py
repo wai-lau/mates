@@ -62,11 +62,11 @@ def test_followers_command(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(usage, "cache_path", lambda: p)
     assert cli.main(["followers"]) == 0  # an open command: Wai can run it too
     out = capsys.readouterr().out
-    assert out.startswith("followers on:") and "50%" in out and "13.6%" in out
+    assert out.startswith(usage.QWEN + "Claude followers on:") and "50%" in out and "13.6%" in out
     p.write_text(json.dumps({"usage": {"seven_day": {"utilization": 90, "resets_at": reset},
                                        "five_hour": {"utilization": 20, "resets_at": reset}}}))
     assert cli.main(["followers"]) == 1
-    assert capsys.readouterr().out.startswith("followers off:")
+    assert capsys.readouterr().out.startswith(usage.QWEN + "Claude followers off:")
 
 
 # --- the last 3 hours before the weekly reset (Wai, 2026-11-17: "when there are 3 hours before
@@ -100,9 +100,9 @@ def test_off_lines_say_keep_working():
     """Leads read a bare "off" as "wait for the reset" (2026-11-17): every off line says the
     only change is no new subagents, and an endgame off line drops "counts low"."""
     off = usage.report(usage.headroom(_data(75, 30), NOW))
-    assert off.startswith("followers off") and "keep working" in off
+    assert off.startswith(usage.QWEN + "Claude followers off") and "keep working" in off
     end_off = usage.report(usage.headroom(_data(97.5, 1.5), NOW))
-    assert end_off.startswith("followers off") and "keep working" in end_off and "counts low" not in end_off
+    assert end_off.startswith(usage.QWEN + "Claude followers off") and "keep working" in end_off and "counts low" not in end_off
     stale = usage.report({"on": False, "why": "the usage cache is over 10 minutes old"})
     assert "keep working" in stale
 
@@ -122,6 +122,6 @@ def test_a_snoozed_pace_cap_means_work_through_it_but_followers_still_follow_the
     h = usage.headroom(_data(75, 30), NOW)  # day 6: over pace, followers off
     assert h["on"] is False and h["snoozed_until"] == NOW + 1800
     line = usage.report(h)
-    assert line.startswith("pace cap snoozed") and "never wait for the allowance" in line and "followers off" in line
+    assert line.startswith(usage.QWEN + "pace cap snoozed") and "never wait for the allowance" in line and "followers off" in line
     snooze.write_text(str(int(NOW - 60)))  # an expired snooze says nothing
     assert "snoozed" not in usage.report(usage.headroom(_data(75, 30), NOW))
