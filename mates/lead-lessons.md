@@ -5,6 +5,7 @@
 - Qwen misses what no check pins. For look-only work pin the asked values ('nothing else moved' lets wrong ones pass). An untested file in a brief comes back wrong, and its own fakes can hide real crashes: leave untested parts out or add a test that loads the real file.
 - When a repo's recent Qwen tasks keep escalating, find the shared cause (often a full suite the pane does not run whole) before sending that repo more; until then do its work yourself or by follower.
 - Fixes a linter or formatter can apply in place are a small task: run the tool yourself and read the result. A brief, a long suite run and a hand-off cost more than the edits.
+- When a task mixes judgement with a checkable part (a migration, a data transform, a sim option, a pinned value change), keep the judgement and send the checkable part with a contract; a bundle logged as judgement or small edits keeps all of it off Qwen.
 
 ### Checks
 
@@ -21,11 +22,14 @@
 - Keep each brief in a file that survives a restart and send it once, whole, into a fresh chat; leftover context from the last task or a second paste leaves Qwen re-reading.
 - When Qwen writes docs or history, write the quotes, dates and numbers yourself; forbid author or credit lines in code and commits, and read those diffs line by line.
 - A brief spanning a new module plus its wiring in several callers comes back with only the checked part done. Give every numbered step its own check case before the send, or split it into one send per checked piece.
+- Any brief that lets Qwen edit a README or doc line, even in a code task, says no author or credit lines; code briefs that allowed a README line drew authorship flags three times.
 
 ### Review, merge and logging
 
 - Probe every accept against the spec; if the check fails, send it back or finish it yourself and log that.
 - After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
+- Read Qwen's whole change before finishing it yourself and closing it as fixed: its text merges under your commit either way, and two fixed closes were logged as not fully read.
+- Log each task you do yourself when it ends, not in a batch at the end of the session: a batch puts the whole window's tokens on the first row and zero on the rest, so the cost of self work cannot be compared with a hand-off.
 
 ### Running the panes
 
@@ -34,5 +38,4 @@
 
 ### Claude followers
 
-- Log a follower once, when its work is checked and merged, with its model in the summary; a row logged at launch reads as accepted while it still runs and counts it twice.
 - When a follower writes its tests after its code, treat them as a claim: break each key guard by hand and see a test go red before merging.
