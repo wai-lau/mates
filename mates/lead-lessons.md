@@ -3,7 +3,7 @@
 ### What goes to Qwen
 
 - Qwen misses what no check pins. For look-only work pin the asked values ('nothing else moved' lets wrong ones pass). An untested file in a brief comes back wrong, and its own fakes can hide real crashes: leave untested parts out or add a test that loads the real file.
-- When a repo's recent Qwen tasks keep escalating, find the shared cause (often a full suite the pane does not run whole) before sending that repo more; until then do its work yourself or by follower.
+- After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending and keep the retry brief minimal; when a repo's Qwen tasks keep escalating, find the shared cause (often a full suite the pane does not run whole) and do its work yourself or by follower until then.
 - Fixes a linter or formatter can apply in place are a small task: run the tool yourself and read the result. A brief, a long suite run and a hand-off cost more than the edits.
 - When a task mixes judgement with a checkable part (a migration, a data transform, a sim option, a pinned value change), keep the judgement and send the checkable part with a contract; a bundle logged as judgement or small edits keeps all of it off Qwen.
 
@@ -20,14 +20,12 @@
 - Keep briefs for small checkable fixes lean: behaviour and check. Name every file the task may edit; allowing edits by pattern floods the flag for unnamed files, so it says nothing.
 - Size each task to fit Qwen's 64K context: one plan task, a few functions, plan sections by pointer, line ranges or grep patterns into big files. Each compaction loses detail.
 - Keep each brief in a file that survives a restart and send it once, whole, into a fresh chat; leftover context from the last task or a second paste leaves Qwen re-reading.
-- When Qwen writes docs or history, write the quotes, dates and numbers yourself; forbid author or credit lines in code and commits, and read those diffs line by line.
+- When Qwen writes docs or history, write the quotes, dates and numbers yourself and read those diffs line by line. Any brief that lets Qwen touch code, commits, a README or a doc line forbids author or credit lines; three code briefs that allowed a README line drew authorship flags.
 - A brief spanning a new module plus its wiring in several callers comes back with only the checked part done. Give every numbered step its own check case before the send, or split it into one send per checked piece.
-- Any brief that lets Qwen edit a README or doc line, even in a code task, says no author or credit lines; code briefs that allowed a README line drew authorship flags three times.
 
 ### Review, merge and logging
 
 - Probe every accept against the spec; if the check fails, send it back or finish it yourself and log that.
-- After an escalation, find the cause (setup, check, brief or infrastructure) before re-sending, and keep the retry brief minimal.
 - Read Qwen's whole change before finishing it yourself and closing it as fixed: its text merges under your commit either way, and two fixed closes were logged as not fully read.
 - Log each task you do yourself when it ends, not in a batch at the end of the session: a batch puts the whole window's tokens on the first row and zero on the rest, so the cost of self work cannot be compared with a hand-off.
 
