@@ -45,6 +45,7 @@ HOST_ONLY = {
     "test_runtime_skips_a_pane_wai_typed_in_during_the_build", "test_launch_uses_a_built_runtime",
     "test_runtime_shows_what_it_builds", "test_runtime_keeps_what_other_commands_wrote_meanwhile",
     "test_runtime_default_root_is_private_state", "test_build_sees_no_home_and_no_lead_checkout",
+    "test_web_still_refuses_local_targets",  # the sandbox has no /etc/hosts entry for localhost
 }
 IN_QWEN_SANDBOX = REAL_HOME == pathlib.Path("/home/qwen")
 

@@ -290,7 +290,8 @@ def ready_socket(path):
     the tests wait for the file; bound under its own name, it appeared before listen() and before
     the chmod, so an early connection was refused (the relay tests failed about one run in three)
     and the socket was briefly open to the umask. Bind and listen under a temp name, then rename."""
-    tmp = f"{path}.{os.getpid()}.new"
+    # short, in the same folder (rename stays on one filesystem; a socket path is at most 108 bytes)
+    tmp = os.path.join(os.path.dirname(path) or ".", f".{os.getpid()}.s")
     for old in (tmp, path):
         if os.path.lexists(old):
             os.unlink(old)
