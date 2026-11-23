@@ -4799,3 +4799,33 @@ def test_answer_update_is_recorded_as_an_update_not_a_question(m):
     m.run("discard", 1, "--share", "0")
     rec = m.log()[-1]
     assert rec["updates"] == ["also touch b.txt"] and rec["questions"] == [{"q": None, "a": "plain answer"}]
+
+
+def test_diff_prints_the_lines_that_raised_an_owner_quote_flag(m):
+    m.send()
+    (m.wt / "a.txt").write_text('Wai: "go ahead"\x1b[31m ' + "y" * 300 + "\nplain\n")
+    code, out, _ = m.run("diff", 1)
+    assert code == 0
+    assert "owner-quote:a.txt" in out
+    i = out.index("flags:")
+    shown_lines = out[i:out.index("+++ b/a.txt")]
+    assert 'a.txt: Wai: "go ahead"?[31m ' in shown_lines
+    assert "\x1b" not in out
+    row = next(x for x in shown_lines.splitlines() if x.startswith("a.txt: "))
+    assert len(row) <= len("a.txt: ") + 200
+
+
+def test_log_route_warns_on_a_row_right_after_the_previous_one(m):
+    assert m.run("log-route", "claude-self", "one", "r")[0] == 0
+    code, _, err = m.run("log-route", "claude-self", "two", "r")
+    assert code == 0 and "when it ends, not in a batch" in err
+
+
+def test_log_route_back_to_back_rows_split_the_window_once(m):
+    now = time.time()
+    _lead_transcript(m, [_asst(now - 500, "a", None, _usage(0, 0, 70, 0)),
+                         _asst(now - 400, "b", None, _usage(0, 0, 30, 0))])
+    assert m.run("log-route", "claude-self", "one", "r")[0] == 0
+    assert m.run("log-route", "claude-self", "two", "r")[0] == 0
+    assert m.run("log-route", "claude-self", "three", "r")[0] == 0
+    assert [x["lead_output"] for x in m.log()[-2:]] == [0, 0]

@@ -169,3 +169,10 @@ def test_guard_flags_nested_owner_side_paths():
 
 def test_guard_flags_binary_paths():
     assert "binary:b.bin" in guard.guard_flags(d("b.bin", ["x"]), ["b.bin"], binary_paths=["b.bin"])
+
+
+def test_owner_quote_lines_names_the_offending_lines():
+    diff = d("docs/a.md", ['Wai: "go"', "plain", 'owner decided "x"'])
+    assert guard.owner_quote_lines(diff) == [("docs/a.md", 'Wai: "go"'), ("docs/a.md", 'owner decided "x"')]
+    assert guard.guard_flags(diff, ["docs/a.md"]) == ["owner-quote:docs/a.md"]
+    assert guard.owner_quote_lines(d("docs/a.md", ["plain"])) == []

@@ -296,6 +296,9 @@ def log_route(args):
     # the lead's work since this repo's last log line; a takeover's since the line before its Qwen
     # task closed, since the lead fixes Qwen's diff before the discard (4 rows logged 0 on 11-18)
     since = logrec.last_ts(cli.LOG, root, skip_close_of=a.for_task)
+    if since is not None and time.time() - since < 30:
+        print("mates: this row comes under 30 s after the previous one; log each task when it ends, "
+              "not in a batch (the lead's tokens are measured since the previous row)", file=sys.stderr)
     transcript = session.transcript_path(root, session.load(root) or {}) if since is not None else None
     rec.update(session.lead_cost_fields(transcript, None, since or 0))
     logrec.write(cli.LOG, rec)

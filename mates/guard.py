@@ -130,6 +130,12 @@ def _hook_dirs(hooks_path):
     return out
 
 
+def owner_quote_lines(diff_text: str) -> list[tuple[str, str]]:
+    """(path, added line) for each added line that raised an owner-quote flag."""
+    return [(path, l) for path, added, _, _ in _files(diff_text) for l in added
+            if OWNER_WORD.search(l) and QUOTED.search(l)]
+
+
 def guard_flags(diff_text: str, brief_files: list[str], hooks_path=None, runtime_files=(),
                 binary_paths=()) -> list[str]:
     named = set(brief_files)

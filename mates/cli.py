@@ -1741,6 +1741,8 @@ def diff(args):
     if a.part == 1:
         print(gitsafe.lossy(stat_).rstrip("\n"))
         print("flags: " + (", ".join(flags) if flags else "none"))
+        for path, line in guard.owner_quote_lines(full):  # read each against the brief
+            print(shown(gitsafe.lossy(f"{path}: {line[:200]}")))
     if len(parts) > 1:
         print(f"--- diff part {a.part} of {len(parts)} (snapshot {tree[:12]}); the next: mates diff {a.n} --part "
               f"{a.part % len(parts) + 1}; the diff counts as read only after every part")
