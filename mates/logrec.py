@@ -7,7 +7,7 @@ from pathlib import Path
 
 FIELDS = ("ts", "repo", "task_id", "summary", "route", "reason", "check", "check_sha", "red_on_base",
           "flags", "attempts", "outcome", "answered_by", "worker_wall_s", "worker_tokens", "compactions",
-          "verdict", "lead_tokens", "questions", "pane", "runtime", "restarted", "event", "n",
+          "verdict", "lead_tokens", "questions", "updates", "pane", "runtime", "restarted", "event", "n",
           "send_check",  # the command sent with `mates send --check` (check is blanked by a review's clearing)
           # the share of a task's work Qwen completed, 0-100, each part weighed by how hard it was (Wai,
           # 2026-11-18: "assign a completion percentage, weighed by difficulty"): merge 100, else the lead's

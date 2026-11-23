@@ -608,9 +608,11 @@ if "[from Claude]" in open('{self.t}/buffers').read():
         assert code == 0, err
         return out, err
 
-    def log(self):
+    def log(self, started=False):
+        """The log rows. A `mates send` logs a qwen "started" row too; they are left out unless `started`."""
         p = self.t / "log.jsonl"
-        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
+        rows = [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
+        return rows if started else [r for r in rows if not (r["route"] == "qwen" and r["outcome"] == "started")]
 
 
 @pytest.fixture
@@ -4760,3 +4762,40 @@ def test_discard_cause_must_be_short(m):
     m.send()
     code, _, err = m.run("discard", 1, "--share", "0", "--cause", "x" * 121)
     assert code != 0 and "--cause" in err and m.task() is not None
+
+
+def test_send_logs_a_started_row_that_the_closing_row_pairs_with(m):
+    m.send("fix a.txt")
+    (row,) = m.log(started=True)
+    assert (row["outcome"], row["route"], row["task_id"]) == ("started", "qwen", m.task()["id"])
+    assert row["summary"] == "fix a.txt" and row["pane"] == 1
+    assert m.run("discard", 1, "--share", "0")[0] == 0
+    rows = m.log(started=True)
+    assert [r["outcome"] for r in rows] == ["started", "escalated"]
+    assert rows[0]["task_id"] == rows[1]["task_id"]
+
+
+def test_send_summary_flag_sets_the_log_summary(m):
+    m.send("first line of the brief\nmore", "--summary", "short one-liner")
+    m.run("discard", 1, "--share", "0")
+    assert {r["summary"] for r in m.log(started=True)} == {"short one-liner"}
+
+
+def test_send_summary_flag_refuses_over_120_chars(m):
+    code, _, err = m.run("send", 1, "--reason", "r", "--summary", "x" * 121, "fix a.txt")
+    assert code != 0 and "--summary" in err and m.log(started=True) == []
+
+
+def test_answer_update_is_recorded_as_an_update_not_a_question(m):
+    m.send("fix a.txt")
+    code, _, err = m.run("answer", 1, "--update", "also touch b.txt")
+    assert code == 0, err
+    t = m.task()
+    assert t["updates"] == ["also touch b.txt"] and t["questions"] == []
+    assert "also touch b.txt" in m.buffers()[-1]
+    code, _, err = m.run("answer", 1, "plain answer")
+    assert code == 0, err
+    assert m.task()["questions"] == [{"q": None, "a": "plain answer"}]
+    m.run("discard", 1, "--share", "0")
+    rec = m.log()[-1]
+    assert rec["updates"] == ["also touch b.txt"] and rec["questions"] == [{"q": None, "a": "plain answer"}]

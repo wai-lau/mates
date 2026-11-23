@@ -1059,7 +1059,7 @@ def _task(base, direct=False, summary=None, reason=None, files=()):
     return {"id": uuid.uuid4().hex[:12], "summary": summary, "reason": reason, "files": list(files),
             "base": base, "direct": direct, "sent_ts": None if direct else now, "attempt_ts": now,
             "paste_ts": None if direct else now, "attempts": 0 if direct else 1, "opencode_session": None,
-            "questions": [], "diffed_tree": None, "flags": [], "checked_tree": None, "check_cmd": None}
+            "questions": [], "updates": [], "diffed_tree": None, "flags": [], "checked_tree": None, "check_cmd": None}
 
 
 def _clear_review(task):
@@ -1120,7 +1120,7 @@ def log_attempt(root, entry, outcome, qwen_share=None):
            "tree": checked, "flags": t.get("flags") or [],
             "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
             "red_on_base": t.get("red_on_base"),
-            "questions": t.get("questions") or [], **_costs(root, entry, t)}
+            "questions": t.get("questions") or [], "updates": t.get("updates") or [], **_costs(root, entry, t)}
     if qwen_share is not None:
         rec["qwen_share"] = qwen_share
     if not rec["flags"] and outcome != "accepted" and t.get("base"):
@@ -1202,9 +1202,11 @@ def _cap_message(holding):
 
 @_reopening_panels
 def send(args):
-    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] [--clear-box] "<text>"')
+    p = _parser("send", 'mates send N --reason "<why Qwen>" [--files a,b] [--continue] [--check "<cmd>"] '
+                        '[--summary "<line>"] [--clear-box] "<text>"')
     p.add_argument("n", type=int)
     p.add_argument("--reason", required=True)
+    p.add_argument("--summary", default=None)
     p.add_argument("--files", default="")
     p.add_argument("--continue", dest="cont", action="store_true")
     p.add_argument("--check", default=None)
@@ -1212,6 +1214,8 @@ def send(args):
     p.add_argument("text", nargs="+")
     a = p.parse_args(args)
     text = " ".join(a.text)
+    if a.summary is not None and not 0 < len(a.summary) <= 120:
+        die("--summary must be one line of 1 to 120 characters")
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, a.n)
@@ -1255,7 +1259,7 @@ def send(args):
     _reset_worktree(root, a.n, q["branch"], lead)
     _unsafe(clear_protocol, q["worktree"])
     files = [f for f in a.files.split(",") if f]
-    summary = text.splitlines()[0][:120]
+    summary = a.summary or text.splitlines()[0][:120]
     before = session.opencode_session(q["worktree"], db)
     task = _reserve_task(root, a, q, lead, summary, files, before)
     if not a.cont:
@@ -1281,8 +1285,17 @@ def send(args):
             time.sleep(SESSION_POLL_S)
     print(f"sent to Qwen pane {a.n} (task {task['id']}, attempt {task['attempts']})")
     _log_sent(root, a.n, task, "send", sent_text)
+    _log_started(root, a.n, task)
     _remind(a.n, task)
     return 0
+
+
+def _log_started(root, n, task):
+    """The "started" row for a task just sent; the row that closes it (log_attempt) has the same task_id."""
+    check = task.get("send_check")
+    logrec.write(LOG, {"repo": str(root), "task_id": task["id"], "summary": task.get("summary") or "",
+                       "route": "qwen", "reason": task.get("reason"), "attempts": task.get("attempts", 0),
+                       "outcome": "started", "pane": n, "send_check": check})
 
 
 def sent_path(root, day):
@@ -1454,13 +1467,21 @@ def wait(args):
 
 @_reopening_panels
 def answer(args):
-    p = _parser("answer", 'mates answer N [--sendback] [--clear-box] "<text>"')
+    p = _parser("answer", 'mates answer N [--sendback] [--clear-box] "<text>" | mates answer N --update "<text>"')
     p.add_argument("n", type=int)
     p.add_argument("--sendback", action="store_true")
+    p.add_argument("--update", default=None)
     p.add_argument("--clear-box", action="store_true")
-    p.add_argument("text", nargs="+")
+    p.add_argument("text", nargs="*")
     a = p.parse_args(args)
-    text = " ".join(a.text)
+    if a.update is not None:
+        if a.text or a.sendback:
+            die("--update takes its own text and is not a sendback: mates answer N --update \"<text>\"")
+        text = a.update
+    elif not a.text:
+        die('mates answer N [--sendback] "<text>"')
+    else:
+        text = " ".join(a.text)
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, a.n)
@@ -1488,7 +1509,9 @@ def answer(args):
 
     def apply(e):  # only this task's fields: the same change on the saved entry and on ours
         t = e["task"]
-        if question is not None or not a.sendback:
+        if a.update is not None:
+            t.setdefault("updates", []).append(text)
+        elif question is not None or not a.sendback:
             t["questions"].append({"q": question, "a": text})
         if a.sendback:
             t["attempts"] += 1
