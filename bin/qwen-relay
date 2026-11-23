@@ -285,6 +285,23 @@ class Claim:
             fcntl.flock(self.fd, fcntl.LOCK_UN)
 
 
+def ready_socket(path):
+    """A unix socket that is already listening, mode 600, when `path` first appears. bin/qwen and
+    the tests wait for the file; bound under its own name, it appeared before listen() and before
+    the chmod, so an early connection was refused (the relay tests failed about one run in three)
+    and the socket was briefly open to the umask. Bind and listen under a temp name, then rename."""
+    tmp = f"{path}.{os.getpid()}.new"
+    for old in (tmp, path):
+        if os.path.lexists(old):
+            os.unlink(old)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(tmp)
+    os.chmod(tmp, 0o600)
+    s.listen(128)
+    os.replace(tmp, path)
+    return s
+
+
 async def pipe(r, w):
     try:
         while (b := await r.read(65536)):
@@ -320,15 +337,9 @@ async def main():
                 await asyncio.to_thread(subprocess.run, [a.run], input=data,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        if os.path.exists(a.sock):
-            os.unlink(a.sock)
-        srv = await asyncio.start_unix_server(handle, path=a.sock)
-        os.chmod(a.sock, 0o600)
+        srv = await asyncio.start_unix_server(handle, sock=ready_socket(a.sock))
     elif a.mode == "egress":
-        if os.path.exists(a.sock):
-            os.unlink(a.sock)
-        srv = await asyncio.start_unix_server(functools.partial(egress, web=a.web), path=a.sock)
-        os.chmod(a.sock, 0o600)
+        srv = await asyncio.start_unix_server(functools.partial(egress, web=a.web), sock=ready_socket(a.sock))
     elif a.mode == "out":
         host, port = a.to.rsplit(":", 1)
         claim = Claim(a.slots) if a.slots and a.priority else None
@@ -372,10 +383,7 @@ async def main():
                     await asyncio.sleep(PRIORITY_POLL_S)
             await forward(raw, w, chat and follower)
 
-        if os.path.exists(a.sock):
-            os.unlink(a.sock)
-        srv = await asyncio.start_unix_server(handle, path=a.sock, limit=MODEL_HEAD_MAX + 1)
-        os.chmod(a.sock, 0o600)
+        srv = await asyncio.start_unix_server(handle, sock=ready_socket(a.sock), limit=MODEL_HEAD_MAX + 1)
     else:
         host, port = a.listen.rsplit(":", 1)
 
