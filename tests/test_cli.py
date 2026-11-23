@@ -4506,6 +4506,7 @@ def test_a_wide_chat_keeps_its_panel(m):
 
 def test_discard_fixed_logs_accepted_with_fixes(m):
     m.send()
+    assert m.run("diff", 1)[0] == 0  # --fixed needs the diff read in full
     assert m.run("discard", 1, "--fixed", "--share", "70")[0] == 0
     (rec,) = m.log()
     assert rec["outcome"] == "accepted-with-fixes" and rec["route"] == "qwen" and rec["qwen_share"] == 70
@@ -4714,3 +4715,48 @@ def test_a_sent_back_row_names_the_check_it_was_sent_with(m):
     for rec in m.log():
         assert rec["check"] == "test -f done.txt", rec["outcome"]
         assert rec["check_sha"] == hashlib.sha256(b"test -f done.txt").hexdigest()
+
+
+# --- retro fixes, 2026-11-23 (Wai: "build them all") -------------------------------------------
+# The lead merges Qwen's text under its own commit when it closes with --fixed, so --fixed needs
+# Qwen's whole diff read first (retros for 11-19 and 11-20: two fixed closes logged as not fully
+# read, one after a pane restart with tree: null).
+
+def test_discard_fixed_refuses_until_the_diff_is_read_in_full(m):
+    m.send()
+    (m.wt / "a.txt").write_text("changed\n")
+    code, _, err = m.run("discard", 1, "--fixed", "--share", "60")
+    assert code != 0 and "mates diff 1" in err and m.task() is not None
+
+
+def test_discard_fixed_after_a_full_diff_logs_the_snapshot_read(m):
+    m.send()
+    (m.wt / "a.txt").write_text("changed\n")
+    assert m.run("diff", 1)[0] == 0
+    diffed = m.task()["diffed_tree"]
+    assert m.run("discard", 1, "--fixed", "--share", "60")[0] == 0
+    rec = m.log()[-1]
+    assert rec["outcome"] == "accepted-with-fixes" and rec["tree"] == diffed and rec["full_diff_read"] is True
+
+
+def test_discard_fixed_refuses_a_diff_of_an_older_snapshot(m):
+    m.send()
+    (m.wt / "a.txt").write_text("first\n")
+    assert m.run("diff", 1)[0] == 0
+    (m.wt / "a.txt").write_text("second\n")  # Qwen kept working after the read
+    code, _, err = m.run("discard", 1, "--fixed", "--share", "60")
+    assert code != 0 and "mates diff 1" in err
+
+
+# The retro for 11-21: an escalation closed at share 0 with no cause anywhere in the log.
+
+def test_discard_records_a_short_cause(m):
+    m.send()
+    assert m.run("discard", 1, "--share", "0", "--cause", "runtime missing pytest")[0] == 0
+    assert m.log()[-1]["cause"] == "runtime missing pytest"
+
+
+def test_discard_cause_must_be_short(m):
+    m.send()
+    code, _, err = m.run("discard", 1, "--share", "0", "--cause", "x" * 121)
+    assert code != 0 and "--cause" in err and m.task() is not None
