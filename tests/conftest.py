@@ -34,6 +34,30 @@ def private_tmux():
     assert not sock.exists(), f"tmux socket left behind: {sock}"
 
 
+# Tests that need the host's own layout (the real home folder, Wai's state folders, a runtime build
+# that sees them) and so fail inside `mates check`'s sandbox, where HOME is /home/qwen. Skipped
+# there, so a Qwen check can run the whole suite; the lead's full run outside still runs them.
+HOST_ONLY = {
+    "test_runtime_builds_and_restarts_idle_panes", "test_runtime_unchanged_restarts_nothing",
+    "test_runtime_failure_keeps_the_old_runtime", "test_runtime_is_logged",
+    "test_runtime_restarts_a_pane_left_on_an_old_runtime",
+    "test_runtime_skips_a_pane_that_got_busy_during_the_build",
+    "test_runtime_skips_a_pane_wai_typed_in_during_the_build", "test_launch_uses_a_built_runtime",
+    "test_runtime_shows_what_it_builds", "test_runtime_keeps_what_other_commands_wrote_meanwhile",
+    "test_runtime_default_root_is_private_state", "test_build_sees_no_home_and_no_lead_checkout",
+}
+IN_QWEN_SANDBOX = REAL_HOME == pathlib.Path("/home/qwen")
+
+
+def pytest_collection_modifyitems(config, items):
+    if not IN_QWEN_SANDBOX:
+        return
+    skip = pytest.mark.skip(reason="needs the host layout; runs in the lead's full suite, not in a Qwen check")
+    for item in items:
+        if item.originalname in HOST_ONLY:
+            item.add_marker(skip)
+
+
 @pytest.fixture
 def private_dir():
     """A fresh mode-700 folder that passes fsutil.safe_ancestry (under the user runtime
