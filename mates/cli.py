@@ -1473,7 +1473,7 @@ def answer(args):
     p.add_argument("--update", default=None)
     p.add_argument("--clear-box", action="store_true")
     p.add_argument("text", nargs="*")
-    a = p.parse_args(args)
+    a = p.parse_intermixed_args(args)  # the text may come before or after the options
     if a.update is not None:
         if a.text or a.sendback:
             die("--update takes its own text and is not a sendback: mates answer N --update \"<text>\"")
