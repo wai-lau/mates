@@ -9,6 +9,7 @@ import pytest
 
 import fsutil
 import retro
+import session
 from test_cli import Retro
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -315,3 +316,31 @@ def test_groups_must_be_a_list(rt):
     (rt.t / "reply.json").write_text(json.dumps({"findings_md": "x", "groups": "Checks"}))
     code, _, err = rt.run("--date", "2026-11-09")
     assert code == 1 and "not a list" in err
+
+
+def _transcript(tmp_path, monkeypatch, repo, stamps):
+    monkeypatch.setattr(session, "PROJECTS_DIR", tmp_path / "projects")
+    d = tmp_path / "projects" / session.repo_key(repo)
+    d.mkdir(parents=True)
+    (d / "sid.jsonl").write_text("".join(json.dumps({"type": "assistant", "timestamp": t}) + "\n" for t in stamps))
+
+
+def test_retro_flags_a_log_gap_while_the_lead_was_active(rt, tmp_path, monkeypatch):
+    repo = "/home/x/src/widget"
+    rt.line("2026-11-19", repo=repo, ts="2026-11-19T01:00:00Z")
+    rt.line("2026-11-19", repo=repo, ts="2026-11-19T02:00:00Z")  # 1 h: no flag
+    rt.line("2026-11-19", repo=repo, ts="2026-11-19T14:00:00Z")  # 12 h with transcript messages
+    _transcript(tmp_path, monkeypatch, repo, ["2026-11-19T05:00:00.000Z", "2026-11-19T13:50:00.000Z"])
+    assert rt.run("--date", "2026-11-19")[0] == 0
+    stdin = rt.calls()[0]["stdin"]
+    assert "widget: no log rows 02:00-14:00 (12.0 h) while the lead was active" in stdin
+    assert stdin.count("no log rows") == 1
+
+
+def test_retro_does_not_flag_a_gap_the_lead_was_idle(rt, tmp_path, monkeypatch):
+    repo = "/home/x/src/widget"
+    rt.line("2026-11-19", repo=repo, ts="2026-11-19T01:00:00Z")
+    rt.line("2026-11-19", repo=repo, ts="2026-11-19T14:00:00Z")
+    _transcript(tmp_path, monkeypatch, repo, ["2026-11-18T20:00:00.000Z", "2026-11-19T15:00:00.000Z"])
+    assert rt.run("--date", "2026-11-19")[0] == 0
+    assert "no log rows" not in rt.calls()[0]["stdin"]

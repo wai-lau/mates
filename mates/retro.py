@@ -27,6 +27,7 @@ nothing. --date takes a finished day only: today or later is refused.
 import argparse
 import datetime
 import fcntl
+import itertools
 import json
 import os
 import re
@@ -39,6 +40,7 @@ import claudejson
 import cli
 import fsutil
 import logrec
+import session
 
 SRC = cli.HERE.parent  # the mates source checkout: the one ~/bin/mates resolves to
 PROMPT = cli.HERE / "prompts" / "retro.md"
@@ -416,6 +418,61 @@ def _context():
     return parts
 
 
+GAP_HOURS = 4
+
+
+def _stamp(ts):
+    try:
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _lead_times(repo):
+    """Epoch times of every message in the repo's lead transcripts (~/.claude/projects/<key>/)."""
+    times = []
+    for f in (session.PROJECTS_DIR / session.repo_key(repo)).glob("*.jsonl"):
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"timestamp"' not in line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    t = _stamp(d.get("timestamp")) if isinstance(d, dict) else None
+                    if t is not None:
+                        times.append(t)
+        except OSError:
+            continue
+    return times
+
+
+def gap_lines(lines):
+    """One line per stretch over GAP_HOURS between two log rows of a repo (same day) in which the
+    repo's lead conversation still has messages: the lead worked and logged nothing."""
+    by_repo = {}
+    for r in lines:
+        t = _stamp(r.get("ts"))
+        if t is not None and r.get("repo"):
+            by_repo.setdefault(r["repo"], []).append(t)
+    out = []
+    for repo, ts in sorted(by_repo.items()):
+        ts.sort()
+        active = None
+        for a, b in itertools.pairwise(ts):
+            if b - a <= GAP_HOURS * 3600:
+                continue
+            if active is None:
+                active = _lead_times(repo)
+            if any(a < t < b for t in active):
+                hm = lambda x: time.strftime("%H:%M", time.gmtime(x))  # noqa: E731
+                out.append(f"{Path(repo).name}: no log rows {hm(a)}-{hm(b)} ({(b - a) / 3600:.1f} h) "
+                           "while the lead was active")
+    return out
+
+
 def _prompt(day, lines, lessons_text, prior, chats):
     numbered, last = "", None
     for n, (g, l) in enumerate(current_entries(lessons_text), 1):
@@ -430,6 +487,9 @@ def _prompt(day, lines, lessons_text, prior, chats):
     parts += [p.read_text().strip() + "\n" for p in prior] or ["None yet.\n"]
     parts.append(f"{LOG_HEADER} for {day} (one JSON object per line)\n")
     parts.append("".join(json.dumps(clean(r), sort_keys=True) + "\n" for r in lines))
+    gaps = gap_lines(lines)
+    if gaps:
+        parts.append("## Stretches with no log row (computed, data)\n\n" + "".join(g + "\n" for g in gaps))
     if chats:
         parts.append(_chat_prompt(day, chats))
     return "\n".join(parts)
