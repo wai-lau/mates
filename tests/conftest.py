@@ -47,7 +47,7 @@ HOST_ONLY = {
     "test_runtime_default_root_is_private_state", "test_build_sees_no_home_and_no_lead_checkout",
     "test_web_still_refuses_local_targets",  # the sandbox has no /etc/hosts entry for localhost
 }
-IN_QWEN_SANDBOX = REAL_HOME == pathlib.Path("/home/qwen")
+IN_QWEN_SANDBOX = pathlib.Path("/home/qwen") == REAL_HOME
 
 
 def pytest_collection_modifyitems(config, items):
