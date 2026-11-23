@@ -6,6 +6,7 @@ import time
 import uuid
 import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "mates"))
+REAL_HOME = pathlib.Path.home()  # before any test points HOME at a temp folder
 
 
 def tmux_socket(name):
@@ -46,7 +47,7 @@ def private_dir():
         # `mates check`'s sandbox starts with an empty environment and no /run/user, so every
         # test that used this errored with UnsafeDir and no Qwen task on this repo could pass its
         # check (2026-11-23). There, a mode-700 folder in the home folder stands in.
-        base = pathlib.Path.home() / ".mates-test-runtime"
+        base = REAL_HOME / ".mates-test-runtime"
         base.mkdir(mode=0o700, exist_ok=True)
         os.chmod(base, 0o700)
         os.environ["XDG_RUNTIME_DIR"] = str(base)  # for the code under test, which asks again
