@@ -33,22 +33,6 @@ def private_tmux():
     assert not sock.exists(), f"tmux socket left behind: {sock}"
 
 
-def pytest_configure(config):
-    """Tests need a private runtime folder (fsutil._private_base). In `mates check`'s sandbox the
-    environment starts empty and /run/user is not there, so every test that used one errored
-    with UnsafeDir, and no Qwen task on this repo could pass its check (2026-11-23). Then make a
-    mode-700 folder in the home folder for this run; it changes nothing outside the tests."""
-    import os
-    import fsutil
-    try:
-        fsutil._private_base()
-    except fsutil.UnsafeDir:
-        d = pathlib.Path.home() / ".mates-test-runtime"
-        d.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(d, 0o700)
-        os.environ["XDG_RUNTIME_DIR"] = str(d)
-
-
 @pytest.fixture
 def private_dir():
     """A fresh mode-700 folder that passes fsutil.safe_ancestry (under the user runtime
@@ -56,7 +40,17 @@ def private_dir():
     import shutil
     import tempfile
     import fsutil
-    d = pathlib.Path(tempfile.mkdtemp(prefix="mates-test-", dir=fsutil._private_base()))
+    try:
+        base = fsutil._private_base()
+    except fsutil.UnsafeDir:
+        # `mates check`'s sandbox starts with an empty environment and no /run/user, so every
+        # test that used this errored with UnsafeDir and no Qwen task on this repo could pass its
+        # check (2026-11-23). There, a mode-700 folder in the home folder stands in.
+        base = pathlib.Path.home() / ".mates-test-runtime"
+        base.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(base, 0o700)
+        os.environ["XDG_RUNTIME_DIR"] = str(base)  # for the code under test, which asks again
+    d = pathlib.Path(tempfile.mkdtemp(prefix="mates-test-", dir=base))
     yield d
     shutil.rmtree(d, ignore_errors=True)
 
