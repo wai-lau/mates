@@ -14,7 +14,8 @@ FIELDS = ("ts", "repo", "task_id", "summary", "route", "reason", "check", "check
           "qwen_share",
           "model", "for_task",  # a follower's model; the Qwen task a takeover finishes
           "lead_input", "lead_cache_write", "lead_output",  # lead_tokens = their sum
-          "followers")  # a follower row: the `mates followers` switch and the usage day when it was logged
+          "followers",  # a follower row: the `mates followers` switch and the usage day when it was logged
+          "cause")  # a short reason for a close (escalated/failed/accepted-with-fixes)
 PILOT_FIELDS = ("arm", "full_diff_read", "lead_cache_read", "detail", "commit", "tree")
 REQUIRED = ("repo", "task_id", "summary", "route", "reason", "outcome")
 # runtime: a `mates runtime` build; pane: a pane event (idle close); parallel: toggle `mates parallel on|off`

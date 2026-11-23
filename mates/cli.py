@@ -1105,9 +1105,11 @@ def _costs(root, entry, t):
     return rec
 
 
-def log_attempt(root, entry, outcome, qwen_share=None):
+def log_attempt(root, entry, outcome, qwen_share=None, tree=None, full_diff_read=None, cause=None):
     """Append the log line for the attempt on entry's task that just finished. `qwen_share`:
-    the share (0-100) of the task Qwen completed, weighed by difficulty, when the task ends."""
+    the share (0-100) of the task Qwen completed, weighed by difficulty, when the task ends.
+    `tree` and `full_diff_read` override the task's checked/diffed trees (used by discard --fixed).
+    `cause`: a short reason for the close."""
     t = entry["task"]
     checked = t.get("checked_tree")
     # a review clears check_cmd (sendback, sync): the row then names the check the task was sent with
@@ -1117,12 +1119,15 @@ def log_attempt(root, entry, outcome, qwen_share=None):
            "reason": t.get("reason"), "attempts": t.get("attempts", 0), "outcome": outcome, "pane": entry["n"],
            "check": check, "send_check": t.get("send_check"),
            "check_sha": hashlib.sha256(check.encode()).hexdigest() if check else None,
-           "tree": checked, "flags": t.get("flags") or [],
-            "full_diff_read": checked is not None and t.get("diffed_tree") == checked,
+           "tree": tree if tree is not None else checked, "flags": t.get("flags") or [],
+            "full_diff_read": full_diff_read if full_diff_read is not None
+                              else (checked is not None and t.get("diffed_tree") == checked),
             "red_on_base": t.get("red_on_base"),
             "questions": t.get("questions") or [], "updates": t.get("updates") or [], **_costs(root, entry, t)}
     if qwen_share is not None:
         rec["qwen_share"] = qwen_share
+    if cause is not None:
+        rec["cause"] = cause
     if not rec["flags"] and outcome != "accepted" and t.get("base"):
         # An attempt that ends before `mates diff` ran (sent back, escalated, failed) still gets its
         # guard flags, from the worktree as it is (the retro for 11-17: one left 4 scratch files at
@@ -1990,6 +1995,8 @@ def discard(args):
                    help="you finished Qwen's work and merged it yourself: logged accepted-with-fixes")
     p.add_argument("--share", type=int, metavar="P",
                    help="the share (0-100) of the task Qwen completed, each part weighed by difficulty")
+    p.add_argument("--cause", metavar="TEXT",
+                   help="a short reason for the close (at most 120 characters)")
     a = p.parse_args(args)
     if a.failed and a.fixed:
         die("--failed and --fixed say opposite things: pick one")
@@ -1997,6 +2004,8 @@ def discard(args):
         die("--fixed needs --share P: the share (0-100) of the task Qwen completed, weighed by difficulty")
     if a.share is not None and not 0 <= a.share <= 100:
         die("--share is a percentage, 0 to 100")
+    if a.cause and len(a.cause) > 120:
+        die(f"--cause is too long (must be at most 120 characters; got {len(a.cause)})")
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, a.n)
@@ -2007,15 +2016,28 @@ def discard(args):
         die(f"mates discard {a.n} needs --share P: the share (0-100) of the task Qwen completed, weighed by "
             f"difficulty. If you finish Qwen's diff yourself, that is --fixed --share P (accepted-with-fixes, "
             f"not escalated); --failed if nothing of it is usable")
+    # For --fixed, require that the lead has read Qwen's entire diff of the CURRENT snapshot,
+    # same as for merge (retro 11-19/11-20: fixed closes that had not been fully read).
+    current = None
+    if a.fixed and task:
+        try:
+            current = snapshot(root, a.n, task["base"])
+        except GitError as e:
+            die(f"git failed on Qwen worktree {a.n}: {e}")
+        if task.get("diffed_tree") != current:
+            die(f"run `mates diff {a.n}` to read the current diff in full before discarding with --fixed")
     _stop_reply(root, state, q, a.n)
     try:
         keep_work(root, a.n, task)
         _reset_worktree(root, a.n, q["branch"], _lead_head(root))
     except GitError as e:
         die(f"discard failed: {e}", 1)
-    if task:
-        log_attempt(root, q, "failed" if a.failed else "accepted-with-fixes" if a.fixed else "escalated",
-                    qwen_share=0 if a.failed else a.share)
+    if task and a.fixed:  # logged once the work is kept, so a failed discard logs nothing
+        log_attempt(root, q, "accepted-with-fixes", qwen_share=a.share, tree=current,
+                    full_diff_read=True, cause=a.cause)
+    elif task:
+        log_attempt(root, q, "failed" if a.failed else "escalated",
+                    qwen_share=0 if a.failed else a.share, cause=a.cause)
 
     def apply(e):  # this task, the idle clock and the lead-token mark only
         if task and (e.get("task") or {}).get("id") == task["id"]:

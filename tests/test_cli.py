@@ -4658,6 +4658,7 @@ def test_a_takeover_of_an_escalated_task_points_to_fixed(m):
     assert code == 0 and "escalated" in err and "--fixed" in err
     m.send("next")
     tid = m.task()["id"]
+    assert m.run("diff", 1)[0] == 0  # --fixed needs the diff read in full
     assert m.run("discard", 1, "--fixed", "--share", "60")[0] == 0
     code, _, err = m.run("log-route", "claude-self", "fixes", "review fixes", "--for", tid)
     assert code == 0 and "--fixed" not in err
