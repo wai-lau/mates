@@ -14,14 +14,15 @@
 - In a refactor, comments move with their code; fix any that name an old file, function or line, and drop none silently.
 - When a change moves files, fixtures or data that another suite reads (end-to-end, browser), put that suite in the check; a unit-only check passed while 7 end-to-end tests broke and the lead's fix cost four times the hand-off.
 - When a contract fakes fetch or another platform API, make the fake reject what the real one rejects (a signal that is not an AbortSignal, a bad header or URL); a fake that accepted anything passed a call that threw on every real request.
+- Confirm the sent check is red for the asked reason (its cases failing), not because a file it names is missing, and close on that same command with its suite; one send named a contract that was not there and the task closed on the contract alone.
 
 ### Writing briefs
 
 - Keep briefs for small checkable fixes lean: behaviour and check. Name every file the task may edit; allowing edits by pattern floods the flag for unnamed files, so it says nothing.
-- Size each task to fit Qwen's 64K context: one plan task, a few functions, plan sections by pointer, line ranges or grep patterns into big files. Each compaction loses detail.
+- Size each task to fit Qwen's 64K context: one plan task, a few functions, pointers (plan sections, line ranges, grep patterns) into big files; compactions lose detail. A new module plus its wiring returns with only the checked part done: give each step a check case or split the send.
 - Keep each brief in a file that survives a restart and send it once, whole, into a fresh chat; leftover context from the last task or a second paste leaves Qwen re-reading.
 - When Qwen writes docs or history, write the quotes, dates and numbers yourself and read those diffs line by line. Any brief that lets Qwen touch code, commits, a README or a doc line forbids author or credit lines; three code briefs that allowed a README line drew authorship flags.
-- A brief spanning a new module plus its wiring in several callers comes back with only the checked part done. Give every numbered step its own check case before the send, or split it into one send per checked piece.
+- Keep owner names and attributed decisions out of the text Qwen builds from unless the code must carry them; Qwen copies them into comments and READMEs, which fires owner-quote flags that then need reading against the brief.
 
 ### Review, merge and logging
 
