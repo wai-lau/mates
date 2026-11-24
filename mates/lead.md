@@ -75,10 +75,13 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 - Endgame (`mates followers` says "endgame": the last 3 hours before the weekly
   reset): Wai sets a pace to reach 99% usage at the reset.
   > "don't arbitrarily burn, but significantly downweight model costs during this time"
-  So, for real work only: run followers in parallel, pick the model by quality and
-  speed (sonnet or opus where they beat haiku), and take a task yourself or give it
-  to a follower where Qwen would be slower or need a re-brief. No make-work; past
-  the pace line (off) go back to Qwen and your own work.
+  > "make sure to move all workloads out of qwen into Claude subagents during this time" (Wai, 2026-11-24)
+  So this is turbo mode: while followers are on, every task goes to Claude subagents,
+  none to Qwen (`mates send` refuses), and open Qwen tasks are handed over: `mates
+  discard N --share P`, then a subagent finishes from Qwen's diff. Real work only: run
+  followers in parallel, pick the model by quality and speed (sonnet or opus where
+  they beat haiku). No make-work; past the pace line (off) go back to Qwen and your
+  own work.
 - Model: the cheapest that can do the task (per token, haiku is 1/40 of opus,
   sonnet 1/2). Brief it like Qwen (behaviour, check, files) and check what it
   returns yourself.

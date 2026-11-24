@@ -4830,3 +4830,18 @@ def test_log_route_back_to_back_rows_split_the_window_once(m):
     assert m.run("log-route", "claude-self", "two", "r")[0] == 0
     assert m.run("log-route", "claude-self", "three", "r")[0] == 0
     assert [x["lead_output"] for x in m.log()[-2:]] == [0, 0]
+
+
+# --- turbo mode (Wai, 2026-11-24: "make sure to move all workloads out of qwen into Claude
+# subagents during this time"): the last hours before the weekly reset, under the pace line.
+
+def test_send_refuses_in_turbo_mode(m, monkeypatch):
+    monkeypatch.setattr(cli.usage, "read", lambda *a, **k: {"on": True, "endgame": True, "to_reset": 7200})
+    code, _, err = m.run("send", 1, "--reason", "r", "--files", "a.txt", "fix a.txt")
+    assert code != 0 and "turbo mode" in err and "Claude subagent" in err and m.task() is None
+
+
+def test_send_works_past_the_endgame_pace_line(m, monkeypatch):
+    monkeypatch.setattr(cli.usage, "read", lambda *a, **k: {"on": False, "endgame": True, "to_reset": 7200})
+    m.send()
+    assert m.task() is not None

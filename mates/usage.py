@@ -117,8 +117,9 @@ def _report(h):
         return (f"Claude followers {state}: endgame, {h['to_reset'] / 3600:.1f} h to the weekly reset. 7-day usage "
                 f"{h['used']:.0f}% is {where} the pace line {h['line']:.1f}% (rising to {ENDGAME_TARGET:.0f}% at "
                 f"the reset); 5-hour usage {h['five_hour']:.0f}%, {five} the {FIVE_HOUR_MAX:.0f}% limit. "
-                + ("Until the reset Claude's cost counts low: real work only, no make-work" if h["on"]
-                   else KEEP_WORKING))
+                + ("Turbo mode until the reset: Claude's cost counts low, so move all work off Qwen to "
+                   "Claude subagents (mates send refuses; hand open Qwen tasks over); real work only, no "
+                   "make-work" if h["on"] else KEEP_WORKING))
     than = "more" if h["left"] > DAY_SHARE else "not more"
     five = "under" if h["five_hour"] <= FIVE_HOUR_MAX else "over"
     return (f"Claude followers {state}: 7-day usage {h['used']:.0f}%, the pace cap allows {h['allowed']:.1f}% "

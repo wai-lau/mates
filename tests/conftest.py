@@ -94,6 +94,7 @@ def _isolated(tmp_path, monkeypatch, request):
     monkeypatch.setattr(session, "STATE_DIR", tmp_path / "state-sessions")
     import usage
     monkeypatch.setattr(usage, "snooze_path", lambda: tmp_path / "no-pace-snooze")  # Wai's real snooze
+    monkeypatch.setattr(usage, "cache_path", lambda: tmp_path / "no-usage-cache")  # her real usage (turbo mode)
     if "real_reaper" not in request.keywords:
         monkeypatch.setattr(cli, "start_reaper", lambda root: None)
     monkeypatch.setattr(cli, "PANE_STAGGER_S", 0)

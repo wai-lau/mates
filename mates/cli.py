@@ -1221,6 +1221,14 @@ def send(args):
     text = " ".join(a.text)
     if a.summary is not None and not 0 < len(a.summary) <= 120:
         die("--summary must be one line of 1 to 120 characters")
+    h = usage.read()
+    if h.get("endgame") and h.get("on"):
+        # Turbo mode (Wai, 2026-11-24: "make sure to move all workloads out of qwen into Claude
+        # subagents during this time"): the last hours before the weekly reset, unused Claude usage
+        # is lost at the reset, so Claude subagents do the work Qwen would have done.
+        die(f"turbo mode: {h['to_reset'] / 3600:.1f} h to the weekly reset and Claude usage is under the "
+            "pace line, so give this task to a Claude subagent instead of Qwen (and hand over any open "
+            "Qwen task: mates discard N --share P, then a subagent finishes it)")
     root = _lead_root()
     state = _load(root)
     q = _qentry(state, a.n)
