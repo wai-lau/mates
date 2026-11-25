@@ -4845,3 +4845,29 @@ def test_send_works_past_the_endgame_pace_line(m, monkeypatch):
     monkeypatch.setattr(cli.usage, "read", lambda *a, **k: {"on": False, "endgame": True, "to_reset": 7200})
     m.send()
     assert m.task() is not None
+
+
+# --- phone notifications (Wai, 2026-11-24: yes to wiring mates to her ntfy server) ---------------
+
+def test_a_finished_task_notifies_through_notify(m, monkeypatch, tmp_path):
+    bin_ = tmp_path / "nbin"
+    bin_.mkdir()
+    log = tmp_path / "notify.log"
+    (bin_ / "notify").write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {log}\n")
+    (bin_ / "notify").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    monkeypatch.delenv("MATES_NO_NOTIFY")
+    cli._notify("/x/repo", 1, "question", "which file?")
+    for _ in range(50):
+        if log.exists():
+            break
+        time.sleep(0.05)
+    args = log.read_text().splitlines()
+    assert args[:6] == ["-c", "mates", "-p", "default", "-t", "repo: Qwen pane 1 question"] and args[6] == "which file?"
+
+
+def test_notify_is_silent_when_off_or_missing(m, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    cli._notify("/x/repo", 1, "done", "ok")  # no notify installed: nothing happens, nothing raises
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/bin/false")
+    cli._notify("/x/repo", 1, "idle")  # not a word that notifies

@@ -1398,6 +1398,25 @@ def wait_lock_path(root, n):
     return base / "mates" / f"wait-{session.repo_key(str(root))}-{n}.lock"
 
 
+# Phone notifications through Wai's own ntfy server (~/src/notify; Wai, 2026-11-24, yes to
+# "wire mates to notify you"): a question or a stuck pane wants her eye, a finished task is low
+# priority. Fire and forget: never blocks or fails a mates command; nothing when `notify` is not
+# installed or MATES_NO_NOTIFY is set (the tests).
+NOTIFY_PRIORITY = {"question": "default", "done": "low", "stalled": "high", "dead": "high", "failed": "high"}
+
+
+def _notify(root, n, word, text=""):
+    exe = shutil.which("notify")
+    if not exe or os.environ.get("MATES_NO_NOTIFY") or word not in NOTIFY_PRIORITY:
+        return
+    title = f"{Path(root).name}: Qwen pane {n} {word}"
+    body = " ".join((text or word).split())[:300]
+    with contextlib.suppress(OSError):
+        subprocess.Popen([exe, "-c", "mates", "-p", NOTIFY_PRIORITY[word], "-t", title, body],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+
+
 def wait(args):
     p = _parser("wait", "mates wait N [--timeout S]")
     p.add_argument("n", type=int)
@@ -1427,9 +1446,11 @@ def wait(args):
         if hit is None:  # mark it closed in the state as it is now (wait may have run for a while)
             session.update(root, lambda st: session.mark_closed(st, a.n))
             print("dead")
+            _notify(root, a.n, "dead", "the Qwen pane is gone")
             return 0
         if hit[1] == "failed":
             print("failed")
+            _notify(root, a.n, "failed", "the Qwen pane failed to start")
             return 0
         sid = task.get("opencode_session") if task else session.opencode_session(q["worktree"], db)
         if task and sid is None:  # the row appears only with the first message (Task 0)
@@ -1456,6 +1477,7 @@ def wait(args):
             word, name, text, _ = found[0]
             ok = stop_pane(q, db, hit[0])  # first: the lead may run check the moment it reads the result
             print(f"{word}: {shown(text)}")
+            _notify(root, a.n, word, shown(text))
             if ok:
                 print(f"mates: stopped Qwen pane {a.n}: it was replying after its {name} only because "
                       f"OpenCode continued it after compacting its context")
@@ -1465,12 +1487,15 @@ def wait(args):
             return 0
         if still and (age := _quiet_s(q["worktree"], db, since)) > STALL_S:
             print("stalled")
+            _notify(root, a.n, "stalled", f"busy but silent for {int(age // 60)} minutes")
             print(f"mates: Qwen pane {a.n} reads busy but OpenCode wrote nothing for {int(age // 60)} minutes; "
                   f"`mates discard {a.n} --share P` and do it yourself", file=sys.stderr)
             return 0
         stopped = 0 if still else stopped + 1
         if stopped >= 2:
             print(f"{found[0][0]}: {shown(found[0][2])}" if found else "idle")
+            if found:
+                _notify(root, a.n, found[0][0], shown(found[0][2]))
             return 0
         if time.time() >= deadline:
             print("timeout")

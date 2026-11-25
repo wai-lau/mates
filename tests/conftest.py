@@ -95,6 +95,7 @@ def _isolated(tmp_path, monkeypatch, request):
     import usage
     monkeypatch.setattr(usage, "snooze_path", lambda: tmp_path / "no-pace-snooze")  # Wai's real snooze
     monkeypatch.setattr(usage, "cache_path", lambda: tmp_path / "no-usage-cache")  # her real usage (turbo mode)
+    monkeypatch.setenv("MATES_NO_NOTIFY", "1")  # never ping Wai's phone from a test
     if "real_reaper" not in request.keywords:
         monkeypatch.setattr(cli, "start_reaper", lambda root: None)
     monkeypatch.setattr(cli, "PANE_STAGGER_S", 0)
