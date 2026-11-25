@@ -16,6 +16,11 @@ set -uo pipefail
 SELF=$(readlink -f "$0")
 MATES_DIR=$(dirname "$(dirname "$SELF")")/mates
 CLI=$MATES_DIR/cli.py
+# A crash can leave a just-written file empty (WSL, 2026-11-24 20:19: cli.py came back 0 bytes and
+# every mates command then did nothing and exited 0). Refuse loudly instead.
+for f in "$CLI" "$MATES_DIR/session.py"; do
+  [ -s "$f" ] || { echo "mates: $f is empty (a crash?); restore it: git -C ${MATES_DIR%/mates} show HEAD:mates/${f##*/} > $f" >&2; exit 1; }
+done
 die() { echo "mates: $*" >&2; exit 1; }
 
 case "${1:-}" in -h|--help) sed -n '2,14p' "$SELF"; exit 0 ;; esac
