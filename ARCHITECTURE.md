@@ -390,7 +390,7 @@ into `-` (`session.py:repo_key`), the rule `~/.claude/projects` uses.
 from both `launch` and `start`. One watcher per repo holds a lock
 (`reaper_lock`) and runs `reap` every 300 s while the repo's lead pane exists.
 
-`reap` closes a Qwen pane that has no open task when 30 minutes have passed
+`reap` closes a Qwen pane that has no open task when 10 minutes have passed
 since both its `idle_since` and its newest OpenCode reply, its screen shows no
 reply running, and its input box is empty (`IDLE_CLOSE_S`). It changes the
 state through `session.py:update`, which re-reads it under the lock and acts

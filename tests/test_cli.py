@@ -2984,7 +2984,8 @@ esac
     assert m.run("wait", 1, "--timeout", "0.5")[1] == "timeout\n"
 
 
-# --- close unused Qwen panes (Wai, 2026-11-12: "close unused opencode panes after 30m") ---
+# --- close unused Qwen panes (Wai, 2026-11-12: "close unused opencode panes after 30m";
+# 2026-11-27: "we should be more aggressive with closing them to save resources", now 10m) ---
 # An unused pane: no open task, OpenCode not replying, nothing typed in its input box, and
 # no use for IDLE_CLOSE_S (the later of the task's end, the pane's start, and its newest
 # OpenCode message, which also counts Wai chatting with Qwen directly). `mates reap` closes
@@ -3008,8 +3009,8 @@ def _reap(m):
     return out
 
 
-def test_reap_closes_a_pane_unused_for_30_minutes(m):
-    assert cli.IDLE_CLOSE_S == 1800
+def test_reap_closes_a_pane_unused_for_10_minutes(m):
+    assert cli.IDLE_CLOSE_S == 600
     _idle_since(m, 1900)
     _old_chat(m, 1900)
     out = _reap(m)
@@ -3021,13 +3022,13 @@ def test_reap_closes_a_pane_unused_for_30_minutes(m):
 
 def test_reap_keeps_a_recent_chat(m):
     _idle_since(m, 1900)
-    _old_chat(m, 600)  # Wai talked to Qwen 10 minutes ago
+    _old_chat(m, 300)  # Wai talked to Qwen 5 minutes ago
     _reap(m)
     assert "kill-pane -t %1" not in m.tmux_calls() and m.state()["qwens"][0]["closed"] is False
 
 
 def test_reap_keeps_a_task_that_ended_recently(m):
-    _idle_since(m, 600)  # the last task was merged or discarded 10 minutes ago
+    _idle_since(m, 300)  # the last task was merged or discarded 5 minutes ago
     _old_chat(m, 1900)
     _reap(m)
     assert "kill-pane -t %1" not in m.tmux_calls()

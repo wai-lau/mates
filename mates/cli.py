@@ -44,7 +44,7 @@ import session
 import usage
 from gitsafe import GitError, git_lead, git_safe
 
-IDLE_CLOSE_S = 1800
+IDLE_CLOSE_S = 600  # Wai, 2026-11-27: "we should be more aggressive with closing them to save resources" (was 30 min)
 REAP_POLL_S = 300
 
 # {worktree}: the pane's worktree, the same path inside the sandbox. OpenCode's write tool takes
@@ -594,7 +594,7 @@ def launch(args):
     if r.returncode != 0:
         die(f"tmux set-option @mates-window failed: {r.stderr.strip()}", 1)
     save_state(root, state)
-    start_reaper(root)  # closes Qwen panes unused for 30 minutes (one per repo, under a lock)
+    start_reaper(root)  # closes Qwen panes unused for IDLE_CLOSE_S (one per repo, under a lock)
     sys.stdout.buffer.write(b"".join(a.encode() + b"\0" for a in argv))
     sys.stdout.flush()
     return 0
@@ -697,7 +697,7 @@ def _live_pane(root, state, q):
     """The pane id of entry q, refusing unless OpenCode runs in it now."""
     if q.get("closed"):
         if q.get("closed_idle"):
-            die(f"Qwen pane {q['n']} was closed after 30 minutes unused (mates add opens it again)")
+            die(f"Qwen pane {q['n']} was closed after {IDLE_CLOSE_S // 60} minutes unused (mates add opens it again)")
         die(f"Qwen pane {q['n']} is closed (mates add opens one)")
     hit = _find(root, state, q)
     if hit is None:

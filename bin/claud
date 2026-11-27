@@ -2,9 +2,9 @@
 # claud: open a Claude follower in a tmux pane to the right of this one, in its own worktree.
 #
 #   claud [--dry-run] [--model M] [task...]
-#       Wai runs it as `! claud` in a lead session; a lead runs it from Bash to hand a follower
-#       a task (Wai sees followers work in panes; the Agent tool's background subagents only for
-#       work that needs no watching). Any shell in a tmux pane of a git repo works.
+#       Wai's own command: she runs it as `! claud` in a lead session (any shell in a tmux pane
+#       of a git repo works). Leads never run it; their followers are Agent-tool subagents,
+#       gated by `mates followers` (Wai, 2026-11-27: "yes claud is a me-only command").
 #       The follower is an interactive Claude session (through the claude() wrapper in ~/.zshrc,
 #       so it gets private.md and its own prompt colour) in .claude/worktrees/claude-<n> of the
 #       main checkout, named claude-<n>. With a task, its first prompt is that task plus who
