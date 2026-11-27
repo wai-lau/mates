@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# claud: open a Claude follower in a tmux pane to the right of this one, in its own worktree.
+#
+#   claud [--dry-run] [--model M] [task...]
+#       Wai runs it as `! claud` in a lead session; a lead runs it from Bash to hand a follower
+#       a task (Wai sees followers work in panes; the Agent tool's background subagents only for
+#       work that needs no watching). Any shell in a tmux pane of a git repo works.
+#       The follower is an interactive Claude session (through the claude() wrapper in ~/.zshrc,
+#       so it gets private.md and its own prompt colour) in .claude/worktrees/claude-<n> of the
+#       main checkout, named claude-<n>. With a task, its first prompt is that task plus who
+#       its lead is (the claude process this was run from, by PID) and how to report back.
+#       --model picks the follower's model (haiku, sonnet, opus...). --dry-run prints the tmux
+#       argv instead of running it.
+#
+# Wai, 2026-11-27: "I also want a way to start a claude follower in a vertical split to the
+# right / maybe a `! claud` in a working leader".
+set -uo pipefail
+die() { echo "claud: $*" >&2; exit 1; }
+
+dry="" model=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --dry-run) dry=1; shift ;;
+    --model) [ $# -ge 2 ] || die "--model needs a name"; model=$2; shift 2 ;;
+    --model=*) model=${1#--model=}; shift ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+[ -n "${TMUX_PANE:-}" ] || die "run it inside a tmux pane"
+# Never from a Qwen worktree: its files (CLAUDE.md, .claude/settings.json hooks) are Qwen's, and a
+# claude started there would run them as Wai.
+case "$(pwd -P)/" in */.claude/worktrees/mates-qwen-*/*) die "refusing to run inside a Qwen worktree; cd to the lead repo first" ;; esac
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || die "not in a git repo"
+ROOT=$(dirname "$common")  # the main checkout, also when run from a follower's worktree
+[ -d "$ROOT/.git" ] || die "cannot find the main checkout of this repo ($common)"
+
+n=1
+while [ -e "$ROOT/.claude/worktrees/claude-$n" ]; do n=$((n + 1)); done
+name=claude-$n
+
+# The lead: the nearest claude process above this shell (a `!` command runs under it).
+lead="" p=$$
+while [ "$p" -gt 1 ] 2>/dev/null; do
+  [ "$(cat "/proc/$p/comm" 2>/dev/null)" = claude ] && { lead=$p; break; }
+  p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null) || break
+done
+
+args=(-n "$name" -w "$name")
+[ -n "$model" ] && args+=(--model "$model")
+if [ $# -gt 0 ]; then
+  from=${lead:+"the Claude session with PID $lead"}
+  # A PID is not a SendMessage address; its socket is (cross-session messages arrive from it).
+  sock=/run/user/$(id -u)/cc-socks/$lead.sock
+  to="the lead with SendMessage (find it with ListAgents)"
+  [ -n "$lead" ] && [ -S "$sock" ] && to="the lead with SendMessage, to: \"uds:$sock\""
+  prompt="[from claud] You are a Claude follower of ${from:-a lead session} in $ROOT. You work in your own git worktree ($ROOT/.claude/worktrees/$name), so commit there; the lead merges. When done, or blocked, say so to $to and give the commit or the question.
+
+Task: $*"
+  args+=("$prompt")
+fi
+
+# Where: the first follower splits this pane to the right (a vertical split); each next one splits
+# the bottom follower pane of this window downward, so followers stack in one column and the lead
+# is not halved again. Follower panes carry the tmux tag @claud.
+win=$(tmux display -p -t "$TMUX_PANE" '#{window_id}')
+last=$(tmux list-panes -t "$win" -F $'#{pane_top}\t#{pane_id}\t#{@claud}' 2>/dev/null | awk -F'\t' '$3 != ""' | sort -n | tail -1 | cut -f2)
+if [ -n "$last" ]; then split=(-v -t "$last"); else split=(-h -t "$TMUX_PANE"); fi
+# zsh -i: the claude() wrapper and PATH from ~/.zshrc; the args ride as zsh's positional
+# parameters (tmux runs a multi-word command as an argv, no shell quoting). The pane keeps a shell
+# after claude exits. -d: the pane it was run from keeps the focus.
+argv=(tmux split-window -d "${split[@]}" -c "$ROOT" -P -F '#{pane_id}' zsh -ic 'claude "$@"; exec zsh' claud "${args[@]}")
+if [ -n "$dry" ]; then printf '%q ' "${argv[@]}"; echo; exit 0; fi
+pane=$("${argv[@]}") || die "tmux could not split the pane (too narrow?)"
+tmux set-option -p -t "$pane" @claud "$name"
+echo "claud: $name in pane $pane, worktree $ROOT/.claude/worktrees/$name${lead:+, lead PID $lead}"

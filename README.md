@@ -107,6 +107,7 @@ from the model's Modelfile.
 | `~/.config/qwen/copy-in` | files copied into the sandbox at each launch |
 | `~/.config/qwen/digests/` | short digests of CLAUDE.md files, by hash |
 | `~/bin/mates` | symlink to `bin/mates` here |
+| `~/bin/claud` | symlink to `bin/claud` here (a Claude follower in a pane to the right) |
 | `~/.local/state/qwen/` | server log, OpenCode sessions (one folder per repo), GPU locks |
 | `~/.local/opt/opencode-1.19.5/` | OpenCode binary |
 | `~/.claude/mates/` | mates state per repo and the task log (local only) |
@@ -119,6 +120,6 @@ from the model's Modelfile.
 qwen stop
 ollama rm qwen3.8-27b-turbo-heretic:mtp-iq4xs
 rm -rf ~/.local/opt/opencode-* ~/.config/qwen ~/.local/state/qwen ~/.local/state/mates ~/.claude/mates
-rm ~/bin/mates
+rm ~/bin/mates ~/bin/claud
 rm ~/bin/qwen
 ```

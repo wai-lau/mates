@@ -45,8 +45,18 @@ into your message, and run the command again with `--clear-box`; never wait on i
 
 ## Claude followers
 
-Followers are subagents from your Agent tool, for complex problems that need
+Followers are Claude sessions you start, for complex problems that need
 judgement, or for more throughput when `mates send` refuses at the 3-task cap.
+
+- Where: in a pane Wai can watch. `claud --model <m> "<brief>"` (Bash) opens an
+  interactive Claude to the right of your pane, in its own worktree
+  (`.claude/worktrees/claude-<n>`, branch `worktree-claude-<n>`), and tells it to
+  report to you by SendMessage. Merge its commits yourself after reading them.
+  Use the Agent tool's background subagents only for work that needs no watching
+  (a lookup, a long wait):
+  > "unless something is very wait-y (no interaction needed), I would much prefer to
+  > see the subagents work in a new pane rather than backgrounded" (Wai, 2026-11-27)
+  Wai opens one herself with `! claud`.
 
 - On: run `mates followers` before each one. It says on only while more than one
   day of usage is left under Wai's pace cap and the 5-hour window is at most 75% used:
@@ -85,7 +95,7 @@ judgement, or for more throughput when `mates send` refuses at the 3-task cap.
 - Model: the cheapest that can do the task (per token, haiku is 1/40 of opus,
   sonnet 1/2). Brief it like Qwen (behaviour, check, files) and check what it
   returns yourself.
-- Log at launch: `mates log-route claude-subagent "<task, model>" "<why>" --outcome started`
+- Log at launch (a `claud` pane or a subagent): `mates log-route claude-subagent "<task, model>" "<why>" --outcome started`
   (it prints the row's id); when it returns, close that row:
   `mates log-route claude-subagent "<what came back>" "<why>" --for <id>`
   (with `--outcome` if it was not accepted). A follower done within one turn needs one plain row.
