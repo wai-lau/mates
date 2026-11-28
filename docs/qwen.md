@@ -10,7 +10,7 @@ qwen exec -- <cmd>   # run <cmd> in the sandbox, return its exit code (no server
 qwen server          # start or find the private Ollama server, print its address
 qwen host            # print the running server's address, or exit 1 (never starts one)
 qwen warm            # start or find the server and load the model in the background
-qwen stop            # stop it, restart hosaka TTS
+qwen stop            # stop it; Charlie back if homo was asked
 qwen opencode-dir    # print this repo's OpenCode state folder
 qwen sandbox-test    # show what the sandbox can and cannot reach
 qwen shell           # a bash inside the sandbox (no agent), to look around
@@ -18,7 +18,7 @@ qwen shell           # a bash inside the sandbox (no agent), to look around
 
 `qwen exec` is what `mates check` uses to run a Qwen worktree's tests: the same
 mounts as an agent run, but no Ollama server, no relay (not even the clipboard
-one), and no GPU lock, so a check never loads the GPU or stops hosaka.
+one), and no GPU lock of its own, so a check never loads the GPU or touches hosaka.
 
 aider is gone (Wai retired it, 2026-11-10); OpenCode is the only agent.
 `~/.local/state/qwen/aider/` from earlier runs is left where it is.
@@ -40,7 +40,7 @@ Environment overrides:
 flowchart TD
   A[qwen] --> B{private Ollama running?}
   B -- yes: found via OLLAMA_HOST in its /proc environ --> D
-  B -- no --> C[stop hosaka TTS, start ollama serve on a free port]
+  B -- no --> C[Charlie off if loaded, start ollama serve on a free port]
   C --> D[digest ~/.claude/CLAUDE.md and repo CLAUDE.md if changed]
   D --> E[build a throwaway sandbox home: copy-in files + digests]
   E --> F[relay: unix socket to the Ollama port]
@@ -136,7 +136,7 @@ lapsed, the digest is skipped with a warning and `qwen` runs without it.
 |---|---|
 | `~/.local/state/qwen/serve.log` | private Ollama server log |
 | `~/.local/state/qwen/opencode/<repo key>/` | OpenCode sessions for one repo and its worktrees (persist between runs); `qwen opencode-dir` prints it |
-| `~/.local/state/qwen/locks/<pid>` | one per running OpenCode session: hosaka will not start while a live pid holds one |
+| `~/.local/state/qwen/locks/<pid>` | one per running OpenCode session, and one for the server: while a live pid holds one, hosaka runs nicole-only and refuses homo (Charlie) |
 | `~/.config/qwen/copy-in` | files copied in |
 | `~/.config/qwen/digests/` | CLAUDE.md digests |
 

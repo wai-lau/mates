@@ -39,8 +39,9 @@ that spills to CPU no longer risks an OOM kill; it only gets slower (see
 
 `qwen` runs its own private Ollama server on a free port (found again by
 reading its process environment, never a fixed number). The system service is
-left alone. Qwen uses both GPUs, so starting it stops hosaka TTS, and
-`qwen stop` brings TTS back.
+left alone. Qwen takes the 5070 Ti from Charlie (hosaka's quality voice) and
+only Charlie: hosaka TTS keeps serving nicole on the GTX 1660 beside it, and
+`qwen stop` brings Charlie back when homo was asked.
 
 ## Daily commands
 
@@ -48,7 +49,7 @@ left alone. Qwen uses both GPUs, so starting it stops hosaka TTS, and
 qwen                 # OpenCode on the local model, sandboxed, in the current git repo
 qwen exec -- <cmd>   # run a command in the sandbox (no server, no model), return its exit code
 qwen server          # start or find the private server, print its address
-qwen stop            # stop the private server, restart hosaka TTS
+qwen stop            # stop the private server (Charlie back if homo was asked)
 qwen sandbox-test    # print what the sandbox can and cannot reach
 qwen --help          # the full rules
 ```

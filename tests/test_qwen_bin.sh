@@ -309,7 +309,8 @@ check "by hand: its model relay goes first (--priority), in the shared slots fol
   'grep -qF -- "--slots $T/state/qwen/slots --priority" <<<"$rargs"'
 wait $q; rc=$?
 check "the stub TUI run exits 0" '[ "$rc" = 0 ]'
-check "the lock is gone after" '[ ! -e "$T/state/qwen/locks/$q" ] && [ -z "$(ls -A "$T/state/qwen/locks")" ]'
+check "the lock is gone after (only the live server's own lock stays)" \
+  '[ ! -e "$T/state/qwen/locks/$q" ] && for f in "$T"/state/qwen/locks/*; do [ -e "$f" ] || continue; grep -qx ollama-server "$f" || exit 1; done'
 check "the run dir is gone after" '[ -z "$(ls -d "$T/state/qwen"/run.* 2>/dev/null)" ]'
 check "the TUI run started the (stub) server" '[ -e "$T/ollama-started" ]'
 (cd "$T/repo" && exec "$QWEN" >/dev/null 2>&1) & q=$!  # exec: $q is the qwen pid
@@ -491,6 +492,24 @@ sth=$(in_ "$T/repo" "$QWEN" sandbox-test 2>/dev/null)
 check "by hand, sandbox-test: home blocked, raw internet blocked, host loopback via proxy blocked" \
   'grep -qF "your home (~/.ssh): blocked" <<<"$sth" && grep -qF "internet 1.1.1.1:443: blocked" <<<"$sth" && grep -qF "host loopback via proxy: blocked" <<<"$sth"'
 git -C "$T/repo" remote remove origin; rm -rf "$T/repo/.env" "$T/repo/.env.example" "$T/repo/sub/k"
+
+# --- hosaka: Qwen takes the 5070 Ti from Charlie only (Wai, 2026-11-27) -------------
+hosaka_case() {  # charlie flag -> runs qwen warm with hosaka "active"
+  pkill -f "$T/stub/ollama" 2>/dev/null; sleep 0.2
+  rm -rf "$T/state/qwen/locks"; rm -f "$T/systemctl.log" "$T/ollama-started"
+  mkdir -p "$T/state/hosaka"; echo "$1" > "$T/state/hosaka/charlie"
+  "$QWEN" warm >/dev/null 2>&1
+}
+stub systemctl "echo \"\$*\" >> '$T/systemctl.log'; case \"\$*\" in *is-active*) echo active ;; esac; exit 0"
+hosaka_case on
+check "Charlie loaded: starting Qwen restarts hosaka (comes up nicole-only), never stops it" \
+  'grep -qx -- "--user restart hosaka-server" "$T/systemctl.log" && ! grep -q "stop hosaka-server" "$T/systemctl.log"'
+check "the server holds a GPU lock while it lives" 'grep -lx ollama-server "$T"/state/qwen/locks/* >/dev/null 2>&1'
+check "the start's own temporary lock is gone" '[ "$(ls "$T/state/qwen/locks" | wc -l)" = 1 ]'
+hosaka_case off
+check "nicole-only hosaka is left running untouched" '! grep -qE "(restart|stop) hosaka-server" "$T/systemctl.log"'
+pkill -f "$T/stub/ollama" 2>/dev/null; sleep 0.2; rm -rf "$T/state/qwen/locks" "$T/state/hosaka"
+stub systemctl "echo \"\$*\" >> '$T/systemctl.log'; exit 0"
 
 [ $fail = 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

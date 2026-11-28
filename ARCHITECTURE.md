@@ -374,9 +374,12 @@ into `-` (`session.py:repo_key`), the rule `~/.claude/projects` uses.
 - `qwen` finds its private Ollama server by reading `OLLAMA_HOST` from the
   environment of each running `ollama serve`, or starts one on a free port under
   a lock (`find_server`, `start_server`). The server has one request slot, an
-  8-bit KV cache, both GPUs and a 60-minute keep-alive. Starting it stops the
-  hosaka text-to-speech service, which needs the same GPUs; `qwen stop` brings
-  it back.
+  8-bit KV cache, both GPUs and a 60-minute keep-alive. The server and every
+  OpenCode run hold a GPU lock (`~/.local/state/qwen/locks/<pid>`); while one is
+  live, hosaka text-to-speech runs nicole-only on the GTX 1660 (fits beside
+  Qwen's share, tested 2026-11-27) and refuses homo, which needs the 5070 Ti for
+  Charlie. Starting the server restarts hosaka only if Charlie is loaded;
+  `qwen stop` restarts it with Charlie when homo was asked.
 - OpenCode runs with every tool allowed, since the sandbox is the limit. Web
   fetch and search are off (web fetch is on in a hand launch), and every rule that would stop to ask is `deny`, so
   no prompt waits on Wai (the `cfg` block; its comment quotes Wai: "should ask

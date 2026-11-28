@@ -7,7 +7,7 @@
 #   qwen server            start (or reuse) the server and print its address
 #   qwen host              print the running server's address, or exit 1 (never starts one)
 #   qwen warm              start (or reuse) the server and load the model in the background
-#   qwen stop              stop the server and give the GPU back to hosaka TTS
+#   qwen stop              stop the server; hosaka TTS gets Charlie back if homo was asked
 #   qwen opencode-dir      print this repo's OpenCode state folder (shared by its worktrees)
 #   qwen sandbox-test      print what the sandbox can and cannot reach (no agent)
 #   qwen shell [bash args] a bash inside the sandbox (no agent), to look around
@@ -47,8 +47,10 @@
 #
 # The server's port is never fixed: a running private Ollama is found from its
 # own environment (OLLAMA_HOST in /proc/<pid>/environ); a new one gets a free
-# port. Qwen needs both GPUs, so starting it stops hosaka TTS ("Qwen wins vs TTS"),
-# and each OpenCode run holds a lock in $STATE/locks/<pid> so hosaka stays off.
+# port. Qwen wins the 5070 Ti from Charlie (hosaka's quality voice), and only Charlie: nicole
+# keeps running on the GTX 1660 beside it (Wai, 2026-11-27, "narrow the lock to Charlie"). The
+# server and each OpenCode run hold a lock in $STATE/locks/<pid>; while one is live, hosaka
+# starts nicole-only and refuses homo.
 #
 # env: QWEN_MODEL (default qwen3.8-27b-turbo-heretic:mtp-iq4xs), QWEN_CTX (default 65536),
 #      QWEN_OPENCODE (OpenCode binary), QWEN_GIT_RO=1 (read-only git),
@@ -120,12 +122,25 @@ start_server() {
   exec {lk}>> "$STATE/server.lock"
   flock -w 120 "$lk" || die "another qwen held the server lock for 2 minutes ($STATE/server.lock)"
   if host=$(find_server); then exec {lk}>&-; echo "$host"; return; fi
-  systemctl --user stop hosaka-server 2>/dev/null && echo "qwen: stopped hosaka TTS (GPU goes to Qwen; 'qwen stop' gives it back)" >&2 || true
+  # Qwen takes the 5070 Ti from Charlie only; nicole (GTX 1660, ~0.9 GB beside Qwen's share,
+  # tested 2026-11-27) keeps serving. A lock must exist before hosaka restarts, so it comes up
+  # nicole-only (hosaka scripts/start_server.sh); a TUI run already holds one ($$).
+  local tmp_lock=""
+  mkdir -p "$STATE/locks"
+  if hosaka_charlie_loaded; then
+    [ -e "$STATE/locks/$$" ] || { echo qwen-start > "$STATE/locks/$$"; tmp_lock=$STATE/locks/$$; }
+    systemctl --user restart hosaka-server 2>/dev/null \
+      && echo "qwen: hosaka TTS restarted nicole-only (Charlie gives the 5070 Ti to Qwen; 'qwen stop' brings Charlie back)" >&2 || true
+  fi
   host=127.0.0.1:$(free_port)
   OLLAMA_HOST=$host OLLAMA_MODELS=/usr/share/ollama/.ollama/models OLLAMA_NOPRUNE=1 \
   OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_SCHED_SPREAD=1 \
   OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=60m \
     setsid nohup ollama serve >> "$STATE/serve.log" 2>&1 < /dev/null {lk}>&- &  # the server must not hold the lock
+  # The server holds a GPU lock for as long as it lives (headless sends and `qwen warm` too), so
+  # Charlie cannot load onto the 5070 Ti under a loaded model; hosaka drops it once the pid is gone.
+  echo ollama-server > "$STATE/locks/$!"
+  [ -n "$tmp_lock" ] && rm -f -- "$tmp_lock"
   for _ in $(seq 60); do
     curl -fsS -m 2 "http://$host/api/version" >/dev/null 2>&1 && { exec {lk}>&-; echo "$host"; return; }
     sleep 0.5
@@ -136,9 +151,23 @@ start_server() {
 stop_server() {
   local pid
   for pid in $(pgrep -u "$(id -u)" -x ollama 2>/dev/null); do
-    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^OLLAMA_HOST=' && kill "$pid" && echo "qwen: stopped server pid $pid"
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^OLLAMA_HOST=' && kill "$pid" \
+      && rm -f -- "$STATE/locks/$pid" && echo "qwen: stopped server pid $pid"
   done
-  systemctl --user start hosaka-server 2>/dev/null && echo "qwen: hosaka TTS back up" || true
+  # nicole stayed up beside Qwen; restart hosaka only to bring Charlie back (homo was asked)
+  # or when it is down.
+  if [ "$(systemctl --user is-active hosaka-server 2>/dev/null)" != active ]; then
+    systemctl --user start hosaka-server 2>/dev/null && echo "qwen: hosaka TTS back up" || true
+  elif [ "$(cat "$HOSAKA_STATE/gpu-mode" 2>/dev/null)" = homo ]; then
+    systemctl --user restart hosaka-server 2>/dev/null && echo "qwen: hosaka TTS restarted with Charlie" || true
+  fi
+}
+
+# Charlie (hosaka's 5070 Ti voice) loaded now: hosaka-server up with its charlie flag on, and no
+# lock forcing it nicole-only when it started (it reads the flag only at start).
+HOSAKA_STATE=${XDG_STATE_HOME:-$HOME/.local/state}/hosaka
+hosaka_charlie_loaded() {
+  [ "$(systemctl --user is-active hosaka-server 2>/dev/null)" = active ] && [ "$(cat "$HOSAKA_STATE/charlie" 2>/dev/null)" = on ]
 }
 
 # This repo's OpenCode state folder: $STATE/opencode/<key>, the key being the main
